@@ -876,9 +876,21 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
             cands = collect(false);
         }
         constexpr std::size_t kMaxTargets = 16;
-        if (cands.size() > kMaxTargets)
+        if (cands.size() > kMaxTargets) {
+            const bool scalar_ret = in.ty.kind == ir::Type::Void || in.ty.kind == ir::Type::Ptr || in.ty.kind == ir::Type::Int;
+            if (opt.icall_havoc && !opt.kernel_api.empty() && scalar_ret && !fr.pairs.count(in.result)) {
+                for (auto& o : in.ops) (void)operand(fr, o, cur, line);  // arguments evaluated (undef / poison uses checked)
+                out.uses_memory = true;
+                int d = in.result.empty() ? -1 : result_var(fr, in);
+                Arg r = icall_havoc(cur, in, d >= 0 ? out.vars[static_cast<std::size_t>(d)].width : 0, line,
+                                    "indirect call with " + std::to_string(cands.size()) + " possible targets (> " +
+                                        std::to_string(kMaxTargets) + ", not inlined)");
+                if (d >= 0) emit_assign(cur, d, Op::Copy, {r});
+                return;
+            }
             throw Unenc{"UNENCODED: indirect call with " + std::to_string(cands.size()) + " possible targets (> " +
                         std::to_string(kMaxTargets) + ")"};
+        }
     }
     out.uses_memory = true;  // function addresses are pointers of the memory model
     int dst = in.result.empty() ? -1 : result_var(fr, in);
@@ -929,7 +941,21 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
                            " (role " + ops_field->role + ") to a target outside its " +
                            std::to_string(cands.size()) + " in-unit targets (havoc fallback)",
                   line);
-    else
+    else if (opt.icall_havoc && !opt.kernel_api.empty() && !vcall && !fr.pairs.count(in.result)) {
+        // --pir-icall-havoc: a target outside the address-taken set (a pointer another unit stored) is a havoc
+        Arg r = icall_havoc(cur, in, w, line,
+                            "indirect call to a target outside the " + std::to_string(cands.size()) + " address-taken functions");
+        Term j;
+        j.kind = Term::Jmp;
+        j.t = join;
+        if (dst >= 0) {
+            int rv = newvar(tmpname("icall"), w);
+            emit_assign(cur, rv, Op::Copy, {r});
+            add_phi(join, dst, cur, Arg::v(rv, w));
+        }
+        out.blocks[static_cast<std::size_t>(cur)].term = j;
+        any = true;
+    } else
         soft_stop(cur, "indirect call to a target outside the " + std::to_string(cands.size()) +
                            (vcall ? " virtual functions of the module's vtables" : " address-taken functions") +
                            " (havoc fallback)",

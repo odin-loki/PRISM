@@ -229,3 +229,204 @@ entry:
     CHECK(v.status == prism::laws::FAILED);
 }
 #endif
+
+namespace {
+
+std::string icall_ir() {
+    return std::string(R"IR(@tbl = internal global [17 x ptr] [ptr @f0, ptr @f1, ptr @f2, ptr @f3, ptr @f4, ptr @f5, ptr @f6, ptr @f7, ptr @f8, ptr @f9, ptr @f10, ptr @f11, ptr @f12, ptr @f13, ptr @f14, ptr @f15, ptr @f16]
+define internal i32 @f0(i32 %x) {
+entry:
+  ret i32 0
+}
+define internal i32 @f1(i32 %x) {
+entry:
+  ret i32 1
+}
+define internal i32 @f2(i32 %x) {
+entry:
+  ret i32 2
+}
+define internal i32 @f3(i32 %x) {
+entry:
+  ret i32 3
+}
+define internal i32 @f4(i32 %x) {
+entry:
+  ret i32 4
+}
+define internal i32 @f5(i32 %x) {
+entry:
+  ret i32 5
+}
+define internal i32 @f6(i32 %x) {
+entry:
+  ret i32 6
+}
+define internal i32 @f7(i32 %x) {
+entry:
+  ret i32 7
+}
+define internal i32 @f8(i32 %x) {
+entry:
+  ret i32 8
+}
+define internal i32 @f9(i32 %x) {
+entry:
+  ret i32 9
+}
+define internal i32 @f10(i32 %x) {
+entry:
+  ret i32 10
+}
+define internal i32 @f11(i32 %x) {
+entry:
+  ret i32 11
+}
+define internal i32 @f12(i32 %x) {
+entry:
+  ret i32 12
+}
+define internal i32 @f13(i32 %x) {
+entry:
+  ret i32 13
+}
+define internal i32 @f14(i32 %x) {
+entry:
+  ret i32 14
+}
+define internal i32 @f15(i32 %x) {
+entry:
+  ret i32 15
+}
+define internal i32 @f16(i32 %x) {
+entry:
+  ret i32 16
+}
+define i32 @call_ok(i32 %k) {
+entry:
+  %ok = icmp ult i32 %k, 17
+  br i1 %ok, label %go, label %out
+go:
+  %i = zext i32 %k to i64
+  %slot = getelementptr inbounds [17 x ptr], ptr @tbl, i64 0, i64 %i
+  %fp = load ptr, ptr %slot
+  %r = call i32 %fp(i32 %k)
+  ret i32 %r
+out:
+  ret i32 0
+}
+define i32 @call_div(i32 %k) {
+entry:
+  %ok = icmp ult i32 %k, 17
+  br i1 %ok, label %go, label %out
+go:
+  %i = zext i32 %k to i64
+  %slot = getelementptr inbounds [17 x ptr], ptr @tbl, i64 0, i64 %i
+  %fp = load ptr, ptr %slot
+  %r = call i32 %fp(i32 %k)
+  %q = sdiv i32 100, %r
+  ret i32 %q
+out:
+  ret i32 0
+}
+)IR");
+}
+
+KRun icall_run(const std::string& fn, bool havoc) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(icall_ir()));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = "linux";
+    o.icall_havoc = havoc;
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-icall-havoc: more than 16 targets is a named havoc; the arbitrary result is checked") {
+    auto off = icall_run("call_ok", false);
+    CHECK(off.status == prism::laws::NEEDS_HARNESS);
+    CHECK(off.msg.find("possible targets (> 16)") != std::string::npos);
+    auto on = icall_run("call_ok", true);
+    CHECK_MESSAGE(on.status == prism::laws::PROVED, (on.status + " " + on.msg));
+    CHECK(has(on.assumptions, "icall-havoc: indirect call with 17 possible targets"));
+    // the result is arbitrary: dividing by it is a violation, never proved
+    CHECK(icall_run("call_div", true).status == prism::laws::FAILED);
+}
+#endif
+
+namespace {
+
+const char* kFieldInv = R"IR(%struct.dev = type { ptr, i32, i32 }
+define i32 @div_by_field(ptr %d) {
+entry:
+  %f = getelementptr inbounds %struct.dev, ptr %d, i32 0, i32 1
+  %i = load i32, ptr %f
+  %q = sdiv i32 100, %i
+  ret i32 %q
+}
+define i32 @read_buf(ptr %d) {
+entry:
+  %f = getelementptr inbounds %struct.dev, ptr %d, i32 0, i32 0
+  %b = load ptr, ptr %f
+  %e = getelementptr inbounds i8, ptr %b, i64 12
+  %x = load i32, ptr %e
+  ret i32 %x
+}
+)IR";
+
+KRun fi_run(const std::string& fn, std::vector<pp::FieldInvariant> inv) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(kFieldInv));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = "linux";
+    o.auto_harness.on = true;
+    o.auto_harness.depth = 0;  // nested pointer fields stay arbitrary: only the invariant can bind one
+    o.field_invariants = std::move(inv);
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+pp::FieldInvariant fi(uint64_t off, unsigned w, const char* kind, int64_t a, int64_t b) {
+    pp::FieldInvariant x;
+    x.struct_type = "%struct.dev";
+    x.offset = off;
+    x.width = w;
+    x.kind = kind;
+    x.a = a;
+    x.b = b;
+    x.status = "UNVALIDATED";
+    x.source = "test";
+    return x;
+}
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-field-invariants: range and valid rows bind harness fields, named; wrong rows prove nothing more") {
+    CHECK(fi_run("div_by_field", {}).status == prism::laws::FAILED);
+    auto r = fi_run("div_by_field", {fi(8, 4, "range", 1, 10)});
+    CHECK_MESSAGE(r.status == prism::laws::PROVED, (r.status + " " + r.msg));
+    CHECK(has(r.assumptions, "field-invariant: d->@8 (%struct.dev at byte 8) is in [1, 10]"));
+    // a range that still contains 0 does not help
+    CHECK(fi_run("div_by_field", {fi(8, 4, "range", -1, 1)}).status == prism::laws::FAILED);
+    // an invariant of another field does not apply
+    CHECK(fi_run("div_by_field", {fi(12, 4, "range", 1, 10)}).status == prism::laws::FAILED);
+    CHECK(fi_run("read_buf", {}).status != prism::laws::PROVED);
+    auto v = fi_run("read_buf", {fi(0, 8, "valid", 16, 0)});
+    CHECK_MESSAGE(v.status == prism::laws::PROVED, (v.status + " " + v.msg));
+    CHECK(has(v.assumptions, "points to a valid object of 16 bytes"));
+    // too small an object: the read at byte 12..15 of an 8-byte object is out of bounds
+    CHECK(fi_run("read_buf", {fi(0, 8, "valid", 8, 0)}).status == prism::laws::FAILED);
+}
+#endif

@@ -3052,6 +3052,15 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         topt.ops_table = load_ops_table(cfg.ops_table, ops_err);
         if (!ops_err.empty()) throw std::runtime_error("--ops-table " + ops_err);
     }
+    if (!cfg.pir_field_invariants.empty()) {  // --pir-field-invariants (field_mine.cpp)
+        std::string fi_err;
+        topt.field_invariants = load_field_invariants(cfg.pir_field_invariants, fi_err);
+        if (!fi_err.empty()) throw std::runtime_error("--pir-field-invariants " + fi_err);
+    }
+    if (const char* mine = std::getenv("PRISM_PIR_MINE_FIELDS"); mine && *mine) {  // field_mine.cpp
+        std::ofstream mf(mine, std::ios::app);
+        if (mf) mine_field_stores(mod, u.path.string(), mf);
+    }
     if (!cfg.callee_contracts.empty()) {  // --callee-contracts (docs/HARNESS_PHASE2.md)
         std::string cc_err;
         topt.callee_contracts = load_callee_contracts(cfg.callee_contracts, cc_err);
@@ -3063,6 +3072,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     }
     topt.addr_values = cfg.pir_addr_values;
     topt.builtin_contracts = cfg.pir_builtin_contracts;
+    topt.icall_havoc = cfg.pir_icall_havoc;
     std::set<int> used_folded;
     // A preprocessed copy (x.i, --compile-commands) names x.c in its #line
     // markers: the unit's own functions are those of x.c, and its lines are x.c's.

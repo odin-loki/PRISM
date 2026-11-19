@@ -201,6 +201,8 @@ struct Tr final : pirmem::TrApi {
     void asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std::string& tag = "asm-havoc", const std::string& extra = "");
     bool asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line);
     void unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line);
+    // --pir-icall-havoc: an indirect call not resolved to inlined targets is a havoc of all memory (translate_kernel.inc)
+    Arg icall_havoc(int& cur, const ir::Inst& in, unsigned w, int line, const std::string& why);
     Arg opaque_ptr(int& cur, const std::string& what, int line);
     // ghost lock state (translate_lock.inc, docs/KERNEL_CONCURRENCY.md)
     std::optional<Arg> lk_;                           // hidden object: held locks, atomic depth
@@ -2645,11 +2647,53 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
 Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
     auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0);
     const auto ptr_ty = ir::parse_type("ptr");
+    std::set<uint64_t> bound;  // byte offsets (from the object start) that got an object of their own
     for (const auto& [off, child] : n.nested) {
         Arg cp = alloc_harness_node(tr, *child);
         int slot = tr.newvar(tr.tmpname("hslot"), ptr_w());
         tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off + off)}, true, 0);
         tr.mt.store(-1, Arg::v(slot, ptr_w()), cp, Arg::c(1, 1), ptr_ty, 1, 0);
+        bound.insert(n.member_off + off);
+    }
+    // --pir-field-invariants: value invariants of this struct's fields (the first element only), one named assumption
+    // per row used; a field that already has its own harness object is left as it is
+    if (n.type_known && n.type.kind == ir::Type::Struct && !tr.opt.field_invariants.empty()) {
+        const uint64_t obj_bytes = n.bytes;
+        for (const auto& fi : tr.opt.field_invariants) {
+            if (fi.struct_type != n.type.text || fi.offset + fi.width > obj_bytes || bound.count(fi.offset)) continue;
+            int slot = tr.newvar(tr.tmpname("hfi"), ptr_w());
+            tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, fi.offset)}, true, 0);
+            const Arg at = Arg::v(slot, ptr_w());
+            std::string what;
+            if (fi.kind == "valid") {
+                auto o = tr.mt.alloc(-1, Arg::c(64, static_cast<uint64_t>(fi.a)), MemKind::Extern, 2,
+                                     "*" + n.name + "->@" + std::to_string(fi.offset) + " (field invariant)", 0);
+                tr.mt.store(-1, at, o, Arg::c(1, 1), ptr_ty, 1, 0);
+                what = "points to a valid object of " + std::to_string(fi.a) + " bytes (arbitrary contents)";
+            } else {
+                const unsigned bits = fi.kind == "nonnull" ? ptr_w() : fi.width * 8;
+                const auto ty = fi.kind == "nonnull" ? ptr_ty : ir::parse_type("i" + std::to_string(bits));
+                int v = tr.newvar(tr.tmpname("hfiv"), bits);
+                tr.mt.load(-1, v, ty, at, 1, 0, false);
+                const Arg val = Arg::v(v, bits);
+                if (fi.kind == "nonnull") {
+                    tr.assume(-1, tr.assign(-1, Op::Ne, 1, {val, Arg::c(bits, 0)}, "fi"));
+                    what = "is not NULL";
+                } else {
+                    const uint64_t m = bits == 64 ? ~uint64_t{0} : (uint64_t{1} << bits) - 1;
+                    Arg lo = Arg::c(bits, static_cast<uint64_t>(fi.a) & m), hi = Arg::c(bits, static_cast<uint64_t>(fi.b) & m);
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {val, lo}, "fi"), Arg::c(1, 1)}, "fi"));
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {hi, val}, "fi"), Arg::c(1, 1)}, "fi"));
+                    what = "is in [" + std::to_string(fi.a) + ", " + std::to_string(fi.b) + "] (signed, " +
+                           std::to_string(bits) + " bits)";
+                }
+            }
+            const std::string a = "field-invariant: " + n.name + "->@" + std::to_string(fi.offset) + " (" + fi.struct_type +
+                                  " at byte " + std::to_string(fi.offset) + ") " + what + " (--pir-field-invariants; status " +
+                                  fi.status + "; source " + fi.source + "; not checked here)";
+            if (std::find(tr.out.assumptions.begin(), tr.out.assumptions.end(), a) == tr.out.assumptions.end())
+                tr.out.assumptions.push_back(a);
+        }
     }
     // function-pointer fields known to the ops tables (--pir-ops-auto): one of the targets, chosen freely
     for (const auto& fp : n.fp_fields) {
