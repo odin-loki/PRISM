@@ -244,7 +244,9 @@ entry:
     auto v = pp::check_function(*tr.fn, o);
     CHECK(v.status == prism::laws::TIMEOUT);
     CHECK(contains(v.message, "PRISM_FUNCTION_BUDGET"));
-    CHECK(contains(v.message, " before "));
+    // spent before the encoding is built: the encoder stops (memory.hpp
+    // EncodeBudgetScope) instead of finishing the encoding first
+    CHECK(contains(v.message, "pir function budget of 1e-09 s spent while unrolling"));
     CHECK(v.extra.at("function_budget_s") == "1e-09");
     // 0: no budget (the same verdict as without one)
     auto o0 = opts(0);

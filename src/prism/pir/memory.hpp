@@ -57,6 +57,28 @@ struct EncodeError {
     std::string msg;
 };
 
+// The function budget while a function's encoding is built
+// (check_function_at holds one around Encoding::build). The memory
+// encoder's guard (every read-over-write step) ends the function with a
+// TIMEOUT EncodeError once it is spent. Without it a symbolic load against a
+// long write log ran past the budget (r1: 1,363 kernel functions reached the
+// runner's wall limit with no record, all four sampled ones in
+// SymMem::read_cell_log under Encoding::build). Thread-local; nests.
+class EncodeBudgetScope {
+public:
+    EncodeBudgetScope(const FunctionBudget* budget, std::string total_s);
+    ~EncodeBudgetScope();
+    EncodeBudgetScope(const EncodeBudgetScope&) = delete;
+    EncodeBudgetScope& operator=(const EncodeBudgetScope&) = delete;
+
+private:
+    const FunctionBudget* prev_;
+    std::string prev_total_;
+};
+// Throws EncodeError (TIMEOUT) when the scope's budget is spent; `where`
+// names the step. No scope: nothing.
+void encode_budget_check(const char* where);
+
 class SymMem {
 public:
     SymMem(z3::context& c, MemEncoding enc, bool tags, std::vector<z3::expr>& side);

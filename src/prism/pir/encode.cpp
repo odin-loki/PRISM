@@ -542,6 +542,7 @@ struct Encoding {
             // 2.1 -> 3.8 GB here in one second (budget 3000 MB).
             if (membudget::over_budget_sampled(64))
                 throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached while unrolling");
+            mem::encode_budget_check("unrolling");
             int id = q.front();
             q.pop_front();
             auto nb = nodes.at(static_cast<std::size_t>(id));  // a copy: node_id grows nodes
@@ -595,6 +596,7 @@ struct Encoding {
         for (int id : order) {
             static const bool tr_on = prism::settings::mem_trace().is_set();
             const uint64_t r0 = tr_on ? membudget::rss_mb() : 0;
+            mem::encode_budget_check("encoding the unrolled program");
             encode_node(id, out_edges.at(static_cast<std::size_t>(id)));
             if (tr_on && membudget::rss_mb() > r0 + 100)
                 std::fprintf(stderr, "[memtrace] node %d of %zu +%llu MB\n", id, order.size(),
@@ -2678,6 +2680,8 @@ const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
         Encoding e(c, fn, g, unwind, eo);
         {
             prism::membudget::Phase phase_b("encode: Encoding::build");
+            // the function budget holds while encoding too (memory.hpp)
+            mem::EncodeBudgetScope enc_budget(fn_budget.get(), fn_budget_n);
             e.build();
         }
         if (rc.meter) {
@@ -3324,6 +3328,8 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
     } catch (const mem::EncodeError& f) {
         v.status = f.status;
         v.message = f.msg;
+        // the function budget ran out while encoding (EncodeBudgetScope)
+        if (fn_budget && f.status == std::string(laws::TIMEOUT)) v.extra["function_budget_s"] = fn_budget_n;
         return v;
     } catch (const z3::exception& ex) {
         const std::string m = ex.msg();
