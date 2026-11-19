@@ -46,3 +46,16 @@ static struct priv *get_priv(struct holder *h) { return h->drv; }
 int priv_tail(struct holder *h) {
     return get_priv(h)->x;
 }
+
+/* the driver-model chain: container_of to the containing device, then its driver data (to_platform_device(dev),
+ * platform_get_drvdata(pdev) -> dev_get_drvdata(&pdev->dev)): the field is typed from the caller's uses */
+struct priv2 { char big[100]; int x; };
+struct dev2 { long id; void *driver_data; };
+struct pdev2 { long pad; struct dev2 dev; };
+static struct pdev2 *to_pdev2(struct dev2 *d) { return container_of(d, struct pdev2, dev); }
+static void *dev2_get_drvdata(struct dev2 *d) { return d->driver_data; }
+static void *pdev2_get_drvdata(struct pdev2 *p) { return dev2_get_drvdata(&p->dev); }
+int drv_x(struct dev2 *d) {
+    struct priv2 *pr = pdev2_get_drvdata(to_pdev2(d));
+    return pr->x;
+}

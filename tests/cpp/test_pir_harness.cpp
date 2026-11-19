@@ -396,6 +396,12 @@ TEST_CASE("pir harness: container_of through a helper function's returned pointe
     REQUIRE(st.contains("priv_tail"));
     CHECK_MESSAGE(st["priv_tail"].status == L::PROVED_ASSUMING, (st["priv_tail"].status + " " + st["priv_tail"].message));
     CHECK(extra(st["priv_tail"], "assumptions").find("%struct.priv") != std::string::npos);
+    // container_of then an accessor of the container's driver data: typed from the caller's uses
+    REQUIRE(off.contains("drv_x"));
+    CHECK(off["drv_x"].status == L::NEEDS_HARNESS);
+    REQUIRE(st.contains("drv_x"));
+    CHECK_MESSAGE(st["drv_x"].status == L::PROVED_ASSUMING, (st["drv_x"].status + " " + st["drv_x"].message));
+    CHECK(extra(st["drv_x"], "assumptions").find("%struct.priv2") != std::string::npos);
     // two different returned offsets: no containing object is derived, never proved
     REQUIRE(st.contains("helper_two_offsets"));
     CHECK(st["helper_two_offsets"].status != L::PROVED_ASSUMING);
