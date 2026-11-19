@@ -141,6 +141,12 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
         const long d = std::strtol(e, &end, 10);
         if (end != e && d >= 1 && d <= 64) o.inline_depth = static_cast<int>(d);
     }
+    // PRISM_PIR_MODEL_INLINE_DEPTH: extra depth for library-model frames (TranslateOptions::model_inline_depth)
+    if (const char* e = std::getenv("PRISM_PIR_MODEL_INLINE_DEPTH")) {
+        char* end = nullptr;
+        const long d = std::strtol(e, &end, 10);
+        if (end != e && d >= 0 && d <= 64) o.model_inline_depth = static_cast<int>(d);
+    }
     std::vector<std::string> ptrs;
     for (auto& p : irf.params)
         if (p.ty.kind == ir::Type::Ptr && p.attrs.find("byval(") == std::string::npos &&

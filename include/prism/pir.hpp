@@ -163,6 +163,7 @@ struct Module {
     std::map<std::string, DILoc> locs;          // "!13" -> line/col
     std::map<std::string, DISub> subprograms;   // "!10" -> source name/line/file
     std::map<std::string, DILoc> loop_starts;   // "!15" (llvm.loop) -> the loop's start location
+    std::map<std::string, std::string> md_strings;  // "!12" -> "rsp": one-string tuples !{!"rsp"} (named registers)
     const Function* find(std::string_view name) const;
     const Global* find_global(std::string_view name) const;
 };
@@ -485,6 +486,12 @@ struct TranslateOptions {
     std::vector<std::pair<int, int>> signed_shl;  // (line, col) of C signed `<<`
     std::vector<FoldedUb> folded;                 // @__prism.folded(i32 k) -> folded[k]
     int inline_depth = 4;
+    // Frames of PRISM's own library models (kernel specs, libc models: ir::Function::is_model) do not count toward
+    // inline_depth: a model is inlined exactly like any callee, so this only adds encoding, never an assumption. They
+    // have their own bound: the whole inline stack may hold at most inline_depth + model_inline_depth frames, and a call
+    // past either bound is still UNENCODED (NEEDS-HARNESS). 0 restores the old rule (models count like user code).
+    // PRISM_PIR_MODEL_INLINE_DEPTH sets it (stage_mem.cpp).
+    int model_inline_depth = 16;
     // pointer parameters of the function being translated
     std::vector<PtrContract> contracts;
     // --lock-contracts: lock contracts of the root function (translate_lock.inc lock_table)

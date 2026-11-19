@@ -92,6 +92,15 @@ void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std:
         if (auto pit = fr.pairs.find(in.result); pit != fr.pairs.end()) {
             for (int v : {pit->second.first, pit->second.second})
                 havoc(cur, out.vars[static_cast<std::size_t>(v)].width, false, false, v);
+        } else if (auto tu = fr.tuples.find(in.result); tu != fr.tuples.end()) {
+            // n direct outputs: each field arbitrary (a pointer field as a pointer result: null or a fresh object)
+            for (std::size_t k = 0; k < tu->second.size(); ++k) {
+                const int v = tu->second[k];
+                if (in.ty.elems.at(k).kind == ir::Type::Ptr)
+                    emit_assign(cur, v, Op::Copy, {opaque_ptr(cur, "asm output", line)});
+                else
+                    havoc(cur, out.vars[static_cast<std::size_t>(v)].width, false, false, v);
+            }
         } else if (in.ty.kind == ir::Type::Ptr) {
             int dst = result_var(fr, in);
             if (dst >= 0) emit_assign(cur, dst, Op::Copy, {opaque_ptr(cur, "asm output", line)});

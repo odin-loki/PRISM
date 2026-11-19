@@ -851,6 +851,7 @@ if(PRISM_TESTS)
     tests/cpp/test_triage_status.cpp
     tests/cpp/test_pbsd.cpp
     tests/cpp/test_pir3.cpp
+    tests/cpp/test_pir_cluster_answers.cpp
     tests/cpp/test_pir_refinement.cpp
     tests/cpp/test_cli.cpp
     tests/cpp/test_pipeline.cpp

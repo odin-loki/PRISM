@@ -51,16 +51,22 @@ void *__kmalloc_noprof(size_t size, unsigned int flags) { return lx_alloc(size, 
 void *__kmalloc_large_noprof(size_t size, unsigned int flags) { return lx_alloc(size, flags); }
 /* slab.h: void *__kmalloc_cache_noprof(struct kmem_cache *s, gfp_t flags, size_t size) (size: the requested size) */
 void *__kmalloc_cache_noprof(void *s, unsigned int flags, size_t size) { (void)s; return lx_alloc(size, flags); }
-/* slab.h (CONFIG_SLAB_BUCKETS off): void *__kmalloc_node_noprof(size_t size, gfp_t flags, int node).
- * With buckets on the declaration has a fourth parameter: the call then stops at an arity mismatch. */
-void *__kmalloc_node_noprof(size_t size, unsigned int flags, int node) { (void)node; return lx_alloc(size, flags); }
-/* slab.h: __kmalloc_node_track_caller_noprof(size_t size, gfp_t flags, int node, unsigned long caller) */
-void *__kmalloc_node_track_caller_noprof(size_t size, unsigned int flags, int node, unsigned long caller) {
-    (void)node; (void)caller; return lx_alloc(size, flags);
+/* slab.h: the size-taking allocators declare DECL_BUCKET_PARAMS(size, b), which is `size_t size, kmem_buckets *b` with
+ * CONFIG_SLAB_BUCKETS=y (the pinned x86_64 configuration, OS-Proving clang-work/lbuild) and `size_t size` without it.
+ * The models take the configured form: the bucket only chooses the slab cache, never the size or the flags, so it is
+ * ignored. A unit built without CONFIG_SLAB_BUCKETS calls with one argument less and stops at the arity mismatch
+ * (UNENCODED, as before), never at a wrong model. */
+/* slab.h: void *__kmalloc_node_noprof(DECL_BUCKET_PARAMS(size, b), gfp_t flags, int node) */
+void *__kmalloc_node_noprof(size_t size, void *b, unsigned int flags, int node) {
+    (void)b; (void)node; return lx_alloc(size, flags);
 }
-/* slab.h (CONFIG_SLAB_BUCKETS off): void *__kvmalloc_node_noprof(size_t size, unsigned long align, gfp_t flags, int node) */
-void *__kvmalloc_node_noprof(size_t size, unsigned long align, unsigned int flags, int node) {
-    (void)align; (void)node; return lx_alloc(size, flags);
+/* slab.h: void *__kmalloc_node_track_caller_noprof(DECL_BUCKET_PARAMS(size, b), gfp_t flags, int node, unsigned long caller) */
+void *__kmalloc_node_track_caller_noprof(size_t size, void *b, unsigned int flags, int node, unsigned long caller) {
+    (void)b; (void)node; (void)caller; return lx_alloc(size, flags);
+}
+/* slab.h: void *__kvmalloc_node_noprof(DECL_BUCKET_PARAMS(size, b), unsigned long align, gfp_t flags, int node) */
+void *__kvmalloc_node_noprof(size_t size, void *b, unsigned long align, unsigned int flags, int node) {
+    (void)b; (void)align; (void)node; return lx_alloc(size, flags);
 }
 /* vmalloc.h */
 void *vmalloc_noprof(unsigned long size) { return lx_alloc(size, 0); }

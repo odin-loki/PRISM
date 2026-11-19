@@ -723,6 +723,10 @@ std::vector<std::string> base_flags(const fs::path& src) {
     // optional/unique_ptr dereference, ...): PIR reports a reachable
     // __glibcxx_assert_fail as a violation (docs/PIR.md "C++ library").
     if (is_cxx(src)) f.push_back("-D_GLIBCXX_ASSERTIONS");
+    // PRISM_PIR_EMIT_ALL_DECLS=1: clang emits every definition of the unit, also the internal-linkage ones nothing in
+    // the unit calls (clang otherwise drops an unused `static` / `static inline` function, and pir has no record for it:
+    // NOFUNC). Emission only: the functions' IR is the same, no check changes, so no assumption is added.
+    if (const char* e = std::getenv("PRISM_PIR_EMIT_ALL_DECLS"); e && *e == '1') f.push_back("-femit-all-decls");
     return f;
 }
 

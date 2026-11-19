@@ -86,6 +86,9 @@ struct Frame {
     // results, { ptr, i32 } exception pairs, and scalar pairs such as the
     // { ptr, i8 } an ABI returns std::pair<iterator, bool> in (scalar_pair)
     std::map<std::string, std::pair<int, int>> pairs;
+    // --kernel-api: the result of an inline asm with three or more direct outputs ({ i32, i32, i32, i32 } of cpuid),
+    // one variable per field; only extractvalue reads it (asm_havoc writes every field)
+    std::map<std::string, std::vector<int>> tuples;
     // a scalar pair load's field-1 address, numbered between its two fields
     // (the order export_lean's `L pload` gives the Lean frame)
     std::map<std::string, int> pairq;
@@ -588,6 +591,21 @@ struct Tr final : pirmem::TrApi {
                     fr.pairs[in.result] = {a, s};
                     fr.defs[in.result] = &in;
                     continue;
+                }
+                if (in.op == "call" && in.is_asm && !opt.kernel_api.empty() && in.ty.kind == ir::Type::Struct &&
+                    in.ty.elems.size() > 2) {
+                    bool scalar = true;
+                    for (auto& e : in.ty.elems)
+                        scalar = scalar && ((e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) || e.kind == ir::Type::Ptr);
+                    if (scalar) {
+                        std::vector<int> vs;
+                        for (std::size_t k = 0; k < in.ty.elems.size(); ++k)
+                            vs.push_back(newvar(fr.prefix + in.result + "." + std::to_string(k),
+                                                in.ty.elems[k].kind == ir::Type::Ptr ? ptr_w() : in.ty.elems[k].bits));
+                        fr.tuples[in.result] = std::move(vs);
+                        fr.defs[in.result] = &in;
+                        continue;
+                    }
                 }
                 if (in.op == "insertvalue" || in.op == "call" || in.op == "invoke" || in.op == "load")
                     if (auto sp = scalar_pair(in.ty)) {
@@ -1249,6 +1267,13 @@ struct Tr final : pirmem::TrApi {
         if (op == "extractvalue") {
             if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Local || in.indices.size() != 1)
                 throw Unenc{"UNENCODED: extractvalue"};
+            if (auto tu = fr.tuples.find(in.ops[0].v.name); tu != fr.tuples.end()) {
+                if (in.indices[0] >= tu->second.size()) throw Unenc{"UNENCODED: extractvalue"};
+                const int src = tu->second[in.indices[0]];
+                int dst = result_var(fr, in);
+                if (dst >= 0) emit_assign(cur, dst, Op::Copy, {Arg::v(src, out.vars[static_cast<std::size_t>(src)].width)});
+                return;
+            }
             auto it = fr.pairs.find(in.ops[0].v.name);
             if (it == fr.pairs.end()) throw Unenc{"UNENCODED: extractvalue of " + in.ops[0].ty.text};
             int src = in.indices[0] == 0 ? it->second.first : it->second.second;
@@ -1453,6 +1478,20 @@ struct Tr final : pirmem::TrApi {
                     }
                     note_assumption("builtin-contract: @llvm.read_register reads a hardware register: its value is arbitrary (a pointer result is an "
                                     "arbitrary value that points to no object); it changes no memory");
+                    return;
+                }
+                if (starts(n, "llvm.write_register.")) {
+                    // Only the stack pointer: the write-back clang emits after an asm with a "+r"(current_stack_pointer)
+                    // operand (Linux ASM_CALL_CONSTRAINT), which writes back the value the asm statement left there.
+                    // The stack is not addressed through registers in this model, so the write changes nothing it
+                    // sees; any other register stays UNENCODED.
+                    std::string reg;
+                    if (!in.ops.empty() && in.ops[0].v.kind == ir::Value::Other)
+                        if (auto it = m.md_strings.find(in.ops[0].v.text); it != m.md_strings.end()) reg = it->second;
+                    if (reg != "rsp" && reg != "esp" && reg != "sp") throw Unenc{"UNENCODED: call @" + n + (reg.empty() ? "" : " (register " + reg + ")")};
+                    note_assumption("builtin-contract: @llvm.write_register of the stack pointer " + reg +
+                                    " (the write-back of an asm \"+r\"(current_stack_pointer) operand) leaves the stack pointer as the asm "
+                                    "statement left it: no effect on the program state the model sees");
                     return;
                 }
                 if (starts(n, "llvm.prefetch.")) {
@@ -1686,8 +1725,22 @@ struct Tr final : pirmem::TrApi {
         const auto* callee = m.find(n);
         if (std::ranges::find(stack, n) != stack.end())
             throw Unenc{"UNENCODED: recursive call @" + n};
-        if (static_cast<int>(stack.size()) > opt.inline_depth)
-            throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
+        // Depth: user frames (stack minus the library-model frames on it) are bounded by inline_depth; a model callee
+        // is exempt from that bound and bounded only by inline_depth + model_inline_depth frames in all (models are
+        // inlined exactly, so the exemption adds no assumption). Past either bound the call is UNENCODED, as before.
+        {
+            const int frames = static_cast<int>(stack.size());
+            const bool model_call = callee && callee->is_model && opt.model_inline_depth > 0;
+            if (model_call) {
+                const int cap = opt.inline_depth + opt.model_inline_depth;
+                if (frames > cap)
+                    throw Unenc{"UNENCODED: call depth > " + std::to_string(cap) + " (@" + n + ") (library model frames)"};
+            } else {
+                const int user = opt.model_inline_depth > 0 ? frames - static_cast<int>(model_stack.size()) : frames;
+                if (user > opt.inline_depth)
+                    throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
+            }
+        }
         if (!callee->parse_error.empty())
             throw Unenc{"UNENCODED: call @" + n + " (unparsed IR: " + callee->parse_error + ")"};
         const auto ret_pair = scalar_pair(callee->ret);

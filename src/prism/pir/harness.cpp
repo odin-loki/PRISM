@@ -73,28 +73,112 @@ bool is_local(const ir::Operand& o, const std::map<std::string, int64_t>& alias,
     return true;
 }
 
+std::optional<int64_t> returned_offset(const ir::Module& m, const Layout& lay, const ir::Function& g, std::size_t pi,
+                                       int depth);
+
+// Pointers derived from the roots in `alias` at constant offsets (fixpoint: blocks are not in dominance order).
+// With `calls` (--pir-container-of), the result of a call is derived too when the callee returns its pointer argument
+// plus one constant offset on every path (a container_of helper such as `to_foo(hw)`; see returned_offset).
+void derive_aliases(const ir::Module& m, const Layout& lay, const ir::Function& g, std::map<std::string, int64_t>& alias,
+                    int depth, bool calls) {
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (auto& bl : g.blocks)
+            for (auto& in : bl.insts) {
+                if (in.result.empty() || alias.count(in.result)) continue;
+                int64_t a = 0;
+                if (in.op == "getelementptr") {
+                    if (in.ops.empty() || !is_local(in.ops[0], alias, &a)) continue;
+                    try {
+                        if (auto d = const_gep_offset(lay, in)) {
+                            alias[in.result] = a + *d;
+                            changed = true;
+                        }
+                    } catch (const Unenc&) {
+                    }
+                } else if (calls && in.op == "call" && !in.callee.empty() && !in.callee_op && depth < 3) {
+                    const auto* callee = m.find(in.callee);
+                    if (!callee || callee->blocks.empty() || callee == &g) continue;
+                    for (std::size_t i = 0; i < in.ops.size() && i < callee->params.size(); ++i) {
+                        if (!is_local(in.ops[i], alias, &a)) continue;
+                        if (auto r = returned_offset(m, lay, *callee, i, depth + 1)) {
+                            alias[in.result] = a + *r;
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+    }
+}
+
+// The constant offset of g's returned pointer from its pointer parameter pi, when every `ret` of g returns a value
+// derived from that parameter at one and the same constant offset; nullopt otherwise (the caller then learns nothing).
+std::optional<int64_t> returned_offset(const ir::Module& m, const Layout& lay, const ir::Function& g, std::size_t pi,
+                                       int depth) {
+    if (pi >= g.params.size() || g.blocks.empty() || g.ret.kind != ir::Type::Ptr ||
+        g.params[pi].ty.kind != ir::Type::Ptr)
+        return std::nullopt;
+    std::map<std::string, int64_t> alias{{g.params[pi].name, 0}};
+    derive_aliases(m, lay, g, alias, depth, true);
+    std::optional<int64_t> off;
+    for (auto& bl : g.blocks)
+        for (auto& in : bl.insts) {
+            if (in.op != "ret") continue;
+            int64_t a = 0;
+            if (in.ops.size() != 1 || !is_local(in.ops[0], alias, &a)) return std::nullopt;
+            if (off && *off != a) return std::nullopt;
+            off = a;
+        }
+    return off;
+}
+
+// The byte offset k when every `ret` of g returns the pointer loaded from its pointer parameter pi at offset k (an
+// accessor such as `dev_get_drvdata(dev)` or `netdev_priv`-free getters `return p->field;`), directly or through
+// another such accessor; nullopt otherwise. The caller's call result is then that pointer field of its object.
+std::optional<int64_t> returned_field(const ir::Module& m, const Layout& lay, const ir::Function& g, std::size_t pi,
+                                      int depth) {
+    if (pi >= g.params.size() || g.blocks.empty() || g.ret.kind != ir::Type::Ptr ||
+        g.params[pi].ty.kind != ir::Type::Ptr || depth >= 3)
+        return std::nullopt;
+    std::map<std::string, int64_t> alias{{g.params[pi].name, 0}};
+    derive_aliases(m, lay, g, alias, depth, true);
+    std::map<std::string, const ir::Inst*> defs;
+    for (auto& bl : g.blocks)
+        for (auto& in : bl.insts)
+            if (!in.result.empty()) defs[in.result] = &in;
+    std::optional<int64_t> off;
+    for (auto& bl : g.blocks)
+        for (auto& in : bl.insts) {
+            if (in.op != "ret") continue;
+            if (in.ops.size() != 1 || in.ops[0].v.kind != ir::Value::Local) return std::nullopt;
+            auto d = defs.find(in.ops[0].v.name);
+            if (d == defs.end()) return std::nullopt;
+            const ir::Inst& def = *d->second;
+            std::optional<int64_t> k;
+            int64_t a = 0;
+            if (def.op == "load" && def.ty.kind == ir::Type::Ptr && !def.ops.empty() && is_local(def.ops[0], alias, &a) &&
+                a >= 0) {
+                k = a;
+            } else if (def.op == "call" && !def.callee.empty() && !def.callee_op) {
+                const auto* c2 = m.find(def.callee);
+                if (c2 && !c2->blocks.empty() && c2 != &g)
+                    for (std::size_t i = 0; i < def.ops.size() && i < c2->params.size() && !k; ++i)
+                        if (is_local(def.ops[i], alias, &a) && a >= 0)
+                            if (auto r = returned_field(m, lay, *c2, i, depth + 1)) k = a + *r;
+            }
+            if (!k || (off && *off != *k)) return std::nullopt;
+            off = k;
+        }
+    return off;
+}
+
 void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, const std::string& rootname,
               int64_t base, int depth, bool container, Use& u,
               std::set<std::pair<const ir::Function*, std::string>>& visited) {
     if (!visited.insert({&g, rootname + "@" + std::to_string(base)}).second) return;
     std::map<std::string, int64_t> alias{{rootname, base}};
-    // pointers derived from the root at constant offsets (fixpoint: blocks are not in dominance order)
-    for (bool changed = true; changed;) {
-        changed = false;
-        for (auto& bl : g.blocks)
-            for (auto& in : bl.insts) {
-                if (in.op != "getelementptr" || in.result.empty() || alias.count(in.result)) continue;
-                int64_t a = 0;
-                if (in.ops.empty() || !is_local(in.ops[0], alias, &a)) continue;
-                try {
-                    if (auto d = const_gep_offset(lay, in)) {
-                        alias[in.result] = a + *d;
-                        changed = true;
-                    }
-                } catch (const Unenc&) {
-                }
-            }
-    }
+    derive_aliases(m, lay, g, alias, depth, container);
     // defining instruction of each register, and the registers called through (function-pointer loads)
     std::map<std::string, const ir::Inst*> defs;
     std::set<std::string> called;
@@ -166,6 +250,17 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                     for (std::size_t i = 0; i < in.ops.size() && i < callee->params.size(); ++i)
                         if (is_local(in.ops[i], alias, &a) && (a >= 0 || container) && callee->params[i].ty.kind == ir::Type::Ptr)
                             scan_one(m, lay, *callee, callee->params[i].name, a, depth + 1, container, u, visited);
+                    // --pir-container-of: an accessor's result is the pointer field it loads (returned_field); its uses
+                    // here are uses of that nested object, as for a load of the field in this function
+                    if (container && !in.result.empty() && !in.callee_op)
+                        for (std::size_t i = 0; i < in.ops.size() && i < callee->params.size(); ++i)
+                            if (is_local(in.ops[i], alias, &a) && a >= 0)
+                                if (auto k = returned_field(m, lay, *callee, i, depth + 1)) {
+                                    const auto fo = static_cast<uint64_t>(a + *k);
+                                    u.ptr_fields[fo].push_back({&g, in.result});
+                                    u.max_end = std::max<uint64_t>(u.max_end, fo + lay.store_size(ir::parse_type("ptr")));
+                                    break;
+                                }
                 }
             } catch (const Unenc&) {
             }
