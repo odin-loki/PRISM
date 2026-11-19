@@ -1565,8 +1565,9 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
 
 }  // namespace
 
-SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
-    prism::complexity::install_z3_ballast();  // before the first query (complexity.hpp)
+namespace {
+
+SolveResult solve_guarded(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
     try {
         return solve_impl(c, formula, opt);
     } catch (const z3::exception& e) {
@@ -1580,6 +1581,146 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
         r.note = std::string("internal error: ") + e.what();
         return r;
     }
+}
+
+bool definitive(const SolveResult& r) { return r.kind == Kind::Sat || r.kind == Kind::Unsat; }
+
+std::string append_note(const std::string& a, const std::string& b) {
+    if (a.empty()) return b;
+    if (b.empty()) return a;
+    return a + "; " + b;
+}
+
+// Cube-and-conquer next to the portfolio (cube.cpp, docs/SOLVERS.md
+// "Cube-and-conquer"): the portfolio runs as always; if it has no answer
+// after cube.after_s, the cube engine starts on a private copy of the
+// formula with the time that is left. The first definitive answer stops the
+// other. A cube SAT model is validated again here, against the caller's
+// formula, after both have stopped. A cube answer is not written to the query
+// cache (the note says so).
+SolveResult solve_with_cubes(z3::context& c, const z3::expr& formula, const SolveOptions& opt, const CubeOptions& co) {
+    const double t0 = now_s();
+    if (co.alone) {
+        SolveResult r = cube_and_conquer(c, formula, opt, opt.timeout_s, opt.stop);
+        if (r.kind == Kind::Sat && !validate_model(c, formula, r.model)) {
+            r.kind = Kind::Unknown;
+            r.note = append_note(r.note, "cube model rejected on re-validation");
+            r.model.clear();
+        }
+        return r;
+    }
+    if (prism::membudget::over_budget())
+        return solve_guarded(c, formula, opt);  // no room for a second copy of the formula
+    // The engine's own copy, made before the portfolio thread uses `c`.
+    auto c2 = std::make_unique<z3::context>();
+    z3::expr f2(*c2, Z3_translate(c, formula, *c2));
+    std::atomic<bool> stop_p{false}, stop_c{false};
+    std::atomic<bool> done_p{false}, done_c{false};
+    SolveOptions po = opt;
+    po.stop = &stop_p;
+    SolveResult pr, cr;
+    std::thread tp([&] {
+        pr = solve_guarded(c, formula, po);
+        done_p.store(true);
+    });
+    std::thread tc;
+    bool started = false;
+    for (;;) {
+        if (opt.stop && opt.stop->load()) {
+            stop_p.store(true);
+            stop_c.store(true);
+        }
+        const double el = now_s() - t0;
+        const double left = opt.timeout_s - el;
+        if (done_p.load()) {
+            if (definitive(pr) || pr.kind == Kind::Error) {
+                stop_c.store(true);
+                break;
+            }
+            // no answer before the threshold (an unknown): the cube engine
+            // may still use the time left
+            if (!started && left > 0.5 && !(opt.stop && opt.stop->load())) {
+                started = true;
+                tc = std::thread([&, left] {
+                    cr = cube_and_conquer(*c2, f2, opt, left, &stop_c);
+                    done_c.store(true);
+                });
+            }
+            if (!started || done_c.load()) break;
+        }
+        if (!started && el >= co.after_s && left > 0.5) {
+            started = true;
+            tc = std::thread([&, left] {
+                cr = cube_and_conquer(*c2, f2, opt, left, &stop_c);
+                done_c.store(true);
+            });
+        }
+        if (started && done_c.load()) {
+            if (definitive(cr)) stop_p.store(true);
+            if (done_p.load()) break;
+            if (definitive(cr)) {
+                tp.join();  // the portfolio stops within its poll interval
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (tp.joinable()) tp.join();
+    if (tc.joinable()) tc.join();
+    const double wall = now_s() - t0;
+    if (definitive(pr) || !started) {
+        if (started) {
+            pr.cube = cr.cube;
+            pr.note = append_note(pr.note, cr.note.empty() ? "cube: stopped" : cr.note);
+            pr.ran.push_back("cube");
+        }
+        return pr;
+    }
+    if (definitive(cr)) {
+        if (cr.kind == Kind::Sat && !validate_model(c, formula, cr.model)) {
+            pr.note = append_note(pr.note, append_note(cr.note, "cube model REJECTED on re-validation against the caller's formula"));
+            pr.cube = cr.cube;
+            pr.ran.push_back("cube");
+            return pr;
+        }
+        SolveResult r = pr;  // hash, bucket, members that ran
+        r.kind = cr.kind;
+        r.winner = cr.winner;
+        r.model = cr.model;
+        r.certified = false;
+        r.cube = cr.cube;
+        r.limit_hit = false;
+        r.ran.push_back("cube");
+        r.times["cube"] = cr.wall_s;
+        r.wall_s = wall;
+        r.note = append_note(pr.note, append_note(cr.note, "cube answer not cached"));
+        return r;
+    }
+    pr.cube = cr.cube;
+    pr.ran.push_back("cube");
+    pr.note = append_note(pr.note, cr.note);
+    pr.wall_s = wall;
+    return pr;
+}
+
+}  // namespace
+
+SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
+    prism::complexity::install_z3_ballast();  // before the first query (complexity.hpp)
+    // Cube-and-conquer is for plain answers: certified requests need one LRAT
+    // proof of the whole CNF, and a known unsat needs only its certificate.
+    const CubeOptions co = resolve_cube_options(opt.cube);
+    if (co.enabled == 1 && !opt.certified && !opt.known_unsat) {
+        try {
+            return solve_with_cubes(c, formula, opt, co);
+        } catch (const z3::exception& e) {
+            SolveResult r;
+            r.kind = SolveResult::Error;
+            r.note = std::string("internal error (z3, cube): ") + e.msg();
+            return r;
+        }
+    }
+    return solve_guarded(c, formula, opt);
 }
 
 // `prism z3-worker FILE MB [RLIMIT]`: run an SMT-LIB script with Z3 and print its

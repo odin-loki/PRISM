@@ -294,6 +294,7 @@ set(PRISM_SRC
   # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.
   src/prism/solver/certstore.cpp
   src/prism/solver/cnf.cpp
+  src/prism/solver/cube.cpp
   src/prism/solver/gbdt.cpp
   src/prism/solver/leanbb.cpp
   src/prism/solver/portfolio.cpp
@@ -465,6 +466,37 @@ if(PRISM_HAS_Z3)
   # only that file sees Z3's internal headers.
   set_source_files_properties(src/prism/solver/z3_ballast.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${PRISM_ROOT}/third_party/z3/src")
+endif()
+
+# Cube-and-conquer (src/prism/solver/cube.cpp) solves cubes with CaDiCaL as a
+# library (incremental assumptions, failed-assumption cores, conflict limits).
+# CaDiCaL is not vendored: the pinned build `prism-deps tool cadical` leaves
+# its source tree with build/libcadical.a under
+# ~/.prism/tools/cadical/<manifest commit>/src. PRISM_CADICAL_DIR overrides.
+# Not found: the cube engine is NOTRUN (the note says so), never silent.
+set(PRISM_CADICAL_DIR "" CACHE PATH "CaDiCaL source tree with src/cadical.hpp and build/libcadical.a")
+set(_prism_cadical_dir "${PRISM_CADICAL_DIR}")
+if(NOT _prism_cadical_dir)
+  set(_prism_tools_home "$ENV{PRISM_TOOLS_DIR}")
+  if(NOT _prism_tools_home)
+    set(_prism_tools_home "$ENV{HOME}/.prism/tools")
+  endif()
+  file(READ "${PRISM_ROOT}/third_party/MANIFEST.toml" _prism_manifest)
+  string(REGEX MATCH "name = \"cadical\"[^[]*commit = \"([0-9a-f]+)\"" _m "${_prism_manifest}")
+  if(CMAKE_MATCH_1)
+    set(_prism_cadical_dir "${_prism_tools_home}/cadical/${CMAKE_MATCH_1}/src")
+  endif()
+endif()
+if(_prism_cadical_dir AND EXISTS "${_prism_cadical_dir}/src/cadical.hpp" AND EXISTS "${_prism_cadical_dir}/build/libcadical.a")
+  add_library(prism_cadical STATIC IMPORTED)
+  set_target_properties(prism_cadical PROPERTIES IMPORTED_LOCATION "${_prism_cadical_dir}/build/libcadical.a")
+  set_source_files_properties(src/prism/solver/cube.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${_prism_cadical_dir}/src")
+  target_link_libraries(prism_core PUBLIC prism_cadical)
+  target_compile_definitions(prism_core PRIVATE PRISM_HAS_CADICAL_LIB)
+  message(STATUS "cube-and-conquer: CaDiCaL library ${_prism_cadical_dir}")
+else()
+  message(WARNING "cube-and-conquer: CaDiCaL library not found (${_prism_cadical_dir}); the cube engine is NOTRUN")
 endif()
 
 # Roadmap 2.8: the Clang-AST lints parse in process through libclang's C API.
@@ -684,6 +716,8 @@ if(PRISM_CUDA)
       add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu)
       target_include_directories(prism_cuda PUBLIC "${PRISM_ROOT}/include")
       target_compile_features(prism_cuda PUBLIC cuda_std_17)
+      # probsat.cu defines cuda_probsat_ex, declared under PRISM_HAS_CUDA
+      target_compile_definitions(prism_cuda PRIVATE PRISM_HAS_CUDA)
       set_target_properties(prism_cuda PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
@@ -741,6 +775,7 @@ if(PRISM_TESTS)
   # would register the same doctest names twice).
   set(_prism_test_sources
     tests/cpp/test_env_registry.cpp
+    tests/cpp/test_cube.cpp
     tests/cpp/test_log.cpp
     tests/cpp/test_backends.cpp
     tests/cpp/test_library.cpp
