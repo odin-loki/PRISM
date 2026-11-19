@@ -1720,6 +1720,30 @@ struct Tr final : pirmem::TrApi {
                 mt.obligation_distinct(cur, objs[i], objs[j], "call of @" + in.callee, line);
     }
 
+    // Instructions of g and of every function it calls directly, transitively (TranslateOptions::small_inline_insts);
+    // an indirect call, an asm goto, a recursive tree or one over the limit counts as "large" (limit + 1).
+    std::map<const ir::Function*, long> small_memo;
+    long small_tree(const ir::Function& g) {
+        const long big = static_cast<long>(opt.small_inline_insts) + 1;
+        if (auto it = small_memo.find(&g); it != small_memo.end()) return it->second;
+        small_memo[&g] = big;  // in progress: a cycle is large
+        long n = 0;
+        for (auto& bl : g.blocks) {
+            for (auto& ins : bl.insts) {
+                if (++n >= big) return big;
+                if (ins.op == "callbr" || ins.op == "invoke" || (ins.op == "call" && !ins.is_asm && ins.callee.empty()))
+                    return big;
+                if (ins.op == "call" && !ins.callee.empty())
+                    if (const auto* c = m.find(ins.callee); c && !c->blocks.empty()) {
+                        n += small_tree(*c);
+                        if (n >= big) return big;
+                    }
+            }
+        }
+        small_memo[&g] = n;
+        return n;
+    }
+
     void inline_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
         const auto& n = in.callee;
         const auto* callee = m.find(n);
@@ -1737,7 +1761,13 @@ struct Tr final : pirmem::TrApi {
                     throw Unenc{"UNENCODED: call depth > " + std::to_string(cap) + " (@" + n + ") (library model frames)"};
             } else {
                 const int user = opt.model_inline_depth > 0 ? frames - static_cast<int>(model_stack.size()) : frames;
-                if (user > opt.inline_depth)
+                // a small call tree (the kernel's one-line wrappers: kasan_check_*, kobject_name, refcount_read ->
+                // atomic_read -> ...) is inlined past inline_depth when its whole tree has at most
+                // small_inline_insts instructions; the total cap still holds
+                const bool small = opt.small_inline_insts > 0 && callee && user > opt.inline_depth &&
+                                   frames <= opt.inline_depth + opt.model_inline_depth &&
+                                   small_tree(*callee) <= opt.small_inline_insts;
+                if (user > opt.inline_depth && !small)
                     throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
             }
         }

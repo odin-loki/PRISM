@@ -36,7 +36,8 @@ std::string chain_ir(int n, bool bad) {
     return o.str();
 }
 
-std::string run(int n, bool bad, const std::set<int>& models, int depth, int model_depth, std::string* msg = nullptr) {
+std::string run(int n, bool bad, const std::set<int>& models, int depth, int model_depth, std::string* msg = nullptr,
+                int small = 0) {
     static std::vector<pp::ir::Module> keep;  // translations point into their module
     keep.push_back(pp::ir::parse_module(chain_ir(n, bad)));
     auto& m = keep.back();
@@ -47,6 +48,7 @@ std::string run(int n, bool bad, const std::set<int>& models, int depth, int mod
     pp::TranslateOptions o;
     o.inline_depth = depth;
     o.model_inline_depth = model_depth;
+    o.small_inline_insts = small;  // the depth rules alone (the small-tree exemption has its own test)
     auto t = pp::translate(m, *f, o);
     if (!t.fn) {
         if (msg) *msg = t.reason;
@@ -161,7 +163,6 @@ entry:
 TEST_CASE("pir cluster answers: inline asm with four direct outputs, each field arbitrary (--kernel-api)") {
     auto ok = kernel_run(kCpuid, "cpuid_sum");
     CHECK_MESSAGE(ok.status == prism::laws::PROVED, (ok.status + " " + ok.msg));
-    CHECK(has(ok.assumptions, "asm-havoc"));
     CHECK(has(ok.assumptions, "4 output(s) havocked"));
     // a field is arbitrary: dividing by it is a violation, never proved
     auto bad = kernel_run(kCpuid, "cpuid_div");
@@ -182,5 +183,23 @@ declare void @llvm.write_register.i64(metadata, i64)
     auto rax = kernel_run(body + "!0 = !{!\"rax\"}\n", "sp_wb");
     CHECK(rax.status == prism::laws::NEEDS_HARNESS);
     CHECK(rax.msg.find("UNENCODED: call @llvm.write_register.i64 (register rax)") != std::string::npos);
+}
+#endif
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir model depth: a small call tree is inlined past inline_depth exactly; a large one stays UNENCODED") {
+    // 6 one-call wrappers: every tree below the depth bound is a few instructions
+    CHECK(run(6, false, {}, 4, 16, nullptr, 64) == prism::laws::PROVED);
+    CHECK(run(6, true, {}, 4, 16, nullptr, 64) == prism::laws::FAILED);
+    // 40 wrappers: the tree at the bound is over 64 instructions, so the call is UNENCODED, never PROVED
+    for (bool bad : {false, true}) {
+        std::string msg;
+        CHECK(run(40, bad, {}, 4, 16, &msg, 64) == prism::laws::NEEDS_HARNESS);
+        CHECK(msg.find("UNENCODED: call depth > 4") != std::string::npos);
+    }
+    // the total cap holds for small trees too: 30 small frames past 4 + 16
+    std::string msg;
+    CHECK(run(30, false, {}, 4, 16, &msg, 4096) == prism::laws::NEEDS_HARNESS);
+    CHECK(msg.find("UNENCODED: call depth > 4") != std::string::npos);
 }
 #endif

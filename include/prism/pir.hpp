@@ -492,6 +492,9 @@ struct TranslateOptions {
     // past either bound is still UNENCODED (NEEDS-HARNESS). 0 restores the old rule (models count like user code).
     // PRISM_PIR_MODEL_INLINE_DEPTH sets it (stage_mem.cpp).
     int model_inline_depth = 16;
+    // A callee whose whole call tree has at most this many IR instructions is inlined past inline_depth (exactly, no
+    // assumption), within the same total cap; 0 = off. PRISM_PIR_SMALL_INLINE sets it (stage_mem.cpp).
+    int small_inline_insts = 64;
     // pointer parameters of the function being translated
     std::vector<PtrContract> contracts;
     // --lock-contracts: lock contracts of the root function (translate_lock.inc lock_table)

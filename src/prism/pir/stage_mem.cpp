@@ -147,6 +147,12 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
         const long d = std::strtol(e, &end, 10);
         if (end != e && d >= 0 && d <= 64) o.model_inline_depth = static_cast<int>(d);
     }
+    // PRISM_PIR_SMALL_INLINE: instruction budget of a call tree inlined past the depth (TranslateOptions::small_inline_insts)
+    if (const char* e = std::getenv("PRISM_PIR_SMALL_INLINE")) {
+        char* end = nullptr;
+        const long d = std::strtol(e, &end, 10);
+        if (end != e && d >= 0 && d <= 4096) o.small_inline_insts = static_cast<int>(d);
+    }
     std::vector<std::string> ptrs;
     for (auto& p : irf.params)
         if (p.ty.kind == ir::Type::Ptr && p.attrs.find("byval(") == std::string::npos &&
