@@ -408,6 +408,35 @@ TEST_CASE("pir harness: container_of through a helper function's returned pointe
     CHECK(st["helper_two_offsets"].status != L::PROVED);
 }
 
+TEST_CASE("pir harness: --pir-field-invariants keeps only the rows a proof needs") {
+    if (skip_without_frontend()) return;
+    namespace L = prism::laws;
+    const auto tsv = fs::temp_directory_path() / "prism_field_invariants_test.tsv";
+    {
+        std::ofstream o(tsv);
+        o << "%struct.fidev\t8\t4\trange\t1\t10\tUNVALIDATED\ttest: needed\n";
+        o << "%struct.fidev\t12\t4\trange\t0\t5\tUNVALIDATED\ttest: not needed\n";
+        o << "%struct.fidev\t0\t8\tvalid\t16\t0\tUNVALIDATED\ttest: not needed\n";
+    }
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    cfg.pir_field_invariants = tsv;
+    auto st = run_file(cfg, "field_invariants.c");
+    REQUIRE(st.contains("div_by_field"));
+    CHECK_MESSAGE(st["div_by_field"].status == L::PROVED_ASSUMING, (st["div_by_field"].status + " " + st["div_by_field"].message));
+    const auto a = extra(st["div_by_field"], "assumptions");
+    CHECK(a.find("(%struct.fidev at byte 8) is in [1, 10]") != std::string::npos);
+    CHECK(a.find("(%struct.fidev at byte 12)") == std::string::npos);
+    CHECK(a.find("(%struct.fidev at byte 0)") == std::string::npos);
+    CHECK(extra(st["div_by_field"], "field_invariants_not_needed").find("%struct.fidev@12") != std::string::npos);
+    // other - 1 may be 0 under the row [0, 5]: never proved
+    REQUIRE(st.contains("div_by_other"));
+    CHECK(st["div_by_other"].status != L::PROVED_ASSUMING);
+    CHECK(st["div_by_other"].status != L::PROVED);
+    std::error_code ec;
+    fs::remove(tsv, ec);
+}
+
 TEST_CASE("pir discharge: container_of obligations, the member of a real outer, not a lone struct") {
     if (skip_without_frontend()) return;
     auto cfg = prism::default_config();
