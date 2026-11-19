@@ -891,8 +891,9 @@ struct Tr final : pirmem::TrApi {
                         k = 0;
                     }
                     if (reaches) {
-                        note_assumption("kernel-stop: BUG() (ud2 with a __bug_table entry, then unreachable) stops the kernel thread: "
-                                        "the paths that reach it end there, and the verdict is for the paths that do not");
+                        note_assumption("kernel-stop: assuming the BUG() / BUG_ON() condition never triggers (line " + std::to_string(line) +
+                                        "): BUG() (ud2 with a __bug_table entry, then unreachable) stops the kernel, the paths that reach "
+                                        "it are not checked, and the verdict holds only for executions in which it never triggers");
                         out.blocks[static_cast<std::size_t>(cur)].term = Term{};
                         tail[q] = cur;
                         terminated = true;
@@ -1345,8 +1346,9 @@ struct Tr final : pirmem::TrApi {
             const auto* def = m.find(n);
             if (!def || def->is_model || def->blocks.empty()) {
                 // --pir-kernel-stops: the kernel does not return from panic(9) / KASSERT's kassert_panic
-                note_assumption("kernel-stop: @" + n + " does not return (the kernel stops): the paths that call it end there, "
-                                "and the verdict is for the paths that do not");
+                note_assumption("kernel-stop: assuming the @" + n + " condition never triggers (line " + std::to_string(line) +
+                                "): the kernel does not return from @" + n + ", the paths that call it are not checked, and the verdict "
+                                "holds only for executions in which it is never called");
                 noreturn = true;
                 return;
             }

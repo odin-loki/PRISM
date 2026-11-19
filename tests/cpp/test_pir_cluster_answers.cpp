@@ -282,13 +282,13 @@ TEST_CASE("pir cluster answers: --pir-kernel-stops ends the path at BUG() and pa
     // with it: the path through BUG() / panic() ends; the division on the other path is guarded
     auto bug = stops_run(kBugOn, "bug_on_div", true);
     CHECK_MESSAGE(bug.status == prism::laws::PROVED, (bug.status + " " + bug.msg));
-    CHECK(has(bug.assumptions, "kernel-stop: BUG()"));
+    CHECK(has(bug.assumptions, "kernel-stop: assuming the BUG() / BUG_ON() condition never triggers"));
     // the -O0 shape: the asm, a branch, then unreachable in the next block
     auto bug2 = stops_run(kBugOn, "bug_on_div_o0", true);
     CHECK_MESSAGE(bug2.status == prism::laws::PROVED, (bug2.status + " " + bug2.msg));
     auto pan = stops_run(kBugOn, "panic_div", true);
     CHECK_MESSAGE(pan.status == prism::laws::PROVED, (pan.status + " " + pan.msg));
-    CHECK(has(pan.assumptions, "kernel-stop: @panic does not return"));
+    CHECK(has(pan.assumptions, "kernel-stop: assuming the @panic condition never triggers"));
     // WARN(): the same asm without unreachable after it continues, so d == 0 reaches the division
     auto warn = stops_run(kBugOn, "warn_on_div", true);
     CHECK_MESSAGE(warn.status == prism::laws::FAILED, (warn.status + " " + warn.msg));
