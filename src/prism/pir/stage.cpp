@@ -3072,6 +3072,12 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
         topt.field_invariants = load_field_invariants(cfg.pir_field_invariants, fi_err);
         if (!fi_err.empty()) throw std::runtime_error("--pir-field-invariants " + fi_err);
     }
+    if (!cfg.pir_callback_models.empty()) {  // --pir-callback-models (callback_models.cpp, docs/DRIVER_ENV_MODELS.md)
+        std::string cb_err;
+        auto rows = load_callback_models(cfg.pir_callback_models, cb_err);
+        if (!cb_err.empty()) throw std::runtime_error("--pir-callback-models " + cb_err);
+        topt.callback_models = std::make_shared<const std::vector<CallbackModel>>(std::move(rows));
+    }
     if (const char* mine = std::getenv("PRISM_PIR_MINE_FIELDS"); mine && *mine) {  // field_mine.cpp
         std::ofstream mf(mine, std::ios::app);
         if (mf) mine_field_stores(mod, u.path.string(), mf);

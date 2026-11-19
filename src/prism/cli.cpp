@@ -203,6 +203,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-field-invariants") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.pir_field_invariants = fs::absolute(*v);
+        } else if (a == "--pir-callback-models") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_callback_models = fs::absolute(*v);
         } else if (a == "--pir-ops-auto") {
             ok = in.flag();
             cfg.pir_ops_auto = true;
@@ -453,6 +456,8 @@ std::string cli_usage() {
         "  the address-taken functions is a havoc of all memory with an arbitrary result (named).\n"
         "  --pir-field-invariants FILE: struct field invariants (TSV: struct, offset, width, kind valid|nonnull|range,\n"
         "  a, b, status, source) applied to automatic-harness objects, one named assumption per row used.\n"
+        "  --pir-callback-models FILE: driver environment models (TSV: interface, container, field_off, callback, param,\n"
+        "  kind range|id-entry|trailing-alloc, a, b, status, source) for the parameters of driver callbacks, named.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
         "--ops-table FILE: an indirect call through a field of a known ops table (TSV: struct\n"

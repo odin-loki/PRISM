@@ -448,6 +448,47 @@ struct FieldInvariant {
     int64_t a = 0, b = 0;
     std::string status, source;
 };
+// --pir-callback-models FILE (docs/DRIVER_ENV_MODELS.md): driver environment models. One row is one precondition the
+// kernel core guarantees for one parameter of one kind of driver callback (adapted from the Klever / LDV environment model
+// specifications, Apache-2.0, attribution in the file). TSV, 10 columns:
+//   interface  container  field_off  callback  param  kind  a  b  status  source
+// container: "%struct.T" (the callback is a function address stored at byte `field_off` of a T, in a constant initialiser
+// or by a store in the unit) or "call:FN" (the callback is argument `field_off` (0-based) of a direct call of @FN in the
+// unit: request_irq, timer_setup, INIT_WORK ...). Kinds (each use is a named assumption, nothing is checked here):
+//   range a b         the integer parameter is in [a, b] (signed)
+//   id-entry a        the parameter points to an element 0 .. n-2 of the array the container instance's field at byte
+//                     `a` points to (the driver's own constant id table, last entry the terminator); needs exactly one
+//                     instance of the container in the unit naming the callback, and that table in the unit
+//   trailing-alloc a b  the parameter's object (of struct type b, "%struct.net_device") has the private area its allocator
+//                     appends: a = "fn:arg,fn:arg" (alloc_netdev_mqs:0 ...); the size is the constant argument of the unit's
+//                     calls of those functions, applied only when all of them agree
+//   buffer a          the pointer parameter points to the start of a fresh buffer of `a` bytes, arbitrary contents
+//                     (sysfs show / store get a PAGE_SIZE buffer)
+// field_off "*": every field of the container (with trailing-alloc the struct type check selects the parameters).
+// source: where the precondition comes from ("Klever spec drivers/pci/pci event spec.json", or a kernel document).
+struct CallbackModel {
+    std::string interface_, container, callback, kind, a, b, status, source;
+    uint64_t field_off = 0;
+    int param = 0;
+};
+// The models of one function (resolved against its unit): what translate() applies to parameter `param`.
+struct CallbackBinding {
+    int param = 0;
+    std::string kind;          // range | id-entry | trailing-alloc | buffer
+    int64_t lo = 0, hi = 0;    // range
+    std::string global;        // id-entry: the id table global
+    uint64_t elem_bytes = 0, count = 0;  // id-entry: element size, number of selectable entries (n - 1)
+    uint64_t extra_bytes = 0;  // trailing-alloc: private area; buffer: buffer size
+    std::string struct_type;   // trailing-alloc: the object's struct type
+    std::string text;          // the named assumption
+};
+// Reads a --pir-callback-models file. On failure returns {} and sets error.
+PRISM_API std::vector<CallbackModel> load_callback_models(const std::filesystem::path& file, std::string& error);
+// The models that apply to `f`: the (container, offset) sites the unit registers `f` at, matched against the rows.
+// `skipped` (optional) gets one line per matching row that could not be applied and why.
+PRISM_API std::vector<CallbackBinding> resolve_callback_bindings(const ir::Module& m, const ir::Function& f,
+                                                                 const std::vector<CallbackModel>& models,
+                                                                 std::vector<std::string>* skipped = nullptr);
 // One lock contract of --lock-contracts (TSV, docs/KERNEL_CONCURRENCY.md section 14), for
 // unmodified code: the analysed (root) function acquires, releases or requires a lock.
 struct LockContract {
@@ -545,6 +586,8 @@ struct TranslateOptions {
     bool icall_havoc = false;
     // --pir-field-invariants: field value invariants applied to automatic-harness objects
     std::vector<FieldInvariant> field_invariants;
+    // --pir-callback-models: the loaded rows; translate() resolves the ones that apply to the analysed function
+    std::shared_ptr<const std::vector<CallbackModel>> callback_models;
     // --callee-contracts FILE (docs/HARNESS_PHASE2.md): assume-guarantee stubs for callees that have no body
     // (IR name -> contract). A callee with a body, or a kernel spec, is never replaced by one.
     std::map<std::string, CalleeContract> callee_contracts;
