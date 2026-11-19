@@ -233,16 +233,17 @@ cube engine's GPU mode does (below). Measured use: "Cube-and-conquer".
 `src/prism/solver/cube.cpp`, `SolveOptions::cube`, environment
 `PRISM_CUBE*` (`prism::env_vars()`). Off by default. For the queries the
 portfolio has not answered within `PRISM_CUBE_AFTER` seconds (default 2),
-the cube engine starts next to it on a private copy of the formula and gets
-the time that is left of `--timeout`; the first definitive answer stops the
-other.
+the cube engine joins the portfolio as one more member, `cube`, on the CNF
+the portfolio has bit-blasted for its DIMACS members (one bit-blast for all),
+with the time that is left of `--timeout`. Like every member, the first
+definitive answer stops the others.
 
 **How.**
 
-- The formula is bit-blasted with the same Z3 tactic chain as the
-  CaDiCaL/Kissat members (`bitblast_fresh`). A formula that cannot be
-  bit-blasted (arrays, UF, arithmetic, quantifiers) gets no cube run; the
-  note says so.
+- The CNF is the portfolio's (Z3 tactics, `bitblast_fresh`). A formula that
+  cannot be bit-blasted (arrays, UF, arithmetic, quantifiers) gets no cube
+  member. `PRISM_CUBE_ALONE=1` bit-blasts in the engine itself, under its
+  own deadline (the tactics are interrupted at it).
 - CaDiCaL 3.0.1 is linked as a library (`libcadical.a` of the pinned
   `prism-deps tool cadical` build; CMake finds it under
   `~/.prism/tools/cadical/<manifest commit>/src`, or `PRISM_CADICAL_DIR`).
@@ -278,11 +279,13 @@ other.
 - A leaf still open at the deadline (or when stopped) leaves the query
   TIMEOUT/UNKNOWN, never UNSAT (doctest "an open cube at the deadline").
 - SAT only through an assignment that satisfies the CNF and whose model
-  evaluates the original formula to true in Z3; `solve()` validates it once
-  more against the caller's formula after both sides have stopped.
+  evaluates the original formula to true in Z3 (the portfolio validates every
+  member's model that way; alone mode validates it in the engine and again in
+  `solve()`).
 - Certified requests and `known_unsat` requests never use the engine (a
   certificate needs one LRAT proof of the whole CNF; composing per-cube
-  proofs is not implemented). A cube answer is never cached.
+  proofs is not implemented). A cube UNSAT is cached like any member's plain
+  UNSAT (alone mode does not cache).
 - `PRISM_CUBE_ALONE=1` answers every query with the cube engine alone; the
   soundness gates run the conformance suite and csmith that way.
 

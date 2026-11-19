@@ -327,6 +327,18 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
 // carries a model validated in Z3; Unsat only for a closed, covering tree.
 SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const SolveOptions& opt, double timeout_s,
                              const std::atomic<bool>* stop = nullptr);
+// The cube engine on a CNF (the portfolio's "cube" member hands it the CNF it
+// has bit-blasted). Sat: an assignment that satisfies the CNF (the caller
+// validates its model against the formula). Unsat: a closed tree whose
+// leaves were checked to cover the space. Open: no answer.
+struct CubeCnfAnswer {
+    enum Kind { Sat, Unsat, Open } kind = Open;
+    std::vector<std::int8_t> assignment;
+    std::string by;    // who closed it / found the assignment
+    std::string note;  // what the engine did
+};
+CubeCnfAnswer cube_solve_cnf(const Cnf& cnf, const CubeOptions& co, std::uint64_t seed, double timeout_s,
+                             const std::atomic<bool>* stop, CubeStats& stats);
 #endif
 // The cube options with every unset field filled from PRISM_CUBE* or the default.
 CubeOptions resolve_cube_options(const CubeOptions& o);

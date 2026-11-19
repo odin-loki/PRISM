@@ -198,7 +198,7 @@ SmtAnswer parse_smt_output(std::string_view out) {
 }
 
 // ------------------------------------------------------------------ the board
-enum class MemberKind { Z3, Smt2, Dimacs, Sls };
+enum class MemberKind { Z3, Smt2, Dimacs, Sls, Cube };
 
 struct Member {
     std::string name;
@@ -272,6 +272,9 @@ struct Jobs {
     std::shared_ptr<const Cnf> cnf;
     std::string cnf_sha;
     std::atomic<bool> blast_stop{false};            // the prism-bitblast process
+    std::mutex cube_mu;                             // the cube member's statistics and note
+    CubeStats cube;
+    std::string cube_note;
 };
 
 std::string subst(const std::string& a, const fs::path& input, const fs::path& proof) {
@@ -586,6 +589,7 @@ std::uint64_t rlimit_count(const z3::solver& s) {
 SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
     SolveResult res;
     const double t0 = now_s();
+    const CubeOptions cube_opts = resolve_cube_options(opt.cube);
     const unsigned rlimit = opt.rlimit;
     const double deadline = t0 + std::max(0.01, opt.timeout_s);
     // Certified requests: the certificate member (CaDiCaL with LRAT) and the
@@ -882,6 +886,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 }
             }
             if (opt.sls) add("sls", MemberKind::Sls, {}, "probsat-cpu");
+            // Cube-and-conquer (cube.cpp) on the CNF the other DIMACS members
+            // use; it joins after cube.after_s (below). Plain answers only.
+            if (cube_opts.enabled == 1 && !opt.certified && !opt.known_unsat) {
+                std::string what;
+                if (cube_engine_available(&what))
+                    add("cube", MemberKind::Cube, {}, what);
+                else
+                    notes.push_back("cube: " + what);
+            }
         }
         for (const auto& x : opt.extra_solvers) {
             if (x.input == ExternalSolver::Input::Dimacs && !blastable) continue;
@@ -999,6 +1012,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     }
     for (auto& mem : members)
         if (mem.lrat) mem.est = -1;  // the certificate path always gets a slot
+    for (auto& mem : members)
+        if (mem.kind == MemberKind::Cube) {
+            // only for a query the others have not answered by then
+            mem.not_before = std::max(mem.not_before, t0 + cube_opts.after_s);
+            mem.est = 1e6;
+            char buf[96];
+            std::snprintf(buf, sizeof buf, "cube joins after %.2fs (%u threads)", cube_opts.after_s, cube_opts.threads);
+            notes.push_back(buf);
+        }
     std::stable_sort(members.begin(), members.end(), [](const Member& a, const Member& b) { return a.est < b.est; });
     if (members.empty()) {
         res.kind = Kind::Unknown;
@@ -1272,6 +1294,38 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 });
                 break;
             }
+            case MemberKind::Cube: {
+                // cube.cpp: Unsat only for a closed tree whose leaves cover
+                // the space; Sat only for an assignment of the CNF, whose
+                // model is validated below like every member's
+                auto cp = cnf;
+                const auto seed = opt.seed;
+                const CubeOptions co = cube_opts;
+                spawn(slot.name, [J = J.get(), i, left, stop, cp, seed, co] {
+                    Msg worker_msg;
+                    worker_msg.member = i;
+                    const double s0 = now_s();
+                    CubeStats st;
+                    auto a = cube_solve_cnf(*cp, co, seed, left, stop.get(), st);
+                    worker_msg.secs = now_s() - s0;
+                    if (a.kind == CubeCnfAnswer::Sat) {
+                        worker_msg.kind = Kind::Sat;
+                        worker_msg.model = model_from_assignment(*cp, a.assignment);
+                    } else if (a.kind == CubeCnfAnswer::Unsat) {
+                        worker_msg.kind = Kind::Unsat;
+                    } else {
+                        worker_msg.kind = stop->load() ? Kind::Unknown : Kind::Timeout;
+                        worker_msg.detail = "no answer";
+                    }
+                    {
+                        std::lock_guard<std::mutex> g(J->cube_mu);
+                        J->cube = st;
+                        J->cube_note = a.note + (a.by.empty() ? "" : " [" + a.by + "]");
+                    }
+                    J->board.post(std::move(worker_msg));
+                });
+                break;
+            }
         }
     };
     auto fill_slots = [&] {
@@ -1279,7 +1333,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             Member& mem = members.at(i);
             if (mem.started || mem.finished) continue;
             if (mem.not_before > now_s()) continue;
-            const bool on_cnf = mem.kind == MemberKind::Dimacs || mem.kind == MemberKind::Sls;
+            const bool on_cnf = mem.kind == MemberKind::Dimacs || mem.kind == MemberKind::Sls || mem.kind == MemberKind::Cube;
             if (running >= slots && !mem.lrat) break;
             if (on_cnf) {
                 if (cnf_state == CnfState::None) { start_blast(); continue; }
@@ -1559,6 +1613,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         std::lock_guard<std::mutex> g(g_history_mu);
         std::ofstream(root / "watchdog.jsonl", std::ios::app) << line.dump() << "\n";
     }
+    {
+        // what the cube member did (it ran only if the others had no answer
+        // after cube.after_s)
+        std::lock_guard<std::mutex> g(J->cube_mu);
+        if (J->cube.ran) {
+            res.cube = J->cube;
+            notes.push_back(J->cube_note);
+        }
+    }
 
     return finish(res);  // the guard removes the work directory
 }
@@ -1634,116 +1697,19 @@ std::string append_note(const std::string& a, const std::string& b) {
     return a + "; " + b;
 }
 
-// Cube-and-conquer next to the portfolio (cube.cpp, docs/SOLVERS.md
-// "Cube-and-conquer"): the portfolio runs as always; if it has no answer
-// after cube.after_s, the cube engine starts on a private copy of the
-// formula with the time that is left. The first definitive answer stops the
-// other. A cube SAT model is validated again here, against the caller's
-// formula, after both have stopped. A cube answer is not written to the query
-// cache (the note says so).
-SolveResult solve_with_cubes(z3::context& c, const z3::expr& formula, const SolveOptions& opt, const CubeOptions& co) {
-    const double t0 = now_s();
-    if (co.alone) {
-        SolveResult r = cube_and_conquer(c, formula, opt, opt.timeout_s, opt.stop);
-        if (r.kind == Kind::Sat && !validate_model(c, formula, r.model)) {
-            r.kind = Kind::Unknown;
-            r.note = append_note(r.note, "cube model rejected on re-validation");
-            r.model.clear();
-        }
-        return r;
+// Cube-and-conquer alone (PRISM_CUBE_ALONE, the soundness gates): the cube
+// engine bit-blasts and answers by itself, no portfolio. Its SAT model is
+// validated once more here against the caller's formula. Otherwise the cube
+// engine is the portfolio's "cube" member (solve_impl). Not cached.
+SolveResult solve_cube_alone(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
+    SolveResult r = cube_and_conquer(c, formula, opt, opt.timeout_s, opt.stop);
+    if (r.kind == Kind::Sat && !validate_model(c, formula, r.model)) {
+        r.kind = Kind::Unknown;
+        r.note = append_note(r.note, "cube model rejected on re-validation");
+        r.model.clear();
     }
-    if (prism::membudget::over_budget())
-        return solve_guarded(c, formula, opt);  // no room for a second copy of the formula
-    // The engine's own copy, made before the portfolio thread uses `c`.
-    auto c2 = std::make_unique<z3::context>();
-    z3::expr f2(*c2, Z3_translate(c, formula, *c2));
-    std::atomic<bool> stop_p{false}, stop_c{false};
-    std::atomic<bool> done_p{false}, done_c{false};
-    SolveOptions po = opt;
-    po.stop = &stop_p;
-    SolveResult pr, cr;
-    std::thread tp([&] {
-        pr = solve_guarded(c, formula, po);
-        done_p.store(true);
-    });
-    std::thread tc;
-    bool started = false;
-    for (;;) {
-        if (opt.stop && opt.stop->load()) {
-            stop_p.store(true);
-            stop_c.store(true);
-        }
-        const double el = now_s() - t0;
-        const double left = opt.timeout_s - el;
-        if (done_p.load()) {
-            if (definitive(pr) || pr.kind == Kind::Error) {
-                stop_c.store(true);
-                break;
-            }
-            // no answer before the threshold (an unknown): the cube engine
-            // may still use the time left
-            if (!started && left > 0.5 && !(opt.stop && opt.stop->load())) {
-                started = true;
-                tc = std::thread([&, left] {
-                    cr = cube_and_conquer(*c2, f2, opt, left, &stop_c);
-                    done_c.store(true);
-                });
-            }
-            if (!started || done_c.load()) break;
-        }
-        if (!started && el >= co.after_s && left > 0.5) {
-            started = true;
-            tc = std::thread([&, left] {
-                cr = cube_and_conquer(*c2, f2, opt, left, &stop_c);
-                done_c.store(true);
-            });
-        }
-        if (started && done_c.load()) {
-            if (definitive(cr)) stop_p.store(true);
-            if (done_p.load()) break;
-            if (definitive(cr)) {
-                tp.join();  // the portfolio stops within its poll interval
-                break;
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    if (tp.joinable()) tp.join();
-    if (tc.joinable()) tc.join();
-    const double wall = now_s() - t0;
-    if (definitive(pr) || !started) {
-        if (started) {
-            pr.cube = cr.cube;
-            pr.note = append_note(pr.note, cr.note.empty() ? "cube: stopped" : cr.note);
-            pr.ran.push_back("cube");
-        }
-        return pr;
-    }
-    if (definitive(cr)) {
-        if (cr.kind == Kind::Sat && !validate_model(c, formula, cr.model)) {
-            pr.note = append_note(pr.note, append_note(cr.note, "cube model REJECTED on re-validation against the caller's formula"));
-            pr.cube = cr.cube;
-            pr.ran.push_back("cube");
-            return pr;
-        }
-        SolveResult r = pr;  // hash, bucket, members that ran
-        r.kind = cr.kind;
-        r.winner = cr.winner;
-        r.model = cr.model;
-        r.certified = false;
-        r.cube = cr.cube;
-        r.limit_hit = false;
-        r.ran.push_back("cube");
-        r.times["cube"] = cr.wall_s;
-        r.wall_s = wall;
-        r.note = append_note(pr.note, append_note(cr.note, "cube answer not cached"));
-        return r;
-    }
-    pr.cube = cr.cube;
-    pr.ran.push_back("cube");
-    pr.note = append_note(pr.note, cr.note);
-    pr.wall_s = wall;
-    return pr;
+    r.ran.push_back("cube");
+    return r;
 }
 
 }  // namespace
@@ -1752,11 +1718,12 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
     prism::complexity::install_z3_ballast();  // before the first query (complexity.hpp)
     // Cube-and-conquer is for plain answers: certified requests need one LRAT
     // proof of the whole CNF, and a known unsat needs only its certificate.
+    // Enabled, it is a portfolio member (solve_impl); alone, it answers alone.
     const CubeOptions co = resolve_cube_options(opt.cube);
     SolveResult r;
-    if (co.enabled == 1 && !opt.certified && !opt.known_unsat) {
+    if (co.enabled == 1 && co.alone && !opt.certified && !opt.known_unsat) {
         try {
-            r = solve_with_cubes(c, formula, opt, co);
+            r = solve_cube_alone(c, formula, opt);
         } catch (const z3::exception& e) {
             r = SolveResult{};
             r.kind = SolveResult::Error;

@@ -238,23 +238,19 @@ struct Term : CaDiCaL::Terminator {
 
 }  // namespace
 
-SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const SolveOptions& opt, double timeout_s,
-                             const std::atomic<bool>* stop) {
+CubeCnfAnswer cube_solve_cnf(const Cnf& cnf, const CubeOptions& co_in, std::uint64_t seed, double timeout_s,
+                             const std::atomic<bool>* stop, CubeStats& stats) {
     const double t0 = now_s();
     const double deadline = t0 + std::max(0.01, timeout_s);
-    const CubeOptions co = resolve_cube_options(opt.cube);
-    SolveResult res;
-    res.kind = Kind::Unknown;
-    res.winner.clear();
-    CubeStats& stats = res.cube;
+    const CubeOptions co = resolve_cube_options(co_in);
+    CubeCnfAnswer res;
     stats.ran = true;
     std::vector<std::string> notes;
-    auto finish = [&](SolveResult& r) -> SolveResult {
+    auto finish = [&](CubeCnfAnswer& r) -> CubeCnfAnswer {
         stats.wall_s = now_s() - t0;
         std::string n;
         for (const auto& x : notes) n += (n.empty() ? "" : "; ") + x;
         r.note = n;
-        r.wall_s = stats.wall_s;
         return r;
     };
     if (!cube_engine_available(&stats.engine)) {
@@ -262,41 +258,18 @@ SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const Solv
         return finish(res);
     }
 #ifdef PRISM_HAS_CADICAL_LIB
-    // ---------------------------------------------------------------- CNF
-    std::optional<Cnf> cnf_o;
-    {
-        std::string why;
-        const double b0 = now_s();
-        try {
-            z3::context bc;
-            z3::expr bf(bc, Z3_translate(c, formula, bc));
-            prism::membudget::Phase phase("cube: bit-blast");
-            cnf_o = detail::bitblast_fresh(bc, bf, &why);
-        } catch (const z3::exception& e) {
-            why = std::string("bit-blast: ") + e.msg();
-        }
-        stats.blast_s = now_s() - b0;
-        if (!cnf_o) {
-            notes.push_back("cube: no CNF (" + why + ")");
-            return finish(res);
-        }
-    }
-    const Cnf& cnf = *cnf_o;
     stats.cnf_vars = cnf.num_vars;
     stats.cnf_clauses = cnf.clauses.size();
     for (const auto& cl : cnf.clauses)
         if (cl.empty()) {
-            // the bit-blaster decided the formula: one leaf, the empty cube,
-            // closed by the empty clause
-            res.kind = Kind::Unsat;
-            res.winner = "cube(cnf-empty-clause)";
+            res.kind = CubeCnfAnswer::Unsat;  // the empty cube, closed by the empty clause
+            res.by = "cnf-empty-clause";
             stats.leaves = 1;
             stats.cover_checked = true;
             notes.push_back("cube: the CNF has an empty clause");
             return finish(res);
         }
     if ((stop && stop->load()) || now_s() > deadline) {
-        res.kind = Kind::Timeout;
         notes.push_back("cube: stopped before solving");
         return finish(res);
     }
@@ -533,7 +506,7 @@ SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const Solv
 #ifdef PRISM_HAS_CUDA
     if (co.gpu) {
         gpu_thread = std::thread([&] {
-            std::uint64_t seed = opt.seed * 7919 + 1;
+            std::uint64_t gseed = seed * 7919 + 1;
             bool whole = true;
             while (!halt.load() && !(stop && stop->load()) && now_s() < deadline) {
                 std::vector<int> fix;
@@ -569,7 +542,7 @@ SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const Solv
                 std::vector<std::int8_t> a;
                 CudaProbsatInfo info;
                 const double g0 = now_s();
-                const bool found = cuda_probsat_ex(*use, seed++, 200000, 2048, a, &info);
+                const bool found = cuda_probsat_ex(*use, gseed++, 200000, 2048, a, &info);
                 {
                     std::lock_guard<std::mutex> lk(t.mu);
                     stats.gpu_s += now_s() - g0;
@@ -645,27 +618,21 @@ SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const Solv
     }
 
     if (t.sat) {
-        auto model = model_from_assignment(cnf, t.assignment);
-        std::string why;
-        if (validate_model(c, formula, model, &why)) {
-            res.kind = Kind::Sat;
-            res.model = std::move(model);
-            res.winner = "cube(" + t.sat_by + ")";
-            return finish(res);
-        }
-        notes.push_back("cube: model from " + t.sat_by + " REJECTED by Z3 (" + why + "); no answer");
-        res.kind = Kind::Unknown;
+        // satisfies the CNF (checked when it was found); the caller validates
+        // the model against the formula
+        res.kind = CubeCnfAnswer::Sat;
+        res.assignment = std::move(t.assignment);
+        res.by = t.sat_by;
         return finish(res);
     }
     if (t.root_unsat) {
         // an empty core: the CNF alone is unsat; the partition is {empty cube}
-        res.kind = Kind::Unsat;
-        res.winner = "cube(cadical, empty core)";
+        res.kind = CubeCnfAnswer::Unsat;
+        res.by = "cadical, empty core";
         stats.cover_checked = cubes_cover({std::vector<int>{}});
         return finish(res);
     }
     if (open > 0 || !t.finished) {
-        res.kind = (stop && stop->load()) ? Kind::Unknown : Kind::Timeout;
         notes.push_back("cube: " + std::to_string(open) + " of " + std::to_string(leaves.size()) +
                         " cubes open: no answer (never UNSAT with an open cube)");
         return finish(res);
@@ -688,15 +655,100 @@ SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const Solv
         return finish(res);
     }
     stats.cover_checked = true;
-    res.kind = Kind::Unsat;
-    res.winner = "cube(cadical)";
+    res.kind = CubeCnfAnswer::Unsat;
+    res.by = "cadical";
     std::snprintf(buf, sizeof buf, "cube: %zu leaf cubes cover the space (checked by Z3 in %.2fs); every leaf UNSAT",
                   leaves.size(), stats.cover_s);
     notes.push_back(buf);
     return finish(res);
 #else
+    (void)cnf;
+    (void)seed;
+    (void)timeout_s;
+    (void)stop;
     return finish(res);
 #endif  // PRISM_HAS_CADICAL_LIB
+}
+
+SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const SolveOptions& opt, double timeout_s,
+                             const std::atomic<bool>* stop) {
+    const double t0 = now_s();
+    const double deadline = t0 + std::max(0.01, timeout_s);
+    SolveResult res;
+    res.kind = Kind::Unknown;
+    auto finish = [&](std::string note) -> SolveResult {
+        res.cube.wall_s = now_s() - t0;
+        res.note = std::move(note);
+        res.wall_s = res.cube.wall_s;
+        return res;
+    };
+    res.cube.ran = true;
+    if (!cube_engine_available(&res.cube.engine)) return finish("cube: " + res.cube.engine);
+    // ---------------------------------------------------------------- CNF
+    std::optional<Cnf> cnf_o;
+    std::string why;
+    const double b0 = now_s();
+    try {
+        z3::context bc;
+        z3::expr bf(bc, Z3_translate(c, formula, bc));
+        // the tactics poll Z3's cancel flag: interrupt them at the deadline
+        std::atomic<bool> blast_done{false};
+        std::thread timer([&] {
+            while (!blast_done.load()) {
+                if ((stop && stop->load()) || now_s() > deadline) {
+                    Z3_interrupt(bc);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        });
+        try {
+            prism::membudget::Phase phase("cube: bit-blast");
+            cnf_o = detail::bitblast_fresh(bc, bf, &why);
+        } catch (const z3::exception& e) {
+            why = std::string("bit-blast: ") + e.msg();
+        }
+        blast_done.store(true);
+        timer.join();
+    } catch (const z3::exception& e) {
+        why = std::string("bit-blast: ") + e.msg();
+    }
+    res.cube.blast_s = now_s() - b0;
+    if (!cnf_o) {
+        res.kind = now_s() > deadline ? Kind::Timeout : Kind::Unknown;
+        return finish("cube: no CNF (" + why + ")");
+    }
+    for (const auto& cl : cnf_o->clauses)
+        if (cl.empty()) {
+            // the bit-blaster decided the formula: one leaf, the empty cube,
+            // closed by the empty clause
+            res.kind = Kind::Unsat;
+            res.winner = "cube(cnf-empty-clause)";
+            res.cube.leaves = 1;
+            res.cube.cover_checked = true;
+            return finish("cube: the CNF has an empty clause");
+        }
+    const double blast_s = res.cube.blast_s;
+    const auto co = resolve_cube_options(opt.cube);
+    auto a = cube_solve_cnf(*cnf_o, co, opt.seed, deadline - now_s(), stop, res.cube);
+    res.cube.blast_s = blast_s;
+    if (a.kind == CubeCnfAnswer::Sat) {
+        auto model = model_from_assignment(*cnf_o, a.assignment);
+        if (validate_model(c, formula, model, &why)) {
+            res.kind = Kind::Sat;
+            res.model = std::move(model);
+            res.winner = "cube(" + a.by + ")";
+            return finish(a.note);
+        }
+        return finish(a.note + "; cube: model from " + a.by + " REJECTED by Z3 (" + why + "); no answer");
+    }
+    if (a.kind == CubeCnfAnswer::Unsat) {
+        res.kind = Kind::Unsat;
+        res.winner = "cube(" + a.by + ")";
+        return finish(a.note);
+    }
+    res.kind = (stop && stop->load()) ? Kind::Unknown : Kind::Timeout;
+    return finish(a.note);
 }
 
 #endif  // PRISM_HAS_Z3
