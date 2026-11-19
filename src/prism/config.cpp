@@ -534,6 +534,8 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_PROOF_CACHE", "directory of the proof cache"},
     {"PRISM_PROVER_FPK", "path of the FORGE prover model (.fpk)"},
     {"PRISM_PROVER_MODEL", "prover LLM model name"},
+    {"PRISM_SOLVER_DUMP_DIR", "diagnostics: directory that collects hard solver queries (<hash>.smt2 + index.jsonl)"},
+    {"PRISM_SOLVER_DUMP_MIN_S", "diagnostics: seconds after which an answered query is dumped too (default 5)"},
     {"PRISM_SOLVER_MODEL", "path of the solver-prediction model"},
     {"PRISM_SOLVER_PREDICT", "enable/disable solver prediction"},
     {"PRISM_TIMING", "diagnostics: 1 = print per-model-call timings (open, prefill, decode and its mask/sample/forward split) to stderr"},

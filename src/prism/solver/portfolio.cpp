@@ -1585,6 +1585,36 @@ SolveResult solve_guarded(z3::context& c, const z3::expr& formula, const SolveOp
 
 bool definitive(const SolveResult& r) { return r.kind == Kind::Sat || r.kind == Kind::Unsat; }
 
+// Diagnostics: $PRISM_SOLVER_DUMP_DIR collects the hard queries of a run (no
+// answer, or an answer after $PRISM_SOLVER_DUMP_MIN_S seconds, default 5) as
+// <dir>/<hash>.smt2 plus one line per query in <dir>/index.jsonl, so the
+// solver configurations can be compared on the same queries offline
+// (`prism --solve-smt2`). Skipped past the memory budget (printing a large
+// formula can cost several times its size).
+void maybe_dump(const z3::expr& formula, const SolveResult& r) {
+    const char* d = std::getenv("PRISM_SOLVER_DUMP_DIR");
+    if (!d || !*d) return;
+    double min_s = 5.0;
+    if (const char* m = std::getenv("PRISM_SOLVER_DUMP_MIN_S"); m && *m) min_s = std::atof(m);
+    if (definitive(r) && r.wall_s < min_s) return;
+    if (prism::membudget::over_budget()) return;
+    try {
+        const auto ft = features(formula);
+        const std::string txt = detail::external_smt2(formula, ft.logic());
+        const std::string h = sha256_hex(txt).substr(0, 24);
+        const fs::path dir(d);
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        const fs::path f = dir / (h + ".smt2");
+        if (!fs::exists(f, ec)) detail::write_file(f, txt);
+        json line{{"hash", h}, {"kind", std::string(kind_name(r.kind))}, {"wall_s", r.wall_s}, {"winner", r.winner},
+                  {"nodes", ft.nodes}, {"bucket", r.bucket}};
+        std::lock_guard<std::mutex> g(g_history_mu);
+        std::ofstream(dir / "index.jsonl", std::ios::app) << line.dump() << "\n";
+    } catch (const z3::exception&) {
+    }
+}
+
 std::string append_note(const std::string& a, const std::string& b) {
     if (a.empty()) return b;
     if (b.empty()) return a;
@@ -1710,17 +1740,20 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
     // Cube-and-conquer is for plain answers: certified requests need one LRAT
     // proof of the whole CNF, and a known unsat needs only its certificate.
     const CubeOptions co = resolve_cube_options(opt.cube);
+    SolveResult r;
     if (co.enabled == 1 && !opt.certified && !opt.known_unsat) {
         try {
-            return solve_with_cubes(c, formula, opt, co);
+            r = solve_with_cubes(c, formula, opt, co);
         } catch (const z3::exception& e) {
-            SolveResult r;
+            r = SolveResult{};
             r.kind = SolveResult::Error;
             r.note = std::string("internal error (z3, cube): ") + e.msg();
-            return r;
         }
+    } else {
+        r = solve_guarded(c, formula, opt);
     }
-    return solve_guarded(c, formula, opt);
+    maybe_dump(formula, r);
+    return r;
 }
 
 // `prism z3-worker FILE MB [RLIMIT]`: run an SMT-LIB script with Z3 and print its
