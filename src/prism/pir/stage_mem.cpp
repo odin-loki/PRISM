@@ -230,6 +230,39 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         };
         std::vector<FieldInvariant> kept = topt.field_invariants;
         std::string dropped;
+        const auto adopt = [&](Function&& g) {
+            auto name = fn.name;
+            auto file = fn.file;
+            auto line = fn.line;
+            fn = std::move(g);
+            fn.name = std::move(name);  // as the stage set them on the first translation
+            fn.file = std::move(file);
+            fn.line = line;
+        };
+        // First one re-check without every used row (the common case: the proof needs none of them), so a spent
+        // budget does not keep rows the proof never needed; then row by row for what is left.
+        {
+            std::vector<FieldInvariant> rest;
+            std::string all;
+            for (const auto& r : kept) {
+                if (row_used(fn, r)) all += (all.empty() ? "" : ", ") + r.struct_type + "@" + std::to_string(r.offset);
+                else rest.push_back(r);
+            }
+            if (!all.empty()) {
+                auto o = topt;
+                o.field_invariants = rest;
+                auto tr = translate(mod, irf, o);
+                if (tr.fn) {
+                    const auto r = recheck(*tr.fn, "without the field invariants " + all);
+                    if (r.status == v.status || (v.status == laws::PROVED_ASSUMING && r.status == laws::PROVED)) {
+                        if (r.status != v.status) v = r;
+                        dropped = all;
+                        kept = std::move(rest);
+                        adopt(std::move(*tr.fn));
+                    }
+                }
+            }
+        }
         for (std::size_t i = 0; i < kept.size();) {
             if (!row_used(fn, kept[i])) {
                 ++i;
@@ -247,13 +280,7 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
                     if (r.status != v.status) v = r;
                     dropped += (dropped.empty() ? "" : ", ") + kept[i].struct_type + "@" + std::to_string(kept[i].offset);
                     kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(i));
-                    auto name = fn.name;
-                    auto file = fn.file;
-                    auto line = fn.line;
-                    fn = std::move(*tr.fn);
-                    fn.name = std::move(name);  // as the stage set them on the first translation
-                    fn.file = std::move(file);
-                    fn.line = line;
+                    adopt(std::move(*tr.fn));
                     continue;
                 }
             }
