@@ -46,13 +46,16 @@ int64_t nested_ok(int32_t a) {
     return t;
 }
 
-/* Nested loops with a 32-bit accumulator: overflows for large a. */
+/* Nested loops with a 32-bit accumulator. Named _bad when written, but it
+ * does not overflow: 144 * 1e7 = 1.44e9 < INT_MAX (2.147e9). PRISM proves it
+ * (PROVED-UNBOUNDED, idiom round, 15 Nov 2026); the name is kept so earlier
+ * measurements stay comparable. */
 int nested_bad(int a) {
     if (a < 0 || a > 10000000) return 0;
     int t = 0;
     for (int i = 0; i < 12; i++)
         for (int j = 0; j < 12; j++)
-            t += a;                       /* 144 * 1e7 > INT_MAX */
+            t += a;                       /* at most 144 * 1e7 = 1.44e9 */
     return t;
 }
 

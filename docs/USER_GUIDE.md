@@ -92,6 +92,7 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--certified` | the `pir` stage asks for a checked certificate of every verification condition; a function whose VCs are all certified is `PROVED-CERTIFIED` (section 9) |
 | `--solver-cache DIR` | solver query cache and solve-time history (default `$XDG_CACHE_HOME/prism/solver`, else `~/.cache/prism/solver`) |
 | `--timeout S` | solver seconds per query (default 30) |
+| `--complexity N` | Z3 resource-limit (rlimit) units per pir query, so "not decided" is the same on every machine and core count; the wall clock stays as a larger backstop; 0 turns the limit off ([PIR.md](PIR.md) "Complexity limits") |
 | `--fail-on never\|defect\|gap` | exit-code policy for CI (section 5) |
 | `--resume` | reuse stages already `ok`/`NOTRUN` in `--out/stages.jsonl` (`report.json` as fallback) |
 | `--gui` | open the Qt GUI (C++ build with `-DPRISM_QT=ON`) |

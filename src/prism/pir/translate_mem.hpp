@@ -97,6 +97,12 @@ std::vector<std::string> entry_globals(const ir::Module& m, const Layout& lay, c
 // load, store or getelementptr through `p` accesses; 0 when unknown. Shared
 // with the Lean export (export_lean.cpp), which writes the contract object.
 uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir::Param& p, const PtrContract& c);
+// The same through wrappers: when f only passes p on, the first access
+// through the parameter of the module function it is passed to (a few calls
+// deep); 1 when p is only compared or returned. Used by translate.cpp
+// bind_contract and by the Lean export, so both size the object alike.
+uint64_t contract_elem_bytes_deep(const Layout& lay, const ir::Module& m, const ir::Function& f, const ir::Param& p,
+                                  const PtrContract& c, int depth = 0);
 
 // Whether `f` can reach a call of __prism_alloc_failed through direct calls
 // of module functions (the malloc/calloc/realloc models). The translator then

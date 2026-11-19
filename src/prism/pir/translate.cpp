@@ -2312,38 +2312,9 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     return true;
 }
 
-// The element size of a contract object: the first access through p, or,
-// when f only passes p on (a wrapper), the first access through the
-// parameter of the module function it is passed to (a few calls deep).
-uint64_t contract_elem_bytes_deep(const pirmem::Layout& lay, const ir::Module& m, const ir::Function& f,
-                                  const ir::Param& p, const PtrContract& c, int depth) {
-    if (auto esz = pirmem::contract_elem_bytes(lay, f, p, c); esz || depth >= 4) return esz;
-    for (auto& bl : f.blocks)
-        for (auto& in : bl.insts) {
-            if (in.op != "call" || in.callee.empty()) continue;
-            const auto* g = m.find(in.callee);
-            if (!g || g->blocks.empty() || g == &f) continue;
-            for (std::size_t i = 0; i < in.ops.size() && i < g->params.size(); ++i)
-                if (in.ops[i].v.kind == ir::Value::Local && in.ops[i].v.name == p.name)
-                    if (auto e = contract_elem_bytes_deep(lay, m, *g, g->params[i], c, depth + 1)) return e;
-        }
-    if (depth > 0) return 0;
-    // p is only compared or returned (list_is_head): no check of f reads
-    // the object's size, so one byte per element is as good as any.
-    for (auto& bl : f.blocks)
-        for (auto& in : bl.insts) {
-            bool uses = false;
-            for (auto& o : in.ops) uses = uses || (o.v.kind == ir::Value::Local && o.v.name == p.name);
-            for (auto& [o, _] : in.incoming) uses = uses || (o.v.kind == ir::Value::Local && o.v.name == p.name);
-            if (uses && in.op != "icmp" && in.op != "ret" && !(in.op == "call" && in.callee.starts_with("llvm.dbg")))
-                return 0;
-        }
-    return 1;
-}
-
 // Pointer parameter bound to a contract object (Law 6 relaxation, docs/PIR.md).
 void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrContract& c, Frame& top) {
-    uint64_t esz = contract_elem_bytes_deep(tr.mt.layout(), tr.m, f, p, c, 0);
+    uint64_t esz = pirmem::contract_elem_bytes_deep(tr.mt.layout(), tr.m, f, p, c);
     if (!esz)
         throw Unenc{"UNENCODED: element size of pointer parameter " + p.name + " unknown (contract " + c.text + ")"};
     Arg size;

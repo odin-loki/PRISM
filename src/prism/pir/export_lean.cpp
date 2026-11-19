@@ -766,7 +766,7 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
             continue;
         }
         if (c->count < 0) throw Unsupported{"pointer parameter with a symbolic-size contract (assumptions on the size)"};
-        const uint64_t esz = pirmem::contract_elem_bytes(lay, f, p, *c);
+        const uint64_t esz = pirmem::contract_elem_bytes_deep(lay, m, f, p, *c);
         if (!esz || static_cast<uint64_t>(c->count) > max_obj_size() / esz ||
             static_cast<uint64_t>(c->count) * esz >= max_obj_size())
             throw Unsupported{"contract object of unknown or too large size"};

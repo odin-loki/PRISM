@@ -141,8 +141,9 @@ TEST_CASE("pir refinement: globals and pointer harness share definitions") {
     CHECK(tr.find("mt.preassign_globals(f)") != std::string::npos);
     CHECK(tr.find("mt.emit_entry_globals()") != std::string::npos);
     CHECK(mem.find("uint64_t contract_elem_bytes(") != std::string::npos);
-    CHECK(tr.find("pirmem::contract_elem_bytes(tr.mt.layout(), f, p, c)") != std::string::npos);
-    CHECK(export_cpp.find("pirmem::contract_elem_bytes(lay, f, p, *c)") != std::string::npos);
+    CHECK(mem.find("uint64_t contract_elem_bytes_deep(") != std::string::npos);
+    CHECK(tr.find("pirmem::contract_elem_bytes_deep(tr.mt.layout(), tr.m, f, p, c)") != std::string::npos);
+    CHECK(export_cpp.find("pirmem::contract_elem_bytes_deep(lay, m, f, p, *c)") != std::string::npos);
     CHECK(mem.find("bool reaches_alloc_failed(") != std::string::npos);
     CHECK(tr.find("pirmem::reaches_alloc_failed(m, f)") != std::string::npos);
     CHECK(export_cpp.find("pirmem::reaches_alloc_failed(m, f)") != std::string::npos);

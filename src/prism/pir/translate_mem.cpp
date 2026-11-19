@@ -467,6 +467,36 @@ uint64_t contract_elem_bytes(const Layout& lay, const ir::Function& f, const ir:
     return 0;
 }
 
+// The element size of a contract object: the first access through p, or,
+// when f only passes p on (a wrapper), the first access through the
+// parameter of the module function it is passed to (a few calls deep).
+uint64_t contract_elem_bytes_deep(const Layout& lay, const ir::Module& m, const ir::Function& f,
+                                  const ir::Param& p, const PtrContract& c, int depth) {
+    if (auto esz = contract_elem_bytes(lay, f, p, c); esz || depth >= 4) return esz;
+    for (auto& bl : f.blocks)
+        for (auto& in : bl.insts) {
+            if (in.op != "call" || in.callee.empty()) continue;
+            const auto* g = m.find(in.callee);
+            if (!g || g->blocks.empty() || g == &f) continue;
+            for (std::size_t i = 0; i < in.ops.size() && i < g->params.size(); ++i)
+                if (in.ops[i].v.kind == ir::Value::Local && in.ops[i].v.name == p.name)
+                    if (auto e = contract_elem_bytes_deep(lay, m, *g, g->params[i], c, depth + 1)) return e;
+        }
+    if (depth > 0) return 0;
+    // p is only compared or returned (list_is_head): no check of f reads
+    // the object's size, so one byte per element is as good as any.
+    for (auto& bl : f.blocks)
+        for (auto& in : bl.insts) {
+            bool uses = false;
+            for (auto& o : in.ops) uses = uses || (o.v.kind == ir::Value::Local && o.v.name == p.name);
+            for (auto& [o, _] : in.incoming) uses = uses || (o.v.kind == ir::Value::Local && o.v.name == p.name);
+            if (uses && in.op != "icmp" && in.op != "ret" && !(in.op == "call" && in.callee.starts_with("llvm.dbg")))
+                return 0;
+        }
+    return 1;
+}
+
+
 void MemTr::preassign_globals(const ir::Function& f) {
     for (auto& name : entry_globals(t_.module(), lay_, f, t_.options().globals_initial)) {
         if (globals_.count(name)) continue;
