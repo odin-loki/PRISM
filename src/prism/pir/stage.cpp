@@ -135,6 +135,49 @@ std::vector<std::string> split_lines(const std::string& s) {
     return out;
 }
 
+// The unit's lines indexed by the line numbers its debug locations carry: a
+// `#line N` directive without a file name renumbers the lines after it (the
+// contracts stage's spliced units, stages/common.cpp pir_unit_text, put the
+// instrumented function back at its original line). Without such a
+// directive this is the file as it is.
+std::vector<std::string> presumed_lines(std::vector<std::string> raw) {
+    static const std::regex directive(R"(^\s*#\s*line\s+(\d+)\s*$)");
+    bool any = false;
+    for (auto& l : raw)
+        if (l.find("#") != std::string::npos && l.find("line") != std::string::npos && std::regex_match(l, directive)) {
+            any = true;
+            break;
+        }
+    if (!any) return raw;
+    // Lines before the first directive (a prelude) give way to the numbered
+    // lines; after it the first line given a number keeps it (an
+    // instrumented function longer than the original is followed by the
+    // file's next lines renumbered from where the original ended).
+    std::vector<std::string> out;
+    std::vector<char> set;  // 0: free, 1: prelude, 2: numbered
+    std::size_t cur = 1;
+    bool numbered = false;
+    std::smatch m;
+    for (auto& l : raw) {
+        if (l.find("line") != std::string::npos && std::regex_match(l, m, directive)) {
+            cur = std::max<std::size_t>(1, std::stoul(m[1].str()));
+            numbered = true;
+            continue;
+        }
+        if (cur > 1'000'000) break;
+        if (out.size() < cur) {
+            out.resize(cur);
+            set.resize(cur, 0);
+        }
+        if (set[cur - 1] < 2) {
+            out[cur - 1] = l;
+            set[cur - 1] = numbered ? 2 : 1;
+        }
+        ++cur;
+    }
+    return out;
+}
+
 bool ir_line_closes_function(const std::string& l) {
     std::string t = l;
     while (!t.empty() && t.back() == '\r') t.pop_back();
@@ -2487,7 +2530,7 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
     topt.folded = folded;
     std::set<int> used_folded;
     const auto unit_name = u.path.filename().string();
-    std::vector<std::string> src_lines = split_lines(read_file(u.path));
+    std::vector<std::string> src_lines = presumed_lines(split_lines(read_file(u.path)));
     pirmem::UnitInfo uinfo{u.path, u.rel, is_cxx(u.path), src_lines, std::nullopt};
     std::vector<int> starts;  // DISubprogram lines of this unit, sorted
     if (is_cxx(u.path)) {

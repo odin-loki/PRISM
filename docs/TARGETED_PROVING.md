@@ -90,6 +90,9 @@ row is a proven negative, and only about the template family.
   function against it (Law 4).
 - Gate: every library contract proved; the kernel-model share of
   NEEDS-HARNESS reasons (`prism library stats`) falls.
+- Status (15 Nov 2026): [CONTRACTS.md](CONTRACTS.md) (results, kernel
+  callee contracts, OS-Proving priority table); open items in
+  `testdata/contracts/GAPS.md`.
 
 ### W5. Targets and metrics for everything
 - Per function in every report: `extra.metrics` = rlimit units spent per

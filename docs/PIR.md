@@ -444,6 +444,12 @@ checks inside a model report the call site's line and name the model
 
 Unmodelled external calls stay `NEEDS-HARNESS` (`UNENCODED: call @name`).
 
+Kernel and data-structure callees (`src/prism/pir/models/kernel/kernel.cpp`:
+lists, bit operations, find_*_bit, ilog2, refcount/kref, kmalloc/kzalloc/kfree,
+strscpy, locks, MMIO, static keys) are linked the same way; each lists
+"callee behaves as the library contract kernel:<name>" as an assumption, so
+a proof through one is PROVED-ASSUMING ([CONTRACTS.md](CONTRACTS.md)).
+
 **Building the models.** The lowered models are built once per run, before
 any unit, with their own time limit (`max(120 s, 4 × --timeout)` per clang
 and opt call, where a unit gets `--timeout`), and a call that times out is
