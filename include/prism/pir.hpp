@@ -392,6 +392,11 @@ struct FoldedUb {              // clang constant-folded UB (diagnostic at line:c
     std::string msg;
 };
 
+// A folded diagnostic that is not undefined behaviour in a -fwrapv / -fno-strict-overflow build (--pir-build-semantics):
+// clang's -Winteger-overflow (signed + - * of constants), -Wshift-sign-overflow, -Wshift-negative-value and
+// -Wshift-overflow (signed << results). Shift-amount and division diagnostics stay UB.
+PRISM_API bool wraps_under_fwrapv(const FoldedUb& f);
+
 // A pointer-parameter precondition (Law 6): `// requires: \valid(p+(0..n-1))`
 // (or ACSL `/*@ requires ... */`) or a drafted harness gives the size of the
 // object p points to; p is then bound to a fresh object and a proof is
@@ -532,6 +537,12 @@ struct TranslateOptions {
     bool addr_values = false;
     // --pir-builtin-contracts (kernel mode): contracts for @llvm.read_register / @llvm.prefetch / @llvm.objectsize
     bool builtin_contracts = false;
+    // --pir-build-semantics with a unit built with -fwrapv / -fno-strict-overflow (lowered with -fwrapv, so clang emits no
+    // nsw): signed `<<` into / past the sign bit or of a negative value wraps, and clang's folded signed-overflow and
+    // signed-shift diagnostics are not UB. Shift amounts, division and memory are checked as before.
+    bool wrapv = false;
+    // --pir-kernel-stops (kernel mode): Linux BUG() and panic / vpanic / kassert_panic end the path (named assumption)
+    bool kernel_stops = false;
 };
 
 // Ops-table entries derived from the module itself (--pir-ops-auto): every `store ptr @f, getelementptr %struct.T, p, 0, K`

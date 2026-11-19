@@ -103,6 +103,8 @@ struct Config {
     bool pir_ops_auto = false;
     bool pir_addr_values = false;
     bool pir_harness_deep = false;
+    bool pir_build_semantics = false;
+    bool pir_kernel_stops = false;      // --pir-kernel-stops: BUG() / panic() end the path (named), not a FUNC-CONTRACT finding   // --pir-build-semantics: take the unit's -fwrapv / -fno-strict-overflow (signed + - * << wrap)
     bool pir_builtin_contracts = false;  // --pir-builtin-contracts: contracts for llvm.read_register / prefetch / objectsize (needs --kernel-api)
     // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
     // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.

@@ -751,9 +751,10 @@ struct UnitCc {
     int cxx_std = 0;           // C++ unit: the entry's -std=c++NN year, else 0
     std::string note;          // what was taken and what was not (finding extra "front_end_flags")
     fs::path main_file;        // a preprocessed unit: the source file its #line markers name
+    bool wrapv = false;        // --pir-build-semantics: the entry has -fwrapv / -fno-strict-overflow, and -fwrapv is taken
 };
 
-UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit) {
+UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semantics = false) {
     UnitCc out;
     const auto e = astlint::compile_db_command(db, unit);
     out.ambiguous = e.ambiguous;
@@ -812,6 +813,10 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit) {
             out.flags.push_back(x);
         } else if (x == "-w" || x.starts_with("-W")) {
             if (x == "-w") dropped.push_back("-w");
+        } else if (build_semantics && (x == "-fwrapv" || x == "-fno-strict-overflow")) {
+            // --pir-build-semantics: the build's signed-overflow semantics (clang: -fno-strict-overflow is -fwrapv)
+            if (!out.wrapv) out.flags.push_back("-fwrapv");
+            out.wrapv = true;
         } else if (kSemantic.count(x) || x.starts_with("-ftrivial-auto-var-init=") ||
                    x == "-fno-delete-null-pointer-checks") {
             dropped.push_back(x);
@@ -821,6 +826,10 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit) {
     out.note = "compile_commands.json entry " + e.file.string();
     if (!std_taken.empty()) out.note += "; " + std_taken;
     if (pre) out.note += "; preprocessed unit: only language and ABI flags taken";
+    if (out.wrapv)
+        out.note += "; taken (--pir-build-semantics): -fwrapv (the build's -fwrapv / -fno-strict-overflow: signed + - * and "
+                    "signed << wrap, so signed overflow and signed shifts into the sign bit are not reported; shift amounts, "
+                    "division, pointers and memory are checked as before)";
     if (!dropped.empty()) {
         out.note += "; not taken (PIR keeps ISO C undefined behaviour and its warnings): ";
         for (std::size_t k = 0; k < dropped.size(); ++k) out.note += (k ? ", " : "") + dropped[k];
@@ -2324,6 +2333,7 @@ struct Lowered {
     std::vector<std::pair<int, int>> sshl;
     std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
     std::string cc_note;     // --compile-commands: the entry used and the flags not taken
+    bool wrapv = false;      // --pir-build-semantics: lowered with the build's -fwrapv
     fs::path cc_main;        // a preprocessed unit (x.i): the entry's source file (x.c), whose name its #line markers carry
     // Functions the front end rejected, cut out so the rest of the unit could
     // be lowered (salvage_unit): name, line, the first clang error.
@@ -3047,6 +3057,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     topt.signed_shl = sshl;
     topt.shl_cxx = is_cxx(u.path);
     topt.folded = folded;
+    topt.wrapv = low.wrapv;
+    topt.kernel_stops = cfg.pir_kernel_stops;
     if (!cfg.ops_table.empty()) {  // --ops-table (docs/PIR.md "Indirect calls through ops tables")
         std::string ops_err;
         topt.ops_table = load_ops_table(cfg.ops_table, ops_err);
@@ -3252,6 +3264,7 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     // Folded UB that no instruction carries: the function cannot be proved.
     for (std::size_t k = 0; k < folded.size(); ++k) {
         if (folded[k].line > 0) continue;  // marker is in the IR: checked (or its function is not encoded)
+        if (low.wrapv && wraps_under_fwrapv(folded[k])) continue;  // --pir-build-semantics: wraps, not UB
         int line = -folded[k].line;
         FnRec* owner = nullptr;
         for (auto& r : recs)
@@ -3486,13 +3499,14 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             // defines and ABI flags) replace the scan-root database.
             bool cc_found = false;
             if (!cfg.compile_commands.empty()) {
-                auto cc = unit_cc_flags(cfg.compile_commands, u.path);
+                auto cc = unit_cc_flags(cfg.compile_commands, u.path, cfg.pir_build_semantics);
                 cc_found = cc.found;
                 if (cc.found) {
                     inc = std::move(cc.flags);
                     if (cc.cxx_std > 0) cxx_std = cc.cxx_std;
                     l.cc_note = std::move(cc.note);
                     l.cc_main = std::move(cc.main_file);
+                    l.wrapv = cc.wrapv;
                 } else {
                     l.cc_note = cc.ambiguous
                                     ? "--compile-commands: several entries match this preprocessed unit's stem; default flags used"

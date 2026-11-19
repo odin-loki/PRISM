@@ -203,3 +203,78 @@ TEST_CASE("pir model depth: a small call tree is inlined past inline_depth exact
     CHECK(msg.find("UNENCODED: call depth > 4") != std::string::npos);
 }
 #endif
+
+namespace {
+
+KRun stops_run(const std::string& ir, const std::string& fn, bool stops) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(ir));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = "linux";
+    o.kernel_stops = stops;
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+// BUG_ON(d == 0) then 100 / d: Linux x86 BUG() is the ud2 asm with a __bug_table entry, then unreachable
+const char* kBugOn = R"IR(define i32 @bug_on_div(i32 %d) {
+entry:
+  %z = icmp eq i32 %d, 0
+  br i1 %z, label %bug, label %ok
+bug:
+  call void asm sideeffect "1: ud2; .pushsection __bug_table; 2: .long 1b - .; .popsection", ""()
+  unreachable
+ok:
+  %q = sdiv i32 100, %d
+  ret i32 %q
+}
+define i32 @warn_on_div(i32 %d) {
+entry:
+  %z = icmp eq i32 %d, 0
+  br i1 %z, label %warn, label %ok
+warn:
+  call void asm sideeffect "1: ud2; .pushsection __bug_table; 2: .long 1b - .; .popsection", ""()
+  br label %ok
+ok:
+  %q = sdiv i32 100, %d
+  ret i32 %q
+}
+define i32 @panic_div(i32 %d) {
+entry:
+  %z = icmp eq i32 %d, 0
+  br i1 %z, label %p, label %ok
+p:
+  call void (ptr, ...) @panic(ptr null)
+  unreachable
+ok:
+  %q = sdiv i32 100, %d
+  ret i32 %q
+}
+declare void @panic(ptr, ...)
+)IR";
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-kernel-stops ends the path at BUG() and panic(), named; WARN() continues") {
+    // without the flag: BUG() reaches unreachable (reported), panic has no model here (UNENCODED): never PROVED
+    auto bug0 = stops_run(kBugOn, "bug_on_div", false);
+    CHECK(bug0.status != prism::laws::PROVED);
+    auto pan0 = stops_run(kBugOn, "panic_div", false);
+    CHECK(pan0.status != prism::laws::PROVED);
+    // with it: the path through BUG() / panic() ends; the division on the other path is guarded
+    auto bug = stops_run(kBugOn, "bug_on_div", true);
+    CHECK_MESSAGE(bug.status == prism::laws::PROVED, (bug.status + " " + bug.msg));
+    CHECK(has(bug.assumptions, "kernel-stop: BUG()"));
+    auto pan = stops_run(kBugOn, "panic_div", true);
+    CHECK_MESSAGE(pan.status == prism::laws::PROVED, (pan.status + " " + pan.msg));
+    CHECK(has(pan.assumptions, "kernel-stop: @panic does not return"));
+    // WARN(): the same asm without unreachable after it continues, so d == 0 reaches the division
+    auto warn = stops_run(kBugOn, "warn_on_div", true);
+    CHECK_MESSAGE(warn.status == prism::laws::FAILED, (warn.status + " " + warn.msg));
+}
+#endif

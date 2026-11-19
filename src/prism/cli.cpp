@@ -209,6 +209,12 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-builtin-contracts") {
             ok = in.flag();
             cfg.pir_builtin_contracts = true;
+        } else if (a == "--pir-build-semantics") {
+            ok = in.flag();
+            cfg.pir_build_semantics = true;
+        } else if (a == "--pir-kernel-stops") {
+            ok = in.flag();
+            cfg.pir_kernel_stops = true;
         } else if (a == "--pir-harness-deep") {
             ok = in.flag();
             cfg.pir_harness_deep = true;
@@ -421,6 +427,10 @@ std::string cli_usage() {
         "  stores; a harness function-pointer field is bound to one of its targets (named assumption).\n"
         "  --pir-addr-values: ptrtoint / inttoptr constant expressions. --pir-harness-deep: depth 4, 64 objects.\n"
         "  --pir-builtin-contracts: with --kernel-api, contracts for llvm.read_register / prefetch / objectsize.\n"
+        "  --pir-build-semantics: with --compile-commands, a unit built with -fwrapv or -fno-strict-overflow\n"
+        "  is checked with that semantics: signed + - * and << wrap (not UB); every other check stays (named).\n"
+        "  --pir-kernel-stops: with --kernel-api, Linux BUG() and panic() / kassert_panic() end the path\n"
+        "  (a named assumption: the verdict covers the paths that do not stop there).\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
         "--ops-table FILE: an indirect call through a field of a known ops table (TSV: struct\n"

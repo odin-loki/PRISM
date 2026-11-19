@@ -80,4 +80,10 @@ std::vector<FoldedUb> parse_folded_clang_diagnostics(const std::string& text, co
     return out;
 }
 
+bool wraps_under_fwrapv(const FoldedUb& f) {
+    for (const char* flag : {"[-Winteger-overflow]", "[-Wshift-sign-overflow]", "[-Wshift-negative-value]", "[-Wshift-overflow]"})
+        if (f.msg.ends_with(flag)) return true;
+    return false;
+}
+
 }  // namespace prism::pir

@@ -852,6 +852,20 @@ struct Tr final : pirmem::TrApi {
                     terminated = true;
                     continue;
                 }
+                if (in.op == "call" && in.is_asm && opt.kernel_stops && !opt.kernel_api.empty() &&
+                    in.asm_text.find("ud2") != std::string::npos && in.asm_text.find("__bug_table") != std::string::npos) {
+                    // --pir-kernel-stops: Linux BUG() is `asm volatile("ud2" + __bug_table entry); __builtin_unreachable()`.
+                    // Only that shape (the asm directly followed by unreachable): WARN() uses the same asm and continues.
+                    const auto k = static_cast<std::size_t>(&in - bl.insts.data());
+                    if (k + 1 < bl.insts.size() && bl.insts[k + 1].op == "unreachable") {
+                        note_assumption("kernel-stop: BUG() (ud2 with a __bug_table entry, then unreachable) stops the kernel thread: "
+                                        "the paths that reach it end there, and the verdict is for the paths that do not");
+                        out.blocks[static_cast<std::size_t>(cur)].term = Term{};
+                        tail[q] = cur;
+                        terminated = true;
+                        continue;
+                    }
+                }
                 inst(fr, in, cur, l, noreturn);
                 if (noreturn) {
                     // exit/abort/assert: the rest of the block is dead
@@ -1092,7 +1106,9 @@ struct Tr final : pirmem::TrApi {
             check(cur, p2(cur, Op::ShiftOob, a, b), "shift", "INT-SHIFT-UB", "shift amount >= width", line);
             bool signed_c = std::find(opt.signed_shl.begin(), opt.signed_shl.end(),
                                       std::make_pair(l.line, l.col)) != opt.signed_shl.end();
-            if (signed_c && opt.shl_cxx) {
+            if (signed_c && opt.wrapv) {
+                // --pir-build-semantics, -fwrapv build: a signed << wraps like an unsigned one (only the amount is checked)
+            } else if (signed_c && opt.shl_cxx) {
                 check(cur, p2(cur, Op::ShlNuwOvf, a, b), "shift-base", "INT-SHIFT-UB",
                       "signed left shift whose result does not fit the unsigned type (C++ before C++20)", line);
                 check(cur, p2(cur, Op::Slt, a, zero), "shift-base", "INT-SHIFT-UB",
@@ -1292,6 +1308,16 @@ struct Tr final : pirmem::TrApi {
     void call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, bool& noreturn) {
         int line = l.line;
         const auto& n = in.callee;
+        if (opt.kernel_stops && !opt.kernel_api.empty() && (n == "panic" || n == "vpanic" || n == "kassert_panic")) {
+            const auto* def = m.find(n);
+            if (!def || def->is_model || def->blocks.empty()) {
+                // --pir-kernel-stops: the kernel does not return from panic(9) / KASSERT's kassert_panic
+                note_assumption("kernel-stop: @" + n + " does not return (the kernel stops): the paths that call it end there, "
+                                "and the verdict is for the paths that do not");
+                noreturn = true;
+                return;
+            }
+        }
         {
             // undef arguments (refinement finding 4): UB for a noundef
             // parameter; an inlined callee would use the value as one value,
@@ -1527,6 +1553,10 @@ struct Tr final : pirmem::TrApi {
             if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Int) throw Unenc{"UNENCODED: call @" + n};
             auto k = static_cast<std::size_t>(in.ops[0].v.bits);
             std::string cls = "UB-POISON", msg = "undefined behaviour folded by clang";
+            if (k < opt.folded.size() && opt.wrapv && wraps_under_fwrapv(opt.folded[k])) {
+                folded_used.insert(static_cast<int>(k));
+                return;  // -fwrapv build: clang's folded signed overflow / signed shift is the wrapped value, not UB
+            }
             if (k < opt.folded.size()) {
                 cls = opt.folded[k].cls;
                 msg = "undefined behaviour folded by clang: " + opt.folded[k].msg;
