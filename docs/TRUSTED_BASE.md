@@ -310,3 +310,14 @@ Built under `~/.prism/tools/<name>/<commit>/bin/` (the layout
 | `prism-bitblast`, `prism-lrat-check` | built from `proofs/techniques` (`lake build`, Lean 4.34.0) | The proved bit-blaster and Lean's verified LRAT checker (1.1). Found under `~/.prism/tools`, on `PATH`, or in `proofs/techniques/.lake/build/bin` of the source tree PRISM was built from |
 | Bitwuzla | 0.9.1 (`8d1eb01093ae`), `prism-deps tool bitwuzla` | Portfolio member when present on `PATH` or under `~/.prism/tools/bitwuzla/` |
 | Z3 | 4.13.4 (vendored `third_party/z3`) | In-process member, bit-blaster, model validation |
+
+## Module results (`prism-module`)
+
+`prism-module` ([DEVICE_MODEL.md](DEVICE_MODEL.md)) emits `FAILED`, `BOUNDED`, `UNKNOWN`, `TIMEOUT`,
+`NEEDS-HARNESS` or `NOTRUN`, never a `PROVED*` verdict. A `BOUNDED` there rests on everything in the `pir`
+stage's trusted base for the harness function, and in addition on code that is not proved and that the report
+lists as assumptions: the device model (a `.pdm` file, validated or not as its `validation` line says), the
+kernel-API stubs and ghost state (`src/prism/pir/models/device/*.h`, a local stand-in for the R2 API table),
+the bus and framework glue of the module description (hand-written C), the harness bounds (steps, interrupts,
+device events, devres and lock slots), and that interrupts interleave only at the points the harness names.
+Nothing in this list is checked by the certificate path.

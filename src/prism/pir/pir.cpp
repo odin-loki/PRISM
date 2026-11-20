@@ -182,6 +182,7 @@ std::string mem_stmt_text(const Function& fn, const Stmt& s) {
         case Stmt::StackSave: return var_text(fn, s.dst) + " = stacksave";
         case Stmt::StackRestore: return "stackrestore " + args;
         case Stmt::Revive: return "revive " + args;
+        case Stmt::MemHavoc: return "havocmem";
         default: return "?";
     }
 }
@@ -644,6 +645,8 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                     }
                     case Stmt::StackSave: setv(s.dst, M.token(), false); break;
                     case Stmt::StackRestore: M.stack_restore(A(0)); break;
+                    // the concrete run cannot choose arbitrary bytes: every later load is tainted
+                    case Stmt::MemHavoc: mem_taint = true; break;
                     default: break;
                 }
                 continue;

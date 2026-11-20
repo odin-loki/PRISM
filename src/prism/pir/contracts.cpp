@@ -16,8 +16,11 @@
 #include "prism/pir.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
+#include <string_view>
 
 namespace prism::pir {
 
@@ -197,6 +200,95 @@ std::vector<PtrContract> parse_contracts(const std::vector<std::string>& lines, 
             }
         }
     }
+    return out;
+}
+
+}  // namespace prism::pir
+
+namespace prism::pir {
+
+namespace {
+
+std::string_view trim_sv(std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.remove_suffix(1);
+    return s;
+}
+
+}  // namespace
+
+std::vector<LockContract> parse_lock_contracts(std::string_view tsv, std::string* error) {
+    std::vector<LockContract> out;
+    int n = 0;
+    auto fail = [&](const std::string& why) {
+        if (error) *error = "line " + std::to_string(n) + ": " + why;
+        return std::vector<LockContract>{};
+    };
+    while (!tsv.empty()) {
+        auto nl = tsv.find('\n');
+        std::string_view line = tsv.substr(0, nl);
+        tsv = nl == std::string_view::npos ? std::string_view() : tsv.substr(nl + 1);
+        ++n;
+        auto t = trim_sv(line);
+        if (t.empty() || t.front() == '#') continue;
+        std::vector<std::string_view> f;
+        std::string_view rest = line;
+        for (;;) {
+            auto tab = rest.find('\t');
+            f.push_back(trim_sv(rest.substr(0, tab)));
+            if (tab == std::string_view::npos) break;
+            rest = rest.substr(tab + 1);
+        }
+        if (f[0] == "function") continue;
+        if (f.size() < 3 || f.size() > 4) return fail("expected 3 or 4 tab-separated columns");
+        if (f[0].empty()) return fail("empty function name");
+        LockContract c;
+        c.function = std::string(f[0]);
+        c.lock = std::string(f[1]);
+        c.action = std::string(f[2]);
+        if (f[1].starts_with("global:")) {
+            if (f[1].size() == 7) return fail("empty global name");
+        } else if (f[1].starts_with("arg:")) {
+            auto d = f[1].substr(4);
+            if (d.empty() || d.size() > 9) return fail("bad argument index");
+            for (char ch : d)
+                if (ch < '0' || ch > '9') return fail("bad argument index");
+        } else if (f[1].starts_with("field:")) {
+            // field:TYPE.INDEX -> the lock-order class "TYPE.#INDEX" (lock_order.cpp field_class); field names
+            // are not parsed (no debug info in the IR), so the index is required
+            auto body = f[1].substr(6);
+            auto dot = body.rfind('.');
+            if (dot == std::string_view::npos || dot == 0 || dot + 1 == body.size())
+                return fail("field must be field:TYPE.INDEX");
+            for (char ch : body.substr(dot + 1))
+                if (ch < '0' || ch > '9') return fail("field index must be a number (field names are not parsed)");
+            c.lock = "field:" + std::string(body.substr(0, dot)) + ".#" + std::string(body.substr(dot + 1));
+        } else {
+            return fail("lock must be global:NAME, arg:N or field:TYPE.INDEX");
+        }
+        if (f[2] != "acquires" && f[2] != "releases" && f[2] != "requires-held")
+            return fail("action must be acquires, releases or requires-held");
+        if (f.size() == 4) {
+            if (f[3] == "spin") c.spin = true;
+            else if (f[3] != "mutex") return fail("kind must be mutex or spin");
+        }
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+}  // namespace prism::pir
+
+namespace prism::pir {
+
+std::vector<LockContract> read_lock_contracts(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) throw std::runtime_error("--lock-contracts: cannot read " + path);
+    std::stringstream text;
+    text << in.rdbuf();
+    std::string err;
+    auto out = parse_lock_contracts(text.str(), &err);
+    if (!err.empty()) throw std::runtime_error("--lock-contracts " + path + ": " + err);
     return out;
 }
 

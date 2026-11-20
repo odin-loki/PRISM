@@ -198,7 +198,7 @@ SmtAnswer parse_smt_output(std::string_view out) {
 }
 
 // ------------------------------------------------------------------ the board
-enum class MemberKind { Z3, Smt2, Dimacs, Sls };
+enum class MemberKind { Z3, Smt2, Dimacs, Sls, Cube };
 
 struct Member {
     std::string name;
@@ -272,6 +272,9 @@ struct Jobs {
     std::shared_ptr<const Cnf> cnf;
     std::string cnf_sha;
     std::atomic<bool> blast_stop{false};            // the prism-bitblast process
+    std::mutex cube_mu;                             // the cube member's statistics and note
+    CubeStats cube;
+    std::string cube_note;
 };
 
 std::string subst(const std::string& a, const fs::path& input, const fs::path& proof) {
@@ -586,6 +589,7 @@ std::uint64_t rlimit_count(const z3::solver& s) {
 SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
     SolveResult res;
     const double t0 = now_s();
+    const CubeOptions cube_opts = resolve_cube_options(opt.cube);
     const unsigned rlimit = opt.rlimit;
     const double deadline = t0 + std::max(0.01, opt.timeout_s);
     // Certified requests: the certificate member (CaDiCaL with LRAT) and the
@@ -637,14 +641,24 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     // of priority_queue_contracts.cpp's queries pushed a 2 GB process past
     // 3.6 GB and into the kernel's OOM killer). Past half the memory budget
     // the query is solved without the cache, under a key no other query has.
+    // The same when the key's own copies would take the process there (about
+    // 400 bytes per node for the three to four copies): the key of one
+    // 5M-node query (bfq_find_bfqq_for_underused_actuator, 12000 MB budget)
+    // took the process from 2.8 to 10.4 GB without polling the interrupt,
+    // and the watchdog's hard stop ended the run with no record.
     const uint64_t budget = prism::membudget::budget_mb();
-    const bool skip_norm = budget > 0 && prism::membudget::rss_mb() * 2 >= budget;
+    const uint64_t key_mb = static_cast<uint64_t>(ft.nodes) * 400 / (1024 * 1024);
+    const bool skip_norm = budget > 0 && (prism::membudget::rss_mb() + key_mb) * 2 >= budget;
+    if (prism::settings::mem_trace().is_set())
+        std::fprintf(stderr, "[memtrace] query features nodes=%zu rss=%llu skip_key=%d\n", static_cast<std::size_t>(ft.nodes),
+                     static_cast<unsigned long long>(prism::membudget::rss_mb()), skip_norm ? 1 : 0);
     if (skip_norm) {
         static std::atomic<uint64_t> uniq{0};
         norm = "prism-solver-query uncached (memory budget) " + std::to_string(::getpid()) + " " +
                std::to_string(uniq.fetch_add(1)) + " " + std::to_string(now_s());
-        notes.push_back("not cached: the process is over half its memory budget (" +
-                        std::to_string(prism::membudget::rss_mb()) + " of " + std::to_string(budget) + " MB)");
+        notes.push_back("not cached: the process with the cache key's copies (about " + std::to_string(key_mb) +
+                        " MB) is over half its memory budget (" + std::to_string(prism::membudget::rss_mb()) + " of " +
+                        std::to_string(budget) + " MB)");
     } else try {
         norm = normalized_query(c, formula, &canonical);
     } catch (const z3::exception& e) {
@@ -882,6 +896,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 }
             }
             if (opt.sls) add("sls", MemberKind::Sls, {}, "probsat-cpu");
+            // Cube-and-conquer (cube.cpp) on the CNF the other DIMACS members
+            // use; it joins after cube.after_s (below). Plain answers only.
+            if (cube_opts.enabled == 1 && !opt.certified && !opt.known_unsat) {
+                std::string what;
+                if (cube_engine_available(&what))
+                    add("cube", MemberKind::Cube, {}, what);
+                else
+                    notes.push_back("cube: " + what);
+            }
         }
         for (const auto& x : opt.extra_solvers) {
             if (x.input == ExternalSolver::Input::Dimacs && !blastable) continue;
@@ -999,6 +1022,15 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     }
     for (auto& mem : members)
         if (mem.lrat) mem.est = -1;  // the certificate path always gets a slot
+    for (auto& mem : members)
+        if (mem.kind == MemberKind::Cube) {
+            // only for a query the others have not answered by then
+            mem.not_before = std::max(mem.not_before, t0 + cube_opts.after_s);
+            mem.est = 1e6;
+            char buf[96];
+            std::snprintf(buf, sizeof buf, "cube joins after %.2fs (%u threads)", cube_opts.after_s, cube_opts.threads);
+            notes.push_back(buf);
+        }
     std::stable_sort(members.begin(), members.end(), [](const Member& a, const Member& b) { return a.est < b.est; });
     if (members.empty()) {
         res.kind = Kind::Unknown;
@@ -1272,6 +1304,44 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                 });
                 break;
             }
+            case MemberKind::Cube: {
+                // cube.cpp: Unsat only for a closed tree whose leaves cover
+                // the space; Sat only for an assignment of the CNF, whose
+                // model is validated below like every member's
+                auto cp = cnf;
+                const auto seed = opt.seed;
+                const CubeOptions co = cube_opts;
+                spawn(slot.name, [J = J.get(), i, left, stop, cp, seed, co] {
+                    Msg worker_msg;
+                    worker_msg.member = i;
+                    const double s0 = now_s();
+                    CubeStats st;
+                    CubeCnfAnswer a;
+                    try {
+                        a = cube_solve_cnf(*cp, co, seed, left, stop.get(), st);
+                    } catch (const std::exception& e) {
+                        a = CubeCnfAnswer{};  // no answer
+                        a.note = std::string("cube: stopped: ") + e.what();
+                    }
+                    worker_msg.secs = now_s() - s0;
+                    if (a.kind == CubeCnfAnswer::Sat) {
+                        worker_msg.kind = Kind::Sat;
+                        worker_msg.model = model_from_assignment(*cp, a.assignment);
+                    } else if (a.kind == CubeCnfAnswer::Unsat) {
+                        worker_msg.kind = Kind::Unsat;
+                    } else {
+                        worker_msg.kind = stop->load() ? Kind::Unknown : Kind::Timeout;
+                        worker_msg.detail = "no answer";
+                    }
+                    {
+                        std::lock_guard<std::mutex> g(J->cube_mu);
+                        J->cube = st;
+                        J->cube_note = a.note + (a.by.empty() ? "" : " [" + a.by + "]");
+                    }
+                    J->board.post(std::move(worker_msg));
+                });
+                break;
+            }
         }
     };
     auto fill_slots = [&] {
@@ -1279,7 +1349,7 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
             Member& mem = members.at(i);
             if (mem.started || mem.finished) continue;
             if (mem.not_before > now_s()) continue;
-            const bool on_cnf = mem.kind == MemberKind::Dimacs || mem.kind == MemberKind::Sls;
+            const bool on_cnf = mem.kind == MemberKind::Dimacs || mem.kind == MemberKind::Sls || mem.kind == MemberKind::Cube;
             if (running >= slots && !mem.lrat) break;
             if (on_cnf) {
                 if (cnf_state == CnfState::None) { start_blast(); continue; }
@@ -1559,14 +1629,24 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
         std::lock_guard<std::mutex> g(g_history_mu);
         std::ofstream(root / "watchdog.jsonl", std::ios::app) << line.dump() << "\n";
     }
+    {
+        // what the cube member did (it ran only if the others had no answer
+        // after cube.after_s)
+        std::lock_guard<std::mutex> g(J->cube_mu);
+        if (J->cube.ran) {
+            res.cube = J->cube;
+            notes.push_back(J->cube_note);
+        }
+    }
 
     return finish(res);  // the guard removes the work directory
 }
 
 }  // namespace
 
-SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
-    prism::complexity::install_z3_ballast();  // before the first query (complexity.hpp)
+namespace {
+
+SolveResult solve_guarded(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
     try {
         return solve_impl(c, formula, opt);
     } catch (const z3::exception& e) {
@@ -1580,6 +1660,96 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
         r.note = std::string("internal error: ") + e.what();
         return r;
     }
+}
+
+bool definitive(const SolveResult& r) { return r.kind == Kind::Sat || r.kind == Kind::Unsat; }
+
+// Diagnostics: $PRISM_SOLVER_DUMP_DIR collects the hard queries of a run (no
+// answer, or an answer after $PRISM_SOLVER_DUMP_MIN_S seconds, default 5) as
+// <dir>/<hash>.smt2 plus one line per query in <dir>/index.jsonl, so the
+// solver configurations can be compared on the same queries offline
+// (`prism --solve-smt2`). Skipped past the memory budget (printing a large
+// formula can cost several times its size).
+void maybe_dump(const z3::expr& formula, const SolveResult& r) {
+    const char* d = std::getenv("PRISM_SOLVER_DUMP_DIR");
+    if (!d || !*d) return;
+    double min_s = 5.0;
+    if (const char* m = std::getenv("PRISM_SOLVER_DUMP_MIN_S"); m && *m) min_s = std::atof(m);
+    if (definitive(r) && r.wall_s < min_s) return;
+    if (prism::membudget::over_budget()) return;
+    // $PRISM_SOLVER_DUMP_NOSMT=1: the index line only (no formula printing:
+    // for timing runs), keyed by Z3's structural hash
+    const char* nosmt = std::getenv("PRISM_SOLVER_DUMP_NOSMT");
+    const bool write_smt = !(nosmt && *nosmt && std::string(nosmt) != "0");
+    try {
+        const auto ft = features(formula);
+        const fs::path dir(d);
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        std::string h = "z3h" + std::to_string(formula.hash());
+        if (write_smt) {
+            const std::string txt = detail::external_smt2(formula, ft.logic());
+            h = sha256_hex(txt).substr(0, 24);
+            const fs::path f = dir / (h + ".smt2");
+            if (!fs::exists(f, ec)) detail::write_file(f, txt);
+        }
+        json line{{"hash", h}, {"kind", std::string(kind_name(r.kind))}, {"wall_s", r.wall_s}, {"winner", r.winner},
+                  {"nodes", ft.nodes}, {"bucket", r.bucket}};
+        if (r.cube.ran)
+            line["cube"] = {{"threads", r.cube.threads}, {"leaves", r.cube.leaves}, {"open", r.cube.open},
+                            {"closed_core", r.cube.closed_core}, {"wall_s", r.cube.wall_s},
+                            {"blast_s", r.cube.blast_s}, {"conquer_s", r.cube.conquer_s}, {"gpu_s", r.cube.gpu_s},
+                            {"gpu_calls", r.cube.gpu_calls}, {"gpu", r.cube.gpu}, {"engine", r.cube.engine},
+                            {"cnf_clauses", r.cube.cnf_clauses}};
+        std::lock_guard<std::mutex> g(g_history_mu);
+        std::ofstream(dir / "index.jsonl", std::ios::app) << line.dump() << "\n";
+    } catch (const z3::exception&) {
+    }
+}
+
+std::string append_note(const std::string& a, const std::string& b) {
+    if (a.empty()) return b;
+    if (b.empty()) return a;
+    return a + "; " + b;
+}
+
+// Cube-and-conquer alone (PRISM_CUBE_ALONE, the soundness gates): the cube
+// engine bit-blasts and answers by itself, no portfolio. Its SAT model is
+// validated once more here against the caller's formula. Otherwise the cube
+// engine is the portfolio's "cube" member (solve_impl). Not cached.
+SolveResult solve_cube_alone(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
+    SolveResult r = cube_and_conquer(c, formula, opt, opt.timeout_s, opt.stop);
+    if (r.kind == Kind::Sat && !validate_model(c, formula, r.model)) {
+        r.kind = Kind::Unknown;
+        r.note = append_note(r.note, "cube model rejected on re-validation");
+        r.model.clear();
+    }
+    r.ran.push_back("cube");
+    return r;
+}
+
+}  // namespace
+
+SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt) {
+    prism::complexity::install_z3_ballast();  // before the first query (complexity.hpp)
+    // Cube-and-conquer is for plain answers: certified requests need one LRAT
+    // proof of the whole CNF, and a known unsat needs only its certificate.
+    // Enabled, it is a portfolio member (solve_impl); alone, it answers alone.
+    const CubeOptions co = resolve_cube_options(opt.cube);
+    SolveResult r;
+    if (co.enabled == 1 && co.alone && !opt.certified && !opt.known_unsat) {
+        try {
+            r = solve_cube_alone(c, formula, opt);
+        } catch (const z3::exception& e) {
+            r = SolveResult{};
+            r.kind = SolveResult::Error;
+            r.note = std::string("internal error (z3, cube): ") + e.msg();
+        }
+    } else {
+        r = solve_guarded(c, formula, opt);
+    }
+    maybe_dump(formula, r);
+    return r;
 }
 
 // `prism z3-worker FILE MB [RLIMIT]`: run an SMT-LIB script with Z3 and print its

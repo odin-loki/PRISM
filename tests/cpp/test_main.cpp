@@ -4122,12 +4122,12 @@ TEST_CASE("pir: unmodelled constructs are named, pointer params are Law 6") {
     CHECK_FALSE(t.fn.has_value());
     CHECK(t.status == prism::laws::NEEDS_HARNESS);
     CHECK(t.reason.find("Law 6") != std::string::npos);
-    // alloca is encoded now (memory model); integer-to-pointer casts are not
+    // alloca is encoded now (memory model); integer-to-pointer casts are encoded as
+    // opaque pointers (named assumption inttoptr-opaque, docs/PIR.md "Pointer/integer casts")
     auto u = pir_of("define i32 @h(i64 %x) {\nentry:\n  %p = inttoptr i64 %x to ptr\n"
                     "  %v = load i32, ptr %p\n  ret i32 %v\n}\n",
                     "h");
-    CHECK_FALSE(u.fn.has_value());
-    CHECK(u.reason.rfind("UNENCODED: inttoptr", 0) == 0);
+    CHECK(u.fn.has_value());
     // double is encoded now (docs/PIR.md "Floating point"); x86_fp80 is not
     auto d = pir_of("define x86_fp80 @k(x86_fp80 %x) {\nentry:\n  ret x86_fp80 %x\n}\n", "k");
     CHECK(d.reason == "UNENCODED: parameter type x86_fp80 (floating-point format not modelled)");

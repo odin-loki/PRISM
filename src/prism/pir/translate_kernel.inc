@@ -1,0 +1,253 @@
+// Kernel mode of the Clang -> PIR translator (docs/KERNEL_MODELS.md; roadmap
+// requirements R2 and R3 of docs/feedback/DRIVER-REQUIREMENTS.md). Included by
+// translate.cpp after translate_ctl.inc: these are Tr member functions.
+//
+// Everything here is an *assumption*, not a proof step: each use is recorded
+// in Function::assumptions by note_assumption (a PROVED verdict becomes
+// PROVED-ASSUMING and lists it), and none of it is active without
+// `--kernel-api` (inline asm, atomics, barriers) or `--assume-unknown-calls`
+// (calls without a spec).
+//
+// Inline assembly (asm_havoc). The asm statement is one execution that
+//   * writes every direct output: the result of the call is an arbitrary value
+//     of its type (a pointer result: null or a pointer to a fresh object of
+//     kUnknownPtrBytes arbitrary initialised bytes, see opaque_ptr),
+//   * writes through every indirect output operand (`=*m`, `+*m`): the bytes of
+//     the object the pointer points into, from the pointer to the end of the
+//     object, become arbitrary (havoc_object_tail),
+//   * for a `~{memory}` clobber, may write any memory: every object's contents
+//     become arbitrary (Stmt::MemHavoc, havoc_all); object sizes, liveness and
+//     kinds are unchanged,
+//   * changes nothing else the memory model can see: registers and flags are
+//     not modelled. Without a memory clobber, memory that no indirect output
+//     writes is assumed unchanged (the assumption text says so).
+// An asm that is `volatile` is never removed or merged: it is translated where
+// it stands, once per execution. asm goto is a call that may continue at any of
+// its labels (callbr, translate.cpp).
+//
+// Calls without a spec (unknown_call, --assume-unknown-calls): the result is
+// havocked, the objects the pointer arguments point into are havocked from the
+// pointer to the end of the object (not Const, not freed objects), the callee
+// is assumed to return, not to free anything, not to retain or change any
+// other memory, not to call back into the unit.
+
+namespace {
+// bytes of the object an unknown pointer result points to (null is also possible)
+constexpr uint64_t kUnknownPtrBytes = uint64_t{1} << 20;
+}  // namespace
+
+void Tr::note_assumption(const std::string& text) {
+    for (auto& a : out.assumptions)
+        if (a == text) return;
+    out.assumptions.push_back(text);
+}
+
+namespace {
+std::vector<std::string> split_commas(const std::string& s) {
+    std::vector<std::string> r;
+    std::string cur;
+    int depth = 0;
+    for (char c : s) {
+        if (c == '{') ++depth;
+        if (c == '}') --depth;
+        if (c == ',' && depth == 0) {
+            r.push_back(cur);
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty() || !r.empty()) r.push_back(cur);
+    return r;
+}
+}  // namespace
+
+void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std::string& tag, const std::string& extra) {
+    // operands: evaluated once (undef / poison uses are checked)
+    std::vector<Arg> args;
+    for (auto& o : in.ops) args.push_back(operand(fr, o, cur, line));
+    bool mem_clobber = false;
+    std::size_t n_direct = 0, argi = 0;
+    std::set<std::size_t> written;  // operand indices written through (indirect outputs)
+    std::vector<bool> flag_out;     // per direct output: a condition-code output ("={@cc<cond>}")
+    for (auto c : split_commas(in.asm_constraints)) {
+        if (c.starts_with("~{")) {
+            if (c.find("memory") != std::string::npos) mem_clobber = true;
+            continue;
+        }
+        const bool is_out = !c.empty() && (c[0] == '=' || c[0] == '+');
+        const bool indirect = c.find('*') != std::string::npos;
+        if (is_out && !indirect) {
+            ++n_direct;
+            flag_out.push_back(c.find("{@cc") != std::string::npos);
+            continue;
+        }
+        if (is_out) written.insert(argi);
+        ++argi;
+    }
+    // a memory clobber: the asm may write any memory, so every object's contents are havocked
+    if (mem_clobber) havoc_memory(cur, line);
+    // --pir-kernel-current: a %gs read of the running thread (Linux current_task / pcpu_hot, FreeBSD pc_curthread at 0)
+    bool current_read = false;
+    if (opt.kernel_current && in.asm_text.find("%gs:") != std::string::npos && n_direct == 1 && written.empty() && !in.result.empty()) {
+        for (auto& o : in.ops) {
+            if (o.v.kind == ir::Value::Global &&
+                (o.v.name == "current_task" || o.v.name == "const_current_task" || o.v.name == "pcpu_hot"))
+                current_read = opt.kernel_api == "linux" && in.ty.kind == ir::Type::Int && in.ty.bits == ptr_w();
+            if ((o.v.kind == ir::Value::Int || o.v.kind == ir::Value::Zero) && o.v.bits == 0)
+                current_read = current_read || (opt.kernel_api == "freebsd" && in.ty.kind == ir::Type::Ptr);
+        }
+    }
+    if (current_read) {
+        int dst = result_var(fr, in);
+        Arg p = mt.alloc(cur, Arg::c(ptr_w(), kUnknownPtrBytes), MemKind::Extern, 2, "the running thread (current / curthread)", line);
+        if (dst >= 0) emit_assign(cur, dst, Op::Copy, {p});
+        if (in.ty.kind == ir::Type::Int) fr.ptr_ints.insert(in.result);
+        note_assumption("kernel-current: the %gs read of the running thread (Linux current, FreeBSD curthread) at line " +
+                        std::to_string(line) + " is a valid object of " + std::to_string(kUnknownPtrBytes) +
+                        " arbitrary bytes (the running thread exists; never NULL)");
+        return;
+    }
+    for (std::size_t i = 0; i < args.size() && i < in.ops.size(); ++i)
+        if (in.ops[i].ty.kind == ir::Type::Ptr && written.count(i)) mt.havoc_object_tail(cur, args[i], line);
+    // direct outputs: the call's result. A condition-code output ("={@cc<cond>}") is the value of one flag
+    // condition: 0 or 1 (GCC/clang flag output operands; clang asserts it with an llvm.assume after the asm), so its
+    // havoc is limited to {0, 1}: exact, no assumption.
+    std::size_t n_flag = 0;
+    auto havoc_out = [&](std::size_t k, int v) {
+        const unsigned w = out.vars[static_cast<std::size_t>(v)].width;
+        havoc(cur, w, false, false, v);
+        if (k < flag_out.size() && flag_out[k]) {
+            assume(cur, assign(cur, Op::Ule, 1, {Arg::v(v, w), Arg::c(w, 1)}, "cc"));
+            ++n_flag;
+        }
+    };
+    if (!in.result.empty()) {
+        if (auto pit = fr.pairs.find(in.result); pit != fr.pairs.end()) {
+            havoc_out(0, pit->second.first);
+            havoc_out(1, pit->second.second);
+        } else if (auto tu = fr.tuples.find(in.result); tu != fr.tuples.end()) {
+            // n direct outputs: each field arbitrary (a pointer field as a pointer result: null or a fresh object)
+            for (std::size_t k = 0; k < tu->second.size(); ++k) {
+                const int v = tu->second[k];
+                if (in.ty.elems.at(k).kind == ir::Type::Ptr)
+                    emit_assign(cur, v, Op::Copy, {opaque_ptr(cur, "asm output", line)});
+                else
+                    havoc_out(k, v);
+            }
+        } else if (in.ty.kind == ir::Type::Ptr) {
+            int dst = result_var(fr, in);
+            if (dst >= 0) emit_assign(cur, dst, Op::Copy, {opaque_ptr(cur, "asm output", line)});
+        } else if (in.ty.kind == ir::Type::Int) {
+            int dst = result_var(fr, in);
+            if (dst >= 0) havoc_out(0, dst);
+        } else if (in.ty.kind != ir::Type::Void) {
+            throw Unenc{"UNENCODED: inline assembly with outputs of type " + in.ty.text};
+        }
+    }
+    std::string what = tag + ": " + extra + "\"" + in.asm_constraints + "\" (line " + std::to_string(line) + "): ";
+    what += n_direct ? std::to_string(n_direct) + " output(s) havocked" : "no register output";
+    if (n_flag) what += " (" + std::to_string(n_flag) + " condition-code output(s): 0 or 1)";
+    if (!written.empty()) what += "; " + std::to_string(written.size()) + " indirect output(s) written through the pointer operand(s)";
+    if (mem_clobber)
+        what += "; memory clobber: every object's contents are havocked (the asm may write any memory)";
+    else
+        what += "; no memory effect besides the outputs (memory no indirect output writes is assumed unchanged)";
+    if (in.asm_sideeffect) what += "; volatile: translated once where it stands";
+    note_assumption(what);
+}
+
+// A pointer result of an unspecified function or asm: null or a pointer to a
+// fresh object of kUnknownPtrBytes arbitrary initialised bytes. (Not an
+// ERR_PTR value, and an access beyond the first kUnknownPtrBytes bytes is
+// reported as out of bounds: both are part of the assumption.)
+Arg Tr::opaque_ptr(int& cur, const std::string& what, int line) {
+    Arg is_null = havoc(cur, 1, false, false);
+    Arg p = mt.alloc(cur, Arg::c(ptr_w(), kUnknownPtrBytes), MemKind::Extern, 2, what, line);
+    return assign(cur, Op::Select, ptr_w(), {is_null, Arg::c(ptr_w(), 0), p}, "uptr");
+}
+
+// --pir-icall-havoc (kernel mode): an indirect call whose target is not one of the inlined candidates (more candidates
+// than the inlining bound, or a target outside the unit's address-taken functions) is one execution of an arbitrary
+// function: every object's contents become arbitrary (Stmt::MemHavoc, as an asm memory clobber), the result is
+// arbitrary (a pointer: NULL or a fresh object), and it is assumed to return and to free nothing. Named; returns the
+// result value (width w; nothing when w is 0).
+Arg Tr::icall_havoc(int& cur, const ir::Inst& in, unsigned w, int line, const std::string& why) {
+    havoc_memory(cur, line);
+    Arg r = Arg::c(1, 0);
+    if (w) {
+        if (in.ty.kind == ir::Type::Ptr) r = opaque_ptr(cur, "returned by an indirect call", line);
+        else r = havoc(cur, w, false, false);
+    }
+    note_assumption("icall-havoc: " + why + " (line " + std::to_string(line) +
+                    "): the call is one execution of an arbitrary function: every object's contents become arbitrary, the "
+                    "result is arbitrary, and it is assumed to return and to free nothing" +
+                    std::string(lk_ ? " and to leave PRISM's lock and context state (held locks, preempt, RCU) as it was" : ""));
+    return r;
+}
+
+void Tr::unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
+    const auto& n = in.callee;
+    std::vector<Arg> args;
+    for (auto& o : in.ops) args.push_back(operand(fr, o, cur, line));
+    std::size_t nptr = 0;
+    for (std::size_t i = 0; i < args.size() && i < in.ops.size(); ++i)
+        if (in.ops[i].ty.kind == ir::Type::Ptr) {
+            mt.havoc_object_tail(cur, args[i], line);
+            ++nptr;
+        }
+    if (!in.result.empty()) {
+        if (auto pit = fr.pairs.find(in.result); pit != fr.pairs.end()) {
+            for (int v : {pit->second.first, pit->second.second})
+                havoc(cur, out.vars[static_cast<std::size_t>(v)].width, false, false, v);
+        } else if (in.ty.kind == ir::Type::Ptr) {
+            int dst = result_var(fr, in);
+            if (dst >= 0) emit_assign(cur, dst, Op::Copy, {opaque_ptr(cur, "returned by @" + n, line)});
+        } else if (in.ty.kind == ir::Type::Int) {
+            int dst = result_var(fr, in);
+            if (dst >= 0) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, false, dst);
+        } else if (in.ty.kind != ir::Type::Void) {
+            throw Unenc{"UNENCODED: call @" + n + " (result of type " + in.ty.text + ")"};
+        }
+    }
+    note_assumption("unknown-call: @" + n + " has no spec (--assume-unknown-calls): its result is arbitrary, the " +
+                    std::to_string(nptr) +
+                    " object(s) its pointer argument(s) point into are havocked, and it is assumed to return, to free nothing "
+                    "and to change no other memory");
+}
+
+// --pir-global-harness-deep (Linux): the x86 MMIO accessors readb/w/l/q and writeb/w/l/q (arch/x86/include/asm/io.h
+// build_mmio_read / build_mmio_write): one `mov` between a register and an "m" operand, with a "memory" clobber that
+// is a compiler barrier. They get the semantics of the out-of-line specs (linux_mmio.cpp, linux-mmio): a read is an
+// arbitrary value of its width, a write has no effect on program memory, the register address is not checked. The
+// asm-havoc model would instead make every object's contents arbitrary at each access (the clobber), which loses the
+// harnessed globals (the MMIO base itself) between two register accesses. Only this exact template shape matches.
+bool Tr::asm_mmio(Frame& fr, const ir::Inst& in, int& cur, int line) {
+    if (!opt.global_harness_deep || opt.kernel_api != "linux") return false;
+    const std::string& t = in.asm_text;
+    if (t.size() < 10 || !t.starts_with("mov") || std::string("bwlq").find(t[3]) == std::string::npos) return false;
+    const unsigned w = t[3] == 'b' ? 8 : t[3] == 'w' ? 16 : t[3] == 'l' ? 32 : 64;
+    std::string rest = t.substr(4);
+    rest.erase(std::remove(rest.begin(), rest.end(), ' '), rest.end());
+    rest.erase(std::remove(rest.begin(), rest.end(), '	'), rest.end());
+    std::vector<std::string> cons;
+    for (auto c : split_commas(in.asm_constraints))
+        if (!c.starts_with("~{")) cons.push_back(c);
+    if (cons.size() != 2) return false;
+    const bool read = rest == "$1,$0" && (cons[0] == "=r" || cons[0] == "=q") && cons[1] == "*m" && in.ops.size() == 1 &&
+                      in.ty.kind == ir::Type::Int && in.ty.bits == w && !in.result.empty();
+    const bool write = rest == "$0,$1" && (cons[0] == "r" || cons[0] == "q") && cons[1] == "*m" && in.ops.size() == 2 &&
+                       in.ops[0].ty.kind == ir::Type::Int && in.ops[0].ty.bits == w && in.result.empty();
+    if (!read && !write) return false;
+    for (auto& o : in.ops) (void)operand(fr, o, cur, line);  // undef / poison operands are still checked
+    if (read) {
+        const int dst = result_var(fr, in);
+        if (dst >= 0) havoc(cur, w, false, false, dst);
+    }
+    note_assumption("linux-mmio (inline asm): " + std::string(read ? "read" : "write") + " accessor \"" + t +
+                    "\" (line " + std::to_string(line) +
+                    "): the register space is the environment: a read returns an arbitrary value of its width, a write "
+                    "has no effect on program memory, the address is not checked (the \"memory\" clobber is a compiler "
+                    "barrier; no device model)");
+    return true;
+}

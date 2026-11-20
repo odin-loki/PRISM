@@ -57,6 +57,55 @@ struct ExternalSolver {
 // Plain (uncertified) requests use Z3's tactics unless Lean is forced.
 enum class Bitblaster { Auto, Lean, Z3 };
 
+// Cube-and-conquer (src/prism/solver/cube.cpp, docs/SOLVERS.md
+// "Cube-and-conquer"). For a query the portfolio has not answered within
+// `after_s`, the formula is bit-blasted, split into cubes (assumption sets
+// over CNF variables) by lookahead, and the cubes are solved by CaDiCaL (as a
+// linked library) on `threads` threads with a conflict budget per cube; a
+// cube that exhausts it is split again. UNSAT cores prune cubes. The
+// portfolio keeps running alongside; the first definitive answer wins.
+// Soundness: UNSAT only when every leaf of the cube tree was answered UNSAT
+// (by the solver, or by a core contained in it) AND the leaf cubes are
+// checked to cover the whole space (the negations of the leaves are
+// unsatisfiable in Z3). SAT only through a model validated against the
+// original formula. Anything open at the deadline is UNKNOWN.
+// Any field left at its "unset" value is taken from the environment
+// (PRISM_CUBE, PRISM_CUBE_AFTER, PRISM_CUBE_THREADS, PRISM_CUBE_CONFLICTS,
+// PRISM_CUBE_SPLIT, PRISM_CUBE_GPU), else the default in brackets.
+struct CubeOptions {
+    int enabled = -1;            // 1 on, 0 off [off]
+    double after_s = -1;         // portfolio-alone seconds before cubing starts [2]
+    unsigned threads = 0;        // conquer threads [8]
+    long long conflicts = 0;     // first per-cube conflict budget [5000]; x1.5 per re-split
+    std::string split;           // "lookahead" (CaDiCaL lookahead()) or "inputs" (top input bits) [lookahead]
+    int gpu = -1;                // 1: GPU ProbSAT walkers on the whole CNF and on open cubes (SAT only) [off]
+    unsigned max_leaves = 0;     // cap on tree leaves [200000]
+    // Tests: drop leaf k from the partition before the cover check (a dropped
+    // cube must never give UNSAT). -1: none.
+    long long debug_drop_leaf = -1;
+    // Tests: run the cube engine alone (no portfolio, after_s ignored).
+    bool alone = false;
+};
+
+// What the cube engine did (SolveResult::cube, and the note).
+struct CubeStats {
+    bool ran = false;
+    std::string engine;          // "cadical-lib <version>" or why it did not run
+    unsigned threads = 0;
+    std::size_t leaves = 0, closed_solver = 0, closed_core = 0, open = 0, splits = 0, max_depth = 0;
+    std::size_t solver_calls = 0, cores = 0;
+    bool cover_checked = false;  // the leaves were checked to cover the space
+    // how an UNSAT answer was reached (empty when it is not UNSAT): "tree" (every leaf closed, the leaves cover the
+    // space), "root_unsat" (a leaf's failed assumptions were empty: the CNF alone is unsat; leaves may still be open),
+    // "empty_clause" (the CNF has an empty clause)
+    std::string unsat_by;
+    double blast_s = 0, load_s = 0, split_s = 0, conquer_s = 0, cover_s = 0, gpu_s = 0, wall_s = 0;
+    std::size_t gpu_calls = 0;
+    std::string gpu;             // GPU walker status ("off", "cuda: ...", "not built")
+    int cnf_vars = 0;
+    std::size_t cnf_clauses = 0;
+};
+
 struct SolveOptions {
     double timeout_s = 30.0;
     // Complexity limit (include/prism/complexity.hpp): Z3's rlimit on the Z3
@@ -117,6 +166,7 @@ struct SolveOptions {
     // (SolveResult::watchdog); solve() does not wait for it.
     double watchdog_grace_s = 2.0;
     double debug_stall_s = 0.0;  // fault injection (tests): the Z3 job ignores its stop this long
+    CubeOptions cube;            // cube-and-conquer for hard queries (off unless enabled)
 };
 
 struct SolveResult {
@@ -137,6 +187,7 @@ struct SolveResult {
     std::vector<std::string> watchdog;         // jobs the watchdog detached (docs/SOLVERS.md "Stalls")
     std::uint64_t units = 0;                   // rlimit units the Z3 member spent (0: cache hit, none ran)
     bool limit_hit = false;                    // no answer: Z3 stopped at SolveOptions::rlimit
+    CubeStats cube;                            // cube-and-conquer, when it ran
 };
 
 std::string_view kind_name(SolveResult::Kind k);
@@ -275,7 +326,33 @@ std::optional<LeanDag> to_lean_dag(const z3::expr& f, std::string* why = nullptr
 bool validate_model(z3::context& c, const z3::expr& f,
                     const std::map<std::string, std::string>& model, std::string* why = nullptr);
 SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& opt);
+// Cube-and-conquer alone on `formula` (cube.cpp), at most timeout_s seconds;
+// stop: cancel. Called by solve() when SolveOptions::cube is enabled. Sat
+// carries a model validated in Z3; Unsat only for a closed, covering tree.
+SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const SolveOptions& opt, double timeout_s,
+                             const std::atomic<bool>* stop = nullptr);
+// The cube engine on a CNF (the portfolio's "cube" member hands it the CNF it
+// has bit-blasted). Sat: an assignment that satisfies the CNF (the caller
+// validates its model against the formula). Unsat: a closed tree whose
+// leaves were checked to cover the space. Open: no answer.
+struct CubeCnfAnswer {
+    enum Kind { Sat, Unsat, Open } kind = Open;
+    std::vector<std::int8_t> assignment;
+    std::string by;    // who closed it / found the assignment
+    std::string note;  // what the engine did
+};
+CubeCnfAnswer cube_solve_cnf(const Cnf& cnf, const CubeOptions& co, std::uint64_t seed, double timeout_s,
+                             const std::atomic<bool>* stop, CubeStats& stats);
 #endif
+// The cube options with every unset field filled from PRISM_CUBE* or the default.
+CubeOptions resolve_cube_options(const CubeOptions& o);
+// True when the cubes (literal lists over DIMACS variables) cover every
+// assignment, i.e. the clauses {not c : c in cubes} are unsatisfiable. Checked
+// with Z3 when built with it; false (with why) otherwise. An empty cube covers
+// everything; no cubes cover nothing.
+bool cubes_cover(const std::vector<std::vector<int>>& cubes, std::string* why = nullptr);
+// Whether the cube engine was built (CaDiCaL linked as a library).
+bool cube_engine_available(std::string* what = nullptr);
 
 #ifdef PRISM_HAS_CUDA
 // src/cuda/probsat.cu: many independent ProbSAT walkers on the GPU.
@@ -283,6 +360,17 @@ SolveResult solve(z3::context& c, const z3::expr& formula, const SolveOptions& o
 // clauses. Mirrors probsat() above. Never a proof.
 bool cuda_probsat(const Cnf& cnf, std::uint64_t seed, std::uint64_t max_flips_per_walker,
                   unsigned walkers, std::vector<std::int8_t>& assignment);
+// The same with statistics: kernel seconds, the walkers that ran (capped by
+// device memory: walkers x clauses x 12 bytes within mem_cap bytes, 0 = 4 GiB),
+// and an error string when CUDA failed (no device, out of memory).
+struct CudaProbsatInfo {
+    double kernel_s = 0;
+    unsigned walkers = 0;
+    std::string error;
+    std::string device;
+};
+bool cuda_probsat_ex(const Cnf& cnf, std::uint64_t seed, std::uint64_t max_flips_per_walker, unsigned walkers,
+                     std::vector<std::int8_t>& assignment, CudaProbsatInfo* info, std::uint64_t mem_cap = 0);
 #endif
 
 // `prism z3-worker FILE MB` (portfolio.cpp): Z3 in a killable child.

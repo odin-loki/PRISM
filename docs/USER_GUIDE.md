@@ -26,30 +26,17 @@ built with PRISM. FORGE is the one dependency that is not vendored: pass
 
 ```
 cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-  -DPRISM_CUDA=OFF -DPRISM_QT=OFF -DPRISM_Z3=ON
+  -DPRISM_CUDA=OFF -DPRISM_Z3=ON
 cmake --build build            # the first build compiles Z3 and is slow
 ./build/prism_tests            # unit tests
 ./build/prism --list-stages
 ```
 
-Options: `-DPRISM_QT=ON` builds the Qt 6 GUI (`prism_gui`), `-DPRISM_CUDA=ON`
+Options: `-DPRISM_CUDA=ON`
 builds the GPU mutator. FORGE is always linked (`-DFORGE_SOURCE_DIR=PATH` uses a
 local checkout; empty fetches odin-loki/FORGE `main`); it is also the LLM engine.
 Add `-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`
-to make rebuilds cheap.
 
-The GUI builds against Qt 6.4 or later (`apt install qt6-base-dev libgl-dev`).
-To check it without a display, run the pipeline through the window headless:
-
-```
-QT_QPA_PLATFORM=offscreen ./build/prism_gui SRC --no-llm --out OUT \
-  --smoke-screenshot gui.png
-```
-
-When the run finishes, the report loads into the window and the window is
-saved to `gui.png`. The exit code is 0 only when the findings table is
-non-empty and the screenshot was written. It is 3 for an empty table and 2
-when the `prism` binary is not found. CI runs this on every push.
 
 ### Optional external tools
 
@@ -90,16 +77,58 @@ with `--tool NAME=PATH`). A tool that is not installed is reported as
 | `--tool NAME=PATH` | use this binary for an adapter (searched before `~/.prism/tools/<name>/<commit>/bin` and `PATH`) |
 | `--allow-exec` | allow steps that run code from the scanned tree (section 6) |
 | `--certified` | the `pir` stage asks for a checked certificate of every verification condition; a function whose VCs are all certified is `PROVED-CERTIFIED` (section 9) |
+| `--compile-commands FILE` | the pir stage compiles each unit with its entry in this `compile_commands.json` (GNU C level, defines, include path, ABI flags; warning flags and flags that define UB are never taken). A Linux kernel unit needs it; see [PIR.md](PIR.md) "GNU C units and a unit's own flags" |
+| `--kernel-api linux\|freebsd` | the pir stage links the kernel API specs of that kernel and models inline asm, asm goto, atomics and barriers conservatively; every one is a named assumption (PROVED-ASSUMING). Off by default; see [KERNEL_MODELS.md](KERNEL_MODELS.md) |
+| `--assume-unknown-calls` | a call without a spec havocs its result and the objects its pointer arguments point to (assumption listed). Opt-in; the default is `UNENCODED: call @f` |
 | `--solver-cache DIR` | solver query cache and solve-time history (default `$XDG_CACHE_HOME/prism/solver`, else `~/.cache/prism/solver`) |
 | `--timeout S` | solver seconds per query (default 30) |
 | `--complexity N` | Z3 resource-limit (rlimit) units per pir query, so "not decided" is the same on every machine and core count; the wall clock stays as a larger backstop; 0 turns the limit off ([PIR.md](PIR.md) "Complexity limits") |
 | `--fail-on never\|defect\|gap` | exit-code policy for CI (section 5) |
 | `--resume` | reuse stages already `ok`/`NOTRUN` in `--out/stages.jsonl` (`report.json` as fallback) |
-| `--gui` | open the Qt GUI (C++ build with `-DPRISM_QT=ON`) |
 | `--pbsd PATH` | ParanoidBSD tree for the `pbsd` stage (else `PRISM_PBSD`; no default). Importing its modules also needs `--allow-exec` |
 | `--requirements PATH` | C++ engine only. Markdown/text requirement documents (a file or a directory; repeatable); the `review` stage drafts contracts traced to their sentences ([AI.md](AI.md)) |
 | `--strict-aliasing` | C++ engine only. The `pir` stage also checks effective types / strict aliasing (C11 6.5p6-7) per byte; opt-in because real code often breaks the rule on purpose ([PIR.md](PIR.md)) |
 | `--pir-drafts` | C++ engine only. Let `pir` size pointer parameters from the template harness draft when no `// requires:` gives them; a violation found only under a drafted size stays `NEEDS-HARNESS` (Law 6) |
+| `--pir-harness` | C++ engine only. `pir` binds a pointer parameter that no `// requires:` clause covers to an object built from the IR types (struct layout, nested pointer fields to `--pir-harness-depth` levels); every choice is a named assumption, so the best verdict is `PROVED-ASSUMING` and a violation found only under it is `NEEDS-HARNESS`. A harness object has its type's own alignment, at least 16 bytes (a `__aligned(64)` struct is 64-byte aligned); an access that claims more than that is still `MEM-MISALIGNED` ([PIR.md](PIR.md) "Automatic pointer harness") |
+| `--pir-harness-depth N`, `--pir-harness-elems N`, `--pir-harness-bytes N` | bounds of `--pir-harness`: nested pointer levels (default 2), default element count of an array-like pointee (16), size of an object whose pointee type is never accessed (64 bytes) |
+| `--pir-discharge` | C++ engine only. With `--pir-harness`, the harness of a static, non-address-taken, non-recursive function is a proof obligation checked at every call site of the unit; discharged, the invented assumption is replaced by the call sites ([HARNESS_GENERATOR.md](HARNESS_GENERATOR.md)) |
+| `--pir-discharge-closure` | C++ engine only. With `--pir-discharge`: the callers' own harnesses are discharged the same way, up the unit's call graph. A callee whose call sites all rest on unconditional contexts (callers without a harness, or callers whose harness is discharged the same way) is grounded: it keeps only what the call-site checks assumed, and is `PROVED` when that and its own assumptions are nothing ([HARNESS_GENERATOR.md](HARNESS_GENERATOR.md) "Whole-build call-site discharge") |
+| `--pir-discharge-out FILE` | C++ engine only. With `--pir-discharge`: append the unit's call graph, harness plans, call-site checks and candidates (JSONL, `prism-pir-discharge/1`) for `prism-qa callsite-discharge`, which decides external functions over the whole build. Implies `--pir-discharge-closure` and also checks the in-unit call sites of external functions |
+| `--pir-obligations FILE` | C++ engine only. With `--pir-discharge-out`: harness plans of functions defined in other units (records `plan`, from `prism-qa callsite-discharge`'s `todo.jsonl`) are checked at this unit's call sites of them |
+| `--pir-container-of` | C++ engine only. With `--pir-harness`, a parameter used at a negative constant offset gets its containing object (`container_of`) |
+| `--pir-vacuity` | C++ engine only. A harnessed function whose exit is unreachable under its assumptions is `NEEDS-HARNESS` (vacuous), never a proof |
+| `--pir-input-hash` | C++ engine only. The pir stage translates every function and checks nothing: each row is `NOTRUN` with `input_key` and `input_key_loc_free` (SHA-256 of everything the verdict is computed from, without and with source coordinates) and `input_scope` (`function`, or `unit:<reasons>` when the row depends on the rest of the unit); equal keys mean the same check ([PIR.md](PIR.md) "Input key") |
+| `--pir-header-fns` | C++ engine only. A function defined in a header is checked in the unit when `PRISM_PIR_ONLY` names it for that unit (a stub unit that includes the header; lowered with `-femit-all-decls`); the row has `header_file`, its folded-UB diagnostics come from its own file and the harness discharge does not apply. Other header code stays skipped ([PIR.md](PIR.md) "Header functions") |
+| `--ops-table FILE` | C++ engine only. An indirect call through a field of a known ops table (TSV: struct type, field, targets, role, optional field index) is checked against each target, at most 8 (more stays `UNENCODED`). Off by default ([PIR.md](PIR.md)) |
+| `--callee-contracts FILE` | C++ engine only. Assume-guarantee stubs for callees without a body (TSV: function, signature, requires, assigns, ensures, status, source). The requires are checked at the call site, only the assigns are havocked, the ensures are assumed; the status of each contract used is named in the verdict, which is never `PROVED`. A callee without a usable contract is handled as before ([HARNESS_PHASE2.md](HARNESS_PHASE2.md)) |
+| `--pir-ops-auto` | C++ engine only. Ops tables derived from the unit's own function-pointer stores and initialisers; a harness function-pointer field is bound to one of its targets (a named assumption). Off by default |
+| `--pir-addr-values` | C++ engine only. Model constant `ptrtoint` / `inttoptr` expressions and integer-address initialisers (named assumptions); a violation that rests on the address model is `NEEDS-HARNESS`, never `FAILED` |
+| `--pir-harness-deep` | C++ engine only. With `--pir-harness`: depth 4 and 64 objects per parameter; the depth bound applied and what it cut are recorded in the assumptions and the `--jsonl` record |
+| `--pir-build-semantics` | C++ engine only. With `--compile-commands`: a unit whose compile command has `-fwrapv` or `-fno-strict-overflow` (the Linux and FreeBSD kernels) is lowered with `-fwrapv` and checked with that semantics: signed `+ - *` overflow and signed `<<` into or past the sign bit (or of a negative value) wrap and are not reported; division (`INT_MIN / -1`, by zero), shift amounts, pointers and memory are checked as before. Named in the verdict (`front end flags: ... taken (--pir-build-semantics): -fwrapv`). Without the flag those options are not taken (ISO C) |
+| `--pir-kernel-stops` | C++ engine only. With `--kernel-api`: Linux `BUG()` (the `ud2` / `__bug_table` asm followed by `unreachable`, which `BUG_ON` expands to) and calls of `panic`, `vpanic` and `kassert_panic` (FreeBSD `KASSERT`) end the path, like `exit`. The verdict holds only for executions in which none of them triggers, and says so: `kernel-stop: assuming the BUG() / BUG_ON() condition never triggers (line N) ...` (one per site); without the flag a reachable `panic()` is a `FUNC-CONTRACT` finding and `BUG()` reaches `unreachable` (`CXX-UNREACHABLE`) |
+| `--pir-kernel-current` | C++ engine only. With `--kernel-api`: the running thread exists. Linux `current` (an inline asm `%gs` read whose operand is `current_task`, `const_current_task` or `pcpu_hot`) and FreeBSD `curthread` (the `%gs:0` pointer read of `__curthread`) are a valid object of 1 MiB arbitrary bytes, never NULL; a named assumption. Without the flag the asm output is an arbitrary value (NULL included) |
+| `--pir-global-harness` | C++ engine only. With `--kernel-api`: a mutable global of pointer type (an MMIO base, a bus handle or a driver singleton that the unit's init / probe code sets) points at entry to a valid object of 1 MiB arbitrary bytes, never NULL; one named assumption per global (`global harness: @g ...`). Only scalar pointer globals, never in the initial-values recheck. Without the flag such a global's entry value is arbitrary (NULL included) |
+| `--pir-lock-wrappers` | C++ engine only. With `--kernel-api`: a function whose call tree acquires locks and releases none (`rtnl_lock`, `ssb_buses_lock`) returns with them held by design, and one that releases and acquires none (`rtnl_unlock`) releases locks its caller holds: `LOCK-HELD-ON-RETURN` (respectively `LOCK-UNHELD-UNLOCK`) is not checked for it, as a named assumption (`lock-wrapper: ...`). A function that does both, or has a `--lock-contracts` row, is checked as before |
+| `--pir-lock-scopes` | C++ engine only. With `--kernel-api` (r1 FALSE triage item 6, [KERNEL_CONCURRENCY.md](KERNEL_CONCURRENCY.md) section 17). Lock-order pass: a lock class follows zero-offset `getelementptr`s, helpers that return their argument (`spinlock_check`, `class_mutex_constructor`) and `guard()` / `scoped_guard` variables, so the scope-exit cleanup releases the lock; branches on constants are dead there (`readl_poll_timeout` with `sleep_us` 0 does not sleep in hardirq). Ghost lock state: per global lock of the call tree, a lock released and acquired nowhere is held by the caller on entry (`lock-scope: ...`, a second release is still `LOCK-UNHELD-UNLOCK`), one acquired and released nowhere is returned held (`lock-scope: ...`); RCU and preempt/bh likewise per function. A lock both acquired and released is checked on every path as before, and nothing is called one-sided while an acquire (release) has a lock PRISM cannot classify |
+| `--pir-bpf-helpers` | C++ engine only. With `--kernel-api linux`: a BPF helper (the `.func` of a `struct bpf_func_proto` constant of the unit) gets, for each argument the proto types `ARG_PTR_TO_*` without `PTR_MAYBE_NULL` (not a user, per-CPU, arena or callback pointer), a valid object: of the size argument's bytes for `ARG_PTR_TO_MEM` + `ARG_CONST_SIZE[_OR_ZERO]` (`ARG_CONST_SIZE`: not 0), of `arg_size` bytes for `MEM_FIXED_SIZE`, otherwise 1 MiB arbitrary bytes. One named assumption per argument (`bpf verifier: argument argN ... typed ARG_PTR_TO_X ... is non-null ...`): the verifier rejects programs that pass anything else; in-kernel callers of the helper are not checked |
+| `--pir-global-harness-deep` | C++ engine only. With `--pir-global-harness`: the pointer fields of a harnessed global's object that the function loads and uses get objects of their own (the auto-harness planner on the loads of the global; a field with no type evidence, such as an MMIO base passed only to `readl`, gets 1 MiB arbitrary bytes), and a mutable `struct list_head` global (a static `LIST_HEAD`) is at entry empty or a list of one node built from how the function uses the entries (container_of), whose links point back to the head. The x86 MMIO accessors `readb/w/l/q`, `writeb/w/l/q` (one `mov` with a "memory" clobber) get the `linux-mmio` spec semantics instead of a havoc of all memory. All named (`global harness (deep): ...`, `linux-mmio (inline asm): ...`) |
+| `--pir-icall-havoc` | C++ engine only. With `--kernel-api`: an indirect call with more than 16 candidate targets, or the path of one whose target is outside the unit's address-taken functions, is one execution of an arbitrary function: every object's contents become arbitrary, the result is arbitrary, and it is assumed to return and to free nothing (named `icall-havoc: ...`). Without the flag those calls are UNENCODED |
+| `--pir-field-invariants FILE` | C++ engine only. Value invariants of struct fields, applied to every automatic-harness object of that struct: TSV `struct offset width kind a b status source [scope]`, kind `valid` (a pointer field points to a fresh object of `a` bytes), `nonnull`, or `range` (signed `a <= v <= b`). A field that already has its own harness object is left alone. The optional `scope` (`fn:GLOB`, `unit:GLOB`, `module:GLOB` over the unit's path; empty = global) limits where a row applies, and the assumption names it. A proof keeps only the rows it needs (each used row is dropped and the function re-checked). Each row used is a named assumption (`field-invariant: ...` with its status and source); nothing here is checked. `PRISM_PIR_MINE_FIELDS=FILE` writes the store evidence they are derived from |
+| `--pir-variadic` | C++ engine only. Variadic functions (`...`) are translated instead of UNENCODED: `va_start` points the `va_list` at fresh objects of arbitrary initialised bytes (x86-64: a 176-byte register save area and a 4 GiB stack argument area, `gp_offset` / `fp_offset` arbitrary in their ABI ranges; AArch64 and pointer `va_list` targets likewise), so every `va_arg` reads an arbitrary value; a call of a variadic function of the unit evaluates every argument and inlines the callee. Named `variadic: ...` (the callers pass at least the variadic arguments read, of the types read; C11 7.16.1.1p2) |
+| `--pir-recursion` | C++ engine only. A recursive call (a callee already on the inlining stack) is not UNENCODED: the call is assumed to have no violation for its arguments (for the analysed function itself this is the induction hypothesis of a proof by induction on the recursion depth; for another function it is that function's own verdict), and its effects are a havoc of all memory and an arbitrary result (a pointer: NULL or a fresh object). Named `recursive-call: ...` |
+| `--pir-kernel-sprintf` | C++ engine only. With `--kernel-api linux`: `sprintf` with a literal format writes at most a sound bound of characters plus the NUL, the kernel's `%p` extensions included (`%p`/`%px`/`%pK` 18, `%pS`/`%ps`/`%pB` 1024, `%pM` 17, `%pI4` 15, `%pI6` 39, `%pU` 36, `%pa` 18, `%pe` 32), `%s` the string's length (6 for NULL, printed as "(null)"); returns the length written. Other extensions (`%pV`, `%pd`, `%pOF`, `%pE`, ...) stay UNENCODED |
+| `--pir-addrspace` | C++ engine only. With `--kernel-api`: a load or store through `ptr addrspace(N)` (x86 per-CPU `%gs` / `%fs` accesses, `__seg_gs`) is an access of an ordinary pointer in the memory model. Named `addrspace: ...` (the segment base and the per-CPU area are not modelled: the pointer's object is the one the value names) |
+| `--pir-wide-int` | C++ engine only. Integers of 65 to 512 bits (`__int128`, `u128`, bitfield containers such as i72 or i160) are bit-vectors of their width (loads, stores, arithmetic, comparisons, casts, shifts, checks); without the flag they are UNENCODED |
+| `--pir-callback-models FILE` | C++ engine only. Driver environment models: preconditions the kernel core guarantees for the parameters of driver callbacks (a probe's id is an entry of the driver's own id table, a `write` count is at most `MAX_RW_COUNT`, a driver's `net_device` has its private area, a sysfs `show` buffer is `PAGE_SIZE`). TSV `interface container field_off callback param kind a b status source`; a row applies only to a function the unit registers at that container field or registration call. Each use is a named assumption (`driver environment model: ...`); a pointer bound by a model is an invented object, so a violation under it is NEEDS-HARNESS ([DRIVER_ENV_MODELS.md](DRIVER_ENV_MODELS.md)) |
+| `--pir-length-pairing` | C++ engine only. With `--pir-harness`: a pointer parameter that the code indexes under a bound by an integer parameter (`for (i = 0; i < n; i++) buf[i]`, `if (idx < len) buf[idx]`, `while (len--) *p++`, a library call with an explicit length such as `memcpy(buf, src, len)`, `memset`, `memcmp`, `strscpy`, `snprintf(buf, size, ...)` or `copy_from_user(buf, u, len)` (count in bytes), also through a module function that gets both), or a pointer field indexed under a bound by an integer field of the same object (`if (i < r->n) r->slots[i]`), points to that many elements: an object of `max(n, 0)` (or unsigned `n`) x element size bytes, symbolic in `n`, size below 2^47. Two different counts, or element sizes, make no pair. One named assumption per pair (`length pairing: buf points to at least n elements (inferred from usage) ...` with the evidence); a proof is `PROVED-ASSUMING`, its non-vacuity is always checked, it is never discharged at call sites. A violation under a parameter pair is `FAILED` (the pairing is the code's own bound: an off-by-one is reported); under a field pair it stays `NEEDS-HARNESS` like any automatic-harness violation ([PIR.md](PIR.md) "Length pairing") |
+| `--pir-declared-types` | C++ engine only. The unit is lowered with `-g`; a harness pointee without struct evidence in the IR (or with a smaller evidence struct), and a nested pointer field, gets the type and size of its declaration (struct, union or array) from the debug information. Named in the object's harness line (docs/PIR.md "Declared pointee types") |
+| `--pir-priv-areas` | C++ engine only. A struct based at the end of a harness object (a `netdev_priv`-style private area) sizes the object to its end, from a visible allocation's constant private size, else the area struct; named `priv-area: ...` (docs/PIR.md "Private areas past the struct end") |
+| `--pir-index-field-bounds` | C++ engine only. An integer field of a harness object that indexes an in-object array `[N x T]` is assumed in `[0, N-1]` at entry; named `index-field-bound: ...`, never a discharge (docs/PIR.md "Index fields of in-object arrays") |
+| `--pir-heap-freed` | C++ engine only. A harness object the function passes to `kfree` / `kvfree` / `vfree` / `free` ... is a live heap allocation, named `heap-object: ...`; double frees and frees of interior or non-heap pointers are still reported (docs/PIR.md "Freed harness objects") |
+| `--pir-param-preconditions FILE` | C++ engine only. Per-parameter preconditions, TSV `function parameter condition scope status source`, condition `valid N`, `type S`, `nonnull` or `range A B`. Each row used is a named assumption (`param-precondition: ...`), minimised to the rows the proof needs, then the vacuity check (docs/PIR.md "Parameter preconditions") |
+| `--pir-builtin-contracts` | C++ engine only. With `--kernel-api`: contracts for the body-less intrinsics `llvm.read_register`, `llvm.prefetch` and `llvm.objectsize` (named assumptions) |
+| `--lock-contracts FILE` | C++ engine only. TSV of lock contracts for unmodified kernel code (function, lock `global:NAME\|arg:N`, `acquires\|releases\|requires-held`, optional `mutex\|spin`); needs `--kernel-api` |
+| `--jsonl FILE` | C++ engine only. `pir` appends one JSON line per function: key (`unit:start-end`), engine, exact verdict, proof level L0-L3, the full assumption list, time, peak memory, Lean-fragment coverage; counts in `FILE.summary.json` ([PIR.md](PIR.md) "Machine-readable output") |
 | `--fp-checks` | C++ engine only. `pir` also reports IEEE floating-point division by zero, invalid operations (NaN from non-NaN operands) and overflow to infinity (FLOAT-DIV-ZERO / FLOAT-INVALID / FLOAT-OVERFLOW); off by default because Annex F defines these results. An out-of-range float-to-integer conversion (FLOAT-CAST-OVF) is always checked |
 | `--contracts-approved PATH` | C++ engine only. Approvals of drafted contracts (default `<root>/contracts.approved.json`); only approved clauses give `PROVED-ASSUMING` |
 | `--list-stages` | print the stage order and exit |
@@ -351,7 +380,7 @@ jobs:
           git clone --depth 1 <your PRISM mirror> prism-src
           cmake -S prism-src -B prism-build -G Ninja -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ -DPRISM_CUDA=OFF \
-            -DPRISM_QT=OFF -DPRISM_Z3=ON
+            -DPRISM_Z3=ON
           cmake --build prism-build --target prism
       - name: Check
         run: prism-build/prism . --no-llm --fail-on defect --out prism-out
@@ -424,3 +453,15 @@ CNF: what it still trusts (Clang, the PIR encoder and memory model, and the
 bit-blaster when it is Z3's) is listed in the `TRUSTED_BASE.md` that every
 run writes next to the report. `build/prism-qa conformance --certified`
 measures how many loop-free functions of the suite become `PROVED-CERTIFIED`.
+
+### Batch runs over a compile database
+
+`scripts/pir_batch.sh --db compile_commands.json --out DIR` runs the `pir`
+stage on every unit of a compile database, one `prism` process per unit, with
+`--pir-harness --jsonl`. Results are append-only JSON-line shards
+(`DIR/shards/shard-NN.jsonl`), finished units are listed in `DIR/manifest.tsv`
+(a stopped run resumes by skipping them), and `--summary` prints counts. The
+memory budget per worker is `PRISM_MEM_BUDGET_MB`, derived by default from the
+peak RSS measured on the first units, and the worker count is
+`floor((MemAvailable - 10 GB) / budget)`; never use `ulimit -v` for PRISM.
+Details: [PIR.md](PIR.md) "Batch mode".

@@ -11,6 +11,7 @@
 #include "prism/settings.hpp"
 #include "prism/abi_model.hpp"
 #include "prism/astlint.hpp"
+#include "prism/cparse.hpp"
 #include "prism/laws.hpp"
 #include "prism/regex.hpp"
 #include "prism/pipeline.hpp"
@@ -28,12 +29,16 @@
 #include "fp.hpp"
 #include "lower_ctl.hpp"
 #include "stage_mem.hpp"
+#include "harness.hpp"
+#include "jsonl.hpp"
+#include "discharge.hpp"
 
 #include <cctype>
 #include <cstring>
 #include <algorithm>
 #include <functional>
 #include <tuple>
+#include <deque>
 #include <nlohmann/json.hpp>
 #include <map>
 #ifndef _WIN32
@@ -43,6 +48,7 @@
 #include <functional>
 #include <regex>
 #include <cstdlib>
+#include <cstdio>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -53,7 +59,19 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <limits>
 #include <thread>
+
+#ifdef PRISM_HAS_Z3
+#include <z3.h>
+#endif
+
+#ifdef _WIN32
+#define PRISM_ENVIRON _environ
+#else
+extern char** environ;
+#define PRISM_ENVIRON environ
+#endif
 
 namespace prism::pir {
 namespace fs = std::filesystem;
@@ -229,11 +247,50 @@ std::string dbg_suffix(const std::string& line) {
 //  * every `iN poison` operand clang emitted for folded UB becomes a call to
 //    @__prism.poison.iN() at that instruction;
 //  * every value-folding UB diagnostic gets @__prism.folded(i32 k) before
-//    the instruction that carries its line.
+//    the instruction that carries its line, in a function of the unit's own
+//    file (the diagnostics are the main file's: a function from a header
+//    with an instruction on the same line number is not where the UB is).
+// The file of each defined function: `define ... !dbg !N`, !N a
+// DISubprogram with `file: !M`, !M a DIFile; "" when not found.
+std::map<std::size_t, std::string> define_files(const std::vector<std::string>& lines) {
+    std::map<std::string, std::string> md;
+    for (auto& l : lines)
+        if (!l.empty() && l[0] == '!')
+            if (auto eq = l.find(" = "); eq != std::string::npos) md[l.substr(0, eq)] = l.substr(eq + 3);
+    auto ref_after = [](const std::string& s, const char* key) -> std::string {
+        auto p = s.find(key);
+        if (p == std::string::npos) return {};
+        p += std::strlen(key);
+        auto q = p;
+        while (q < s.size() && std::isdigit(static_cast<unsigned char>(s[q]))) ++q;
+        return q > p ? "!" + s.substr(p, q - p) : std::string();
+    };
+    std::map<std::size_t, std::string> out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (!lines[i].starts_with("define ")) continue;
+        std::string file;
+        if (auto sp = md.find(ref_after(lines[i], "!dbg !")); sp != md.end())
+            if (auto df = md.find(ref_after(sp->second, "file: !")); df != md.end()) {
+                auto p = df->second.find("filename: \"");
+                if (p != std::string::npos) {
+                    p += 11;
+                    file = df->second.substr(p, df->second.find('"', p) - p);
+                }
+            }
+        out[i] = file;
+    }
+    return out;
+}
+
 std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folded,
-                       std::vector<int>& placed) {
+                       std::vector<int>& placed, const std::string& main_name = {}) {
     auto lines = split_lines(ir);
     auto locs = scan_locs(lines);
+    auto dfiles = main_name.empty() ? std::map<std::size_t, std::string>{} : define_files(lines);
+    // no function names the main file (a preprocessed copy whose #line markers name another file): as before
+    if (std::none_of(dfiles.begin(), dfiles.end(),
+                     [&](const auto& x) { return fs::path(x.second).filename().string() == main_name; }))
+        dfiles.clear();
     // choose the marker position for each folded diagnostic
     std::map<std::size_t, std::vector<int>> markers;
     {
@@ -248,7 +305,10 @@ std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folde
             for (std::size_t i = 0; i < lines.size(); ++i) {
                 const auto& l = lines.at(i);
                 if (l.starts_with("define ")) {
-                    in_body = true;
+                    // a function of another file (a header): its line numbers are that file's
+                    const auto it = dfiles.find(i);
+                    in_body = it == dfiles.end() || it->second.empty() ||
+                              fs::path(it->second).filename().string() == main_name;
                     continue;
                 }
                 if (ir_line_closes_function(l)) {
@@ -767,10 +827,187 @@ std::vector<std::string> base_flags(const fs::path& src) {
     // optional/unique_ptr dereference, ...): PIR reports a reachable
     // __glibcxx_assert_fail as a violation (docs/PIR.md "C++ library").
     if (is_cxx(src)) f.push_back("-D_GLIBCXX_ASSERTIONS");
+    // PRISM_PIR_EMIT_ALL_DECLS=1: clang emits every definition of the unit, also the internal-linkage ones nothing in
+    // the unit calls (clang otherwise drops an unused `static` / `static inline` function, and pir has no record for it:
+    // NOFUNC). Emission only: the functions' IR is the same, no check changes, so no assumption is added.
+    if (const char* e = std::getenv("PRISM_PIR_EMIT_ALL_DECLS"); e && *e == '1') f.push_back("-femit-all-decls");
     return f;
 }
 
+// The flags of one unit from `--compile-commands` (docs/PIR.md "Units with
+// their own flags"). Only an allowlist is taken: the include path and macros
+// (not for a preprocessed unit, whose text already has them applied), the C
+// language level (`-std=gnu11` makes `typeof`, `asm` and statement
+// expressions keywords/extensions), and the flags that change the unit's
+// types or builtins (`--target`, `-fshort-wchar`, `-funsigned-char`, `-nostdinc`,
+// `-mno-sse`, ...). Warning flags (`-w`, `-Wno-*`) are never taken, so the
+// UB-folding warnings of base_flags stay on, and so are the flags that would
+// switch a check off by defining what ISO C leaves undefined
+// (`-fno-strict-overflow`, `-fwrapv`, `-ftrivial-auto-var-init=`,
+// `-fno-delete-null-pointer-checks`); `dropped_semantic` lists those that
+// were present. argv only; nothing is run through a shell.
+int cxx_std_number(const std::string& v);  // defined below
+
+struct UnitCc {
+    bool found = false;
+    bool ambiguous = false;
+    std::vector<std::string> flags;
+    int cxx_std = 0;           // C++ unit: the entry's -std=c++NN year, else 0
+    std::string note;          // what was taken and what was not (finding extra "front_end_flags")
+    fs::path main_file;        // a preprocessed unit: the source file its #line markers name
+    bool wrapv = false;        // --pir-build-semantics: the entry has -fwrapv / -fno-strict-overflow, and -fwrapv is taken
+    // the entry builds for a target that is not LP64 (an ILP32 --target / -target, a 32-bit cross compiler such as
+    // arm-linux-gnueabi-gcc, -m32, -mabi=ilp32): what says so, "" when nothing does. PIR checks LP64 little-endian
+    // only; lowering such a unit for the host would check it as x86-64, so the unit is NOTRUN (prepare_unit).
+    std::string not_lp64;
+    bool not_lp64_x86_32 = false;  // the target is 32-bit x86 (i386 .. i686, -m32): --data-model ILP32 models it
+};
+
+UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semantics = false) {
+    UnitCc out;
+    const auto e = astlint::compile_db_command(db, unit);
+    out.ambiguous = e.ambiguous;
+    if (!e.found) return out;
+    out.found = true;
+    const bool cxx = is_cxx(unit);
+    const bool pre = unit.extension() == ".i" || unit.extension() == ".ii";
+    auto abs = [&](const std::string& p) {
+        fs::path q(p);
+        return (q.is_relative() ? e.directory / q : q).lexically_normal().string();
+    };
+    auto lp64_target = [](std::string_view t) {
+        const auto arch = t.substr(0, t.find('-'));
+        for (std::string_view a : {"x86_64", "aarch64", "arm64", "riscv64", "powerpc64", "powerpc64le", "ppc64",
+                                   "ppc64le", "s390x", "loongarch64", "mips64"})
+            if (arch == a) return true;
+        return false;
+    };
+    // 32-bit (or otherwise not LP64) architectures of a target triple or a cross compiler's prefix
+    auto ilp32_arch = [](std::string_view arch) {
+        for (std::string_view a : {"i386", "i486", "i586", "i686", "x86", "arm", "armv4t", "armv5", "armv5te", "armv6",
+                                   "armv7", "armv7a", "armv7l", "armv7m", "armv8m", "armeb", "armel", "armhf", "thumb",
+                                   "thumbv7", "thumbeb", "m68k", "mips", "mipsel", "mipsisa32", "hexagon", "powerpc", "ppc",
+                                   "powerpcle", "ppcle", "sparc", "sparcel", "sh", "sh4", "sh3", "xtensa", "riscv32",
+                                   "arc", "csky", "microblaze", "microblazeel", "nios2", "or1k", "openrisc", "hppa",
+                                   "parisc", "s390", "loongarch32", "lanai", "msp430", "avr", "bpfel32", "le32", "wasm32",
+                                   "x32", "x86_64_x32", "aarch64_32", "arm64_32"})
+            if (arch == a) return true;
+        return arch.starts_with("armv") || arch.starts_with("thumbv") || arch.starts_with("mips32");
+    };
+    auto x86_32_arch = [](std::string_view arch) {
+        return arch == "i386" || arch == "i486" || arch == "i586" || arch == "i686" || arch == "x86";
+    };
+    auto note_target = [&](std::string_view t, const std::string& what) {
+        const auto arch = t.substr(0, t.find('-'));
+        if (lp64_target(t) || !out.not_lp64.empty()) return;
+        out.not_lp64 = what;
+        out.not_lp64_x86_32 = x86_32_arch(arch);
+    };
+    if (!e.compiler.empty()) {  // a cross compiler names its target: arm-linux-gnueabi-gcc, i686-linux-gnu-gcc-12
+        const std::string cc0 = fs::path(e.compiler).filename().string();
+        if (auto dash = cc0.find('-'); dash != std::string::npos && dash > 0) {
+            const std::string arch = cc0.substr(0, dash);
+            if (ilp32_arch(arch)) {
+                out.not_lp64 = "compiler " + cc0;
+                out.not_lp64_x86_32 = x86_32_arch(arch);
+            }
+        }
+    }
+    static const std::set<std::string> kExact{
+        "-nostdinc", "-ffreestanding", "-fshort-wchar", "-funsigned-char", "-fsigned-char", "-fno-common",
+        "-fcommon", "-fms-extensions", "-fplan9-extensions", "-fno-builtin", "-m64", "-mno-sse", "-mno-sse2",
+        "-mno-mmx", "-mno-3dnow", "-mno-avx", "-mno-sse4a", "-mno-80387", "-mgeneral-regs-only"};
+    static const std::set<std::string> kSemantic{"-fno-strict-overflow", "-fwrapv", "-fwrapv-pointer"};
+    const auto& a = e.argv;
+    std::vector<std::string> dropped;
+    std::string std_taken;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const std::string& x = a[i];
+        const bool has_next = i + 1 < a.size();
+        // preprocessing flags (a preprocessed copy has had them applied already)
+        if (x == "-I" || x == "-isystem" || x == "-iquote" || x == "-idirafter" || x == "-include") {
+            if (!has_next) break;
+            ++i;
+            if (!pre) { out.flags.push_back(x); out.flags.push_back(abs(a[i])); }
+        } else if (x.starts_with("-I") && x.size() > 2) {
+            if (!pre) out.flags.push_back("-I" + abs(x.substr(2)));
+        } else if (x == "-D" || x == "-U") {
+            if (!has_next) break;
+            ++i;
+            if (!pre) { out.flags.push_back(x); out.flags.push_back(a[i]); }
+        } else if ((x.starts_with("-D") || x.starts_with("-U")) && x.size() > 2) {
+            if (!pre) out.flags.push_back(x);
+        } else if (x.starts_with("-std=")) {
+            const std::string v = x.substr(5);
+            const bool is_cxx_std = v.find("++") != std::string::npos;
+            if (cxx && is_cxx_std) {
+                out.cxx_std = cxx_std_number(v.substr(v.find("++") + 2));
+            } else if (!cxx && !is_cxx_std) {
+                out.flags.push_back(x);
+                std_taken = x;
+            }
+        } else if (x.starts_with("--target=")) {
+            if (lp64_target(std::string_view(x).substr(9))) out.flags.push_back(x);
+            else {
+                dropped.push_back(x + " (not an LP64 target: PIR's memory model assumes LP64)");
+                note_target(std::string_view(x).substr(9), x);
+            }
+        } else if ((x == "-target" || x == "--target") && has_next) {
+            ++i;
+            if (lp64_target(a[i])) out.flags.push_back("--target=" + a[i]);
+            else {
+                dropped.push_back(x + " " + a[i] + " (not an LP64 target: PIR's memory model assumes LP64)");
+                note_target(a[i], x + " " + a[i]);
+            }
+        } else if (x == "-m32" || x == "-m16" || x == "-mx32" || x.starts_with("-mabi=ilp32") || x == "-mabi=32" ||
+                   x == "-mabi=n32" || x == "-mabi=o32" || x == "-mabi=x32") {
+            dropped.push_back(x + " (not an LP64 target: PIR's memory model assumes LP64)");
+            if (out.not_lp64.empty()) {
+                out.not_lp64 = x;
+                out.not_lp64_x86_32 = x == "-m32";
+            }
+        } else if (kExact.count(x) || x.starts_with("-fno-builtin-") || x.starts_with("-fstrict-flex-arrays=")) {
+            out.flags.push_back(x);
+        } else if (x == "-w" || x.starts_with("-W")) {
+            if (x == "-w") dropped.push_back("-w");
+        } else if (build_semantics && (x == "-fwrapv" || x == "-fno-strict-overflow")) {
+            // --pir-build-semantics: the build's signed-overflow semantics (clang: -fno-strict-overflow is -fwrapv)
+            if (!out.wrapv) out.flags.push_back("-fwrapv");
+            out.wrapv = true;
+        } else if (kSemantic.count(x) || x.starts_with("-ftrivial-auto-var-init=") ||
+                   x == "-fno-delete-null-pointer-checks") {
+            dropped.push_back(x);
+        }
+    }
+    if (pre) out.main_file = e.file;
+    out.note = "compile_commands.json entry " + e.file.string();
+    if (!std_taken.empty()) out.note += "; " + std_taken;
+    if (pre) out.note += "; preprocessed unit: only language and ABI flags taken";
+    if (out.wrapv)
+        out.note += "; taken (--pir-build-semantics): -fwrapv (the build's -fwrapv / -fno-strict-overflow: signed + - * and "
+                    "signed << wrap, so signed overflow and signed shifts into the sign bit are not reported; shift amounts, "
+                    "division, pointers and memory are checked as before)";
+    if (!dropped.empty()) {
+        out.note += "; not taken (PIR keeps ISO C undefined behaviour and its warnings): ";
+        for (std::size_t k = 0; k < dropped.size(); ++k) out.note += (k ? ", " : "") + dropped[k];
+    }
+    return out;
+}
+
 }  // namespace
+
+std::vector<std::string> unit_compile_flags(const Config& cfg, const fs::path& unit, int* cxx_std, std::string* note) {
+    if (cfg.compile_commands.empty()) return {};
+    auto cc = unit_cc_flags(cfg.compile_commands, unit);
+    if (!cc.found) {
+        if (note) *note = cc.ambiguous ? "--compile-commands: several entries match this preprocessed unit's stem; default flags used"
+                                       : "--compile-commands: no entry for this unit; default flags used";
+        return {};
+    }
+    if (cxx_std && cc.cxx_std > 0) *cxx_std = cc.cxx_std;
+    if (note) *note = cc.note;
+    return std::move(cc.flags);
+}
 
 Frontend find_frontend(const Config& cfg) {
     Frontend fe;
@@ -778,6 +1015,7 @@ Frontend find_frontend(const Config& cfg) {
     fe.clangxx = cfg.llvm_tool("clang++");
     fe.opt = cfg.llvm_tool("opt");
     fe.lli = cfg.llvm_tool("lli");
+    fe.full_debug = cfg.pir_declared_types;  // -g: declared types for the harness (metadata only)
     fe.version = "clang";
     if (fe.clang) {
         auto r = prism::exec::run_process({fe.clang->string(), "--version"}, 20.0);
@@ -1433,7 +1671,8 @@ std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt
 std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, double timeout_s,
                                        std::string& err, std::vector<FoldedUb>* folded,
                                        std::vector<std::pair<int, int>>* signed_shl, std::string* cxx_models,
-                                       const std::vector<std::string>& include_flags, int cxx_std) {
+                                       const std::vector<std::string>& include_flags, int cxx_std,
+                                       std::vector<std::pair<std::string, FoldedUb>>* folded_other) {
     const bool cxx = is_cxx(src);
     const auto& cc = cxx ? fe.clangxx : fe.clang;
     if (!cc || !fe.opt) {
@@ -1445,6 +1684,18 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     std::vector<std::string> argv{cc->string()};
     auto fl = base_flags(src);
     fl.insert(fl.end(), include_flags.begin(), include_flags.end());
+    // A freestanding unit (-nostdinc: a kernel) has no libc to complete: the forced C23
+    // declarations (strndup(const char *, size_t)) would clash with its own libkern.h.
+    // --pir-declared-types: full debug information (declared parameter and member types); metadata only
+    if (fe.full_debug)
+        for (auto& x : fl)
+            if (x == "-gline-tables-only") x = "-g";
+    if (!is_cxx(src) && std::ranges::find(include_flags, std::string("-nostdinc")) != include_flags.end())
+        for (std::size_t k = 0; k + 1 < fl.size(); ++k)
+            if (fl[k] == "-include" && fl[k + 1].find("prism_c23_decls.h") != std::string::npos) {
+                fl.erase(fl.begin() + static_cast<std::ptrdiff_t>(k), fl.begin() + static_cast<std::ptrdiff_t>(k) + 2);
+                break;
+            }
     if (cxx_models) cxx_models->clear();
     // C++ library models (docs/PIR.md "C++ library models"): the model
     // headers come first on the include path. A unit that does not compile
@@ -1513,6 +1764,30 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         if (!r2.failed && !r2.timed_out && r2.rc == 0) {
             r = std::move(r2);
             fl = std::move(c23);
+        }
+    }
+    if (!cxx && !r.timed_out && (r.failed || r.rc != 0)) {
+        // GNU C: the Linux kernel and much C written for gcc use `typeof`,
+        // `asm`, statement expressions and `__auto_type`, which strict
+        // -std=c17 does not accept (an `expected ')'` at the first one), and
+        // C23 does not make `asm` a keyword either. Try once more as gnu17
+        // when no -std= of the unit's own was given. Only the language
+        // level changes; every check flag stays (and the warnings with it).
+        const bool unit_std = std::any_of(fl.begin(), fl.end(), [](const std::string& f) {
+            return f.starts_with("-std=") && f != "-std=c17" && f != "-std=c23";
+        });
+        if (!unit_std) {
+            auto gnu = fl;
+            std::replace(gnu.begin(), gnu.end(), std::string("-std=c17"), std::string("-std=gnu17"));
+            std::replace(gnu.begin(), gnu.end(), std::string("-std=c23"), std::string("-std=gnu17"));
+            std::vector<std::string> av{cc->string()};
+            av.insert(av.end(), gnu.begin(), gnu.end());
+            av.insert(av.end(), {"-o", o0.string(), src.string()});
+            auto r2 = prism::exec::run_process(av, timeout_s);
+            if (!r2.failed && !r2.timed_out && r2.rc == 0) {
+                r = std::move(r2);
+                fl = std::move(gnu);
+            }
         }
     }
     if (cxx && !r.timed_out && (r.failed || r.rc != 0) &&
@@ -1685,7 +1960,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         av.insert(av.end(), {"-femit-all-decls", "-o", o0.string(), src.string()});
         (void)prism::exec::run_process(av, timeout_s);
     }
-    auto diags = parse_folded_clang_diagnostics(r.text, src);
+    auto diags = parse_folded_clang_diagnostics(r.text, src, folded_other);
     {
         // Folded shift UB that has no instruction and no Sema diagnostic (see
         // parse_ubsan_folded_shifts). The sanitizer build is compiled exactly
@@ -1724,7 +1999,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         }
     }
     std::vector<int> placed;
-    auto text = pirctl::keep_setjmp_locals(pirctl::uninit_fp_locals(instrument(read_file(o0), diags, placed)));
+    auto text = pirctl::keep_setjmp_locals(pirctl::uninit_fp_locals(instrument(read_file(o0), diags, placed, src.filename().string())));
     if (folded) {
         // index = marker id; unplaced diagnostics are kept with line < 0
         folded->clear();
@@ -1883,6 +2158,8 @@ struct FnRec {
     std::optional<Function> fn;
     std::vector<uint64_t> cex;
     const ir::Function* irf = nullptr;
+    // --pir-header-fns: a function of another file (a header) checked in this unit; its lines are that file's
+    std::string header_file;
 };
 
 // Replace the __prism.* declarations with trivial definitions so lli can run
@@ -2229,7 +2506,14 @@ struct Lowered {
     std::string err;
     std::vector<FoldedUb> folded;
     std::vector<std::pair<int, int>> sshl;
+    // --pir-header-fns: clang-folded UB diagnostics of the other files (headers), with the file as clang printed it
+    std::vector<std::pair<std::string, FoldedUb>> folded_other;
     std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
+    std::string cc_note;     // --compile-commands: the entry used and the flags not taken
+    bool wrapv = false;      // --pir-build-semantics: lowered with the build's -fwrapv
+    std::string not_lp64;    // --compile-commands: the entry's target is not LP64 (UnitCc::not_lp64)
+    bool not_lp64_x86_32 = false;
+    fs::path cc_main;        // a preprocessed unit (x.i): the entry's source file (x.c), whose name its #line markers carry
     // Functions the front end rejected, cut out so the rest of the unit could
     // be lowered (salvage_unit): name, line, the first clang error.
     std::vector<std::tuple<std::string, int, std::string>> dropped;
@@ -2384,6 +2668,9 @@ struct Analyzed {
     std::vector<Finding> out;         // unit-level rows (front-end failure, no functions)
     std::vector<CheckJob> jobs;       // checks still to run (run_pir: one task each)
     std::vector<std::string> job_err; // per job: an internal error ("" none), written by its task only
+    TranslateOptions topt;            // as translated (finalize_unit: --pir-discharge)
+    std::vector<std::string> src_lines;
+    bool export_only = false;
 };
 
 
@@ -2396,24 +2683,46 @@ struct Analyzed {
 // deterministic checks; a child that runs out of memory again does the same
 // for its own remaining functions. Linux only (/proc/self); elsewhere the
 // rows stay UNKNOWN (Law 7: said, not dropped).
-bool rerun_only_wanted(const std::string& unit, const std::string& fn) {
-    static const std::optional<std::set<std::string>> only = []() -> std::optional<std::set<std::string>> {
-        const char* e = prism::settings::cstr(prism::settings::pir_only());
-        if (!e || !*e) return std::nullopt;
-        std::set<std::string> r;
-        std::string cur;
-        for (const char* p = e;; ++p) {
-            if (*p == '\n' || *p == '\0') {
-                if (!cur.empty()) r.insert(cur);
-                cur.clear();
-                if (!*p) break;
-            } else {
-                cur += *p;
+
+// PRISM_PIR_ONLY's "<unit>\t<function>" lines (nullopt: not set), parsed again only when the variable changes (tests set
+// it between runs in one process).
+std::shared_ptr<const std::optional<std::set<std::string>>> pir_only_set() {
+    static std::mutex mu;
+    static std::optional<std::string> last;
+    static std::shared_ptr<const std::optional<std::set<std::string>>> cur;
+    const char* e = std::getenv("PRISM_PIR_ONLY");
+    const std::string now = e ? e : "";
+    std::lock_guard<std::mutex> g(mu);
+    if (!cur || !last || *last != now) {
+        std::optional<std::set<std::string>> r;
+        if (!now.empty()) {
+            r.emplace();
+            std::string item;
+            for (char ch : now + "\n") {
+                if (ch == '\n') {
+                    if (!item.empty()) r->insert(item);
+                    item.clear();
+                } else {
+                    item += ch;
+                }
             }
         }
-        return r;
-    }();
-    return !only || only->count(unit + "\t" + fn) > 0;
+        cur = std::make_shared<const std::optional<std::set<std::string>>>(std::move(r));
+        last = now;
+    }
+    return cur;
+}
+
+bool rerun_only_wanted(const std::string& unit, const std::string& fn) {
+    const auto only = pir_only_set();
+    return !*only || (*only)->count(unit + "\t" + fn) > 0;
+}
+
+// --pir-header-fns: a function defined in another file (a header) is checked in this unit only when PRISM_PIR_ONLY
+// names it for this unit; without PRISM_PIR_ONLY none is (every unit would check its headers again).
+bool pir_only_names(const std::string& unit, const std::string& fn) {
+    const auto only = pir_only_set();
+    return *only && (*only)->count(unit + "\t" + fn) > 0;
 }
 
 std::vector<std::string> self_cmdline() {
@@ -2452,13 +2761,14 @@ void rerun_after_oom(const Unit& u, std::vector<FnRec>& recs, const Config& cfg)
     cmd.push_back(exe.string());
     for (std::size_t i = 1; i < av.size(); ++i) {
         const std::string& a = av[i];
-        if (a == "--out" || a == "--stage" || a == "--skip") { ++i; continue; }
-        if (a.starts_with("--out=") || a.starts_with("--stage=") || a.starts_with("--skip=") || a == "--resume" ||
-            a == "--gui")
+        if (a == "--out" || a == "--stage" || a == "--skip" || a == "--jsonl") { ++i; continue; }
+        if (a.starts_with("--jsonl=") || a.starts_with("--out=") || a.starts_with("--stage=") || a.starts_with("--skip=") || a == "--resume")
             continue;
         cmd.push_back(a);
     }
     cmd.insert(cmd.end(), {std::string("--stage"), std::string("inventory,classify,pir"), std::string("--out"), out.string()});
+    // the child needs the per-function time/peak/Lean fields in its rows, but must not write the parent's file
+    if (!cfg.jsonl.empty()) cmd.insert(cmd.end(), {std::string("--jsonl"), (out / "child.jsonl").string()});
     const double t = 120 + 3.0 * std::max(60.0, cfg.timeout) * static_cast<double>(pend.size());
     auto r = prism::exec::run_process(cmd, t);
     std::map<std::string, nlohmann::json> got;
@@ -2566,16 +2876,842 @@ void caller_discharged_asserts(std::vector<FnRec>& recs, const ir::Module& mod) 
     }
 }
 
+// --jsonl: wall time and peak resident memory of one function's translation
+// and check, written onto its row when the loop iteration ends (whatever path
+// it took). The peak is the process's since the iteration began (--jobs 1
+// in batch mode, so it is the function's own).
+struct FnStats {
+    std::vector<FnRec>& recs;
+    std::size_t before;
+    bool on;
+    prism::clock::Stopwatch t;
+    ~FnStats() {
+        if (!on || recs.size() != before + 1) return;
+        auto& x = recs.back().f.extra;
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.3f", t.elapsed_s());
+        x["time_s"] = buf;
+        x["peak_mb"] = std::to_string(membudget::peak_rss_mb());
+    }
+};
+
+// ---------------------------------------------------------------------------
+// --pir-vacuity and --pir-discharge (docs/HARNESS_GENERATOR.md)
+// ---------------------------------------------------------------------------
+
+bool has_auto_harness(const Function& fn) {
+    for (const auto& a : fn.assumptions)
+        if (a.find("(auto harness)") != std::string::npos) return true;
+    return false;
+}
+
+// --pir-length-pairing: an object sized by an inferred (pointer, count) pair
+bool has_length_pairing(const Function& fn) {
+    for (const auto& a : fn.assumptions)
+        if (a.starts_with("length pairing: ")) return true;
+    return false;
+}
+
+// a --pir-param-preconditions row was used (a scalar "range" row needs the vacuity check too)
+bool has_param_precondition(const Function& fn) {
+    for (const auto& a : fn.assumptions)
+        if (a.starts_with("param-precondition: ")) return true;
+    return false;
+}
+
+// The function with every check removed and one check "a return is reachable" at each return: FAILED (a
+// witness) means some execution satisfies every assumption (harness, requires, assumed library behaviour) and
+// returns; PROVED means none does, so every proof of the function was vacuous.
+Function vacuity_variant(const Function& fn) {
+    Function v = fn;
+    for (auto& b : v.blocks) {
+        std::erase_if(b.stmts, [](const Stmt& s) { return s.kind == Stmt::Check; });
+        if (b.term.kind == Term::Ret) {  // Stop is also where an assumption (abort inside assume_abort_if_not) ends a path
+            Stmt s;
+            s.kind = Stmt::Check;
+            s.args = {Arg::c(1, 1)};
+            s.prop = "reach";
+            s.cls = "HARNESS-VACUITY";
+            s.msg = "the end of the function is reachable under the assumptions";
+            b.stmts.push_back(std::move(s));
+        }
+    }
+    return v;
+}
+
+void apply_vacuity(Verdict& v, const Function& fn, const CheckOptions& copt) {
+    if (v.status != laws::PROVED_ASSUMING && v.status != laws::BOUNDED) return;
+    if (fn.ptr_params.empty() && !has_auto_harness(fn) && !has_param_precondition(fn)) return;
+    CheckOptions ro = copt;
+    ro.certified = false;
+    auto r = check_function(vacuity_variant(fn), ro);
+    if (r.status == laws::FAILED) {
+        v.extra["non_vacuity"] = "checked: an execution satisfying every assumption reaches the end of the function";
+        return;
+    }
+    if (r.status == laws::PROVED || r.status == laws::PROVED_UNBOUNDED || r.status == laws::PROVED_CERTIFIED) {
+        v.extra["verdict_before_vacuity"] = v.status + ": " + v.message;
+        v.extra["non_vacuity"] = "VACUOUS: no execution satisfying the assumptions reaches the end of the function";
+        v.status = std::string(laws::NEEDS_HARNESS);
+        v.message = "vacuous harness: no execution of the function reaches its end under the assumptions, so the "
+                    "verdict above says nothing; the harness (or a stated precondition) is contradictory";
+        v.cex.clear();
+        v.cex_args.clear();
+        return;
+    }
+    v.extra["non_vacuity"] = "NOT ESTABLISHED (" + r.status + "): the check that the assumptions leave an execution did not conclude";
+    v.extra["warning"] = "harness non-vacuity not established; the verdict may rest on assumptions that exclude every execution";
+}
+
+// The caller reaches its call of `g` at most once on every execution: one call instruction of g in its own body,
+// none in a module function it may inline (and no indirect call, whose target may call g), the call's block on no
+// cycle of the control-flow graph, no setjmp. The site check then ends the path at the call
+// (TranslateOptions::obligation_stop): nothing after it is an obligation, and the callee need not be modelled.
+bool only_obligation_site(const ir::Module& mod, const ir::Function& f, const std::string& g) {
+    auto indirect = [](const ir::Inst& in) { return in.callee.empty() && in.callee_op.has_value() && !in.is_asm; };
+    auto sj = [](const std::string& n) { return n == "setjmp" || n == "_setjmp" || n == "sigsetjmp" || n == "__sigsetjmp"; };
+    int n = 0;
+    std::string blk;
+    std::vector<const ir::Function*> work;
+    for (const auto& b : f.blocks)
+        for (const auto& in : b.insts) {
+            if (in.callee == g) {
+                ++n;
+                blk = b.name;
+            } else if (indirect(in) || sj(in.callee)) {
+                return false;
+            } else if (!in.callee.empty()) {
+                if (const auto* c = mod.find(in.callee); c && !c->is_declaration) work.push_back(c);
+            }
+        }
+    if (n != 1) return false;
+    std::set<const ir::Function*> seen;
+    while (!work.empty()) {
+        const auto* c = work.back();
+        work.pop_back();
+        if (!seen.insert(c).second) continue;
+        for (const auto& b : c->blocks)
+            for (const auto& in : b.insts) {
+                if (in.callee == g || indirect(in)) return false;
+                if (!in.callee.empty())
+                    if (const auto* d = mod.find(in.callee); d && !d->is_declaration) work.push_back(d);
+            }
+    }
+    std::map<std::string, std::vector<std::string>> succ;
+    for (const auto& b : f.blocks) {
+        if (b.insts.empty()) return false;
+        const auto& t = b.insts.back();
+        static const std::set<std::string> known{"br", "switch", "ret", "unreachable", "invoke", "callbr", "resume"};
+        if (!known.count(t.op)) return false;
+        auto& s = succ[b.name];
+        for (const auto& l : t.targets) s.push_back(l);
+        for (const auto& c : t.cases) s.push_back(c.second);
+    }
+    std::set<std::string> vis;
+    std::vector<std::string> st = succ[blk];
+    while (!st.empty()) {
+        auto x = st.back();
+        st.pop_back();
+        if (x == blk) return false;
+        if (!vis.insert(x).second) continue;
+        for (const auto& y : succ[x]) st.push_back(y);
+    }
+    return true;
+}
+
+// Alignment beyond the accessed type's own (an explicit `align N` on a load or store, N above the type's ABI
+// alignment) of any load or store of the function or of a module function it calls, at most 4096 (obligation_of caps it at the harness object's alignment).
+// The proof used the object's alignment only in the access checks (MemTr::access_checks), so the call sites must
+// give each object its type's ABI alignment, or this excess if it is larger.
+unsigned excess_access_align(const ir::Module& mod, const pirmem::Layout& lay, const ir::Function& g) {
+    unsigned a = 1;
+    std::set<const ir::Function*> seen;
+    std::vector<const ir::Function*> work{&g};
+    while (!work.empty()) {
+        const auto* f = work.back();
+        work.pop_back();
+        if (!seen.insert(f).second) continue;
+        for (const auto& b : f->blocks)
+            for (const auto& in : b.insts) {
+                const ir::Type* ty = in.op == "load" ? &in.ty : in.op == "store" && !in.ops.empty() ? &in.ops[0].ty : nullptr;
+                if (ty && in.align) {
+                    try {
+                        if (in.align > lay.align(*ty)) a = std::max(a, in.align);
+                    } catch (const pirmem::Unenc&) {
+                        a = 16;
+                    }
+                }
+                if (!in.callee.empty())
+                    if (const auto* c = mod.find(in.callee); c && !c->is_declaration) work.push_back(c);
+            }
+    }
+    return std::min(a, 4096u);
+}
+
+std::shared_ptr<ObligationNode> obligation_of(const pirmem::HarnessNode& n, const pirmem::Layout& lay, unsigned excess) {
+    auto o = std::make_shared<ObligationNode>();
+    o->name = n.name;
+    o->bytes = n.bytes;
+    o->member_off = n.member_off;
+    o->check_init = n.bytes <= 1024;
+    try {
+        // what the accesses need, at most what the proof had (the harness object's alignment)
+        o->align = std::min(n.align, std::max(lay.align(n.type), excess));
+    } catch (const pirmem::Unenc&) {
+        o->align = n.align;
+    }
+    for (const auto& [off, c] : n.nested) o->nested.emplace_back(off, obligation_of(*c, lay, excess));
+    return o;
+}
+
+void residual_lines(const ObligationNode& o, std::vector<std::string>& out) {
+    if (!o.check_init)
+        out.push_back("the bytes of " + o.name + " (" + std::to_string(o.bytes) +
+                      " bytes, over the 1024-byte initialisation check) are assumed initialised, not checked at the call sites (auto harness)");
+    for (const auto& [off, c] : o.nested) residual_lines(*c, out);
+}
+
+// The unit's internal (static) definitions and the symbols the discharge pass treats as callable from elsewhere
+// (address taken, or named in inline / module assembly), from discharge::unit_graph: the input key
+// (--pir-input-hash) reads linkage exactly as discharge_pass does.
+struct LinkInfo {
+    std::set<std::string> internal, taken;
+};
+LinkInfo link_info(const ir::Module& mod, const std::string& ir_text, const std::vector<OpsField>& ops) {
+    const auto ug = discharge::unit_graph(mod, ir_text, ops);
+    LinkInfo li;
+    li.internal = ug.internal;
+    li.taken = ug.taken;
+    li.taken.insert(ug.asm_tokens.begin(), ug.asm_tokens.end());
+    return li;
+}
+
+// Assume-guarantee over the call sites (docs/HARNESS_GENERATOR.md 2.2 and "Whole-build call-site discharge";
+// discharge.cpp). A candidate is a function whose result is PROVED-ASSUMING under an automatic harness. Its harness is
+// the precondition P of the proof; P becomes a set of checks at every call site (translate.cpp call_obligations), one
+// translation of each caller keeping only those checks. The proof of the callee holds for any state satisfying P (it
+// never looked at anything else), so when every call site establishes P and no call can come from elsewhere (static,
+// not address-taken, not named in assembly, not recursive), the harness is discharged: the callee's result then rests
+// on the entry assumptions of the functions that call it from outside. With the closure (--pir-discharge-closure,
+// --pir-discharge-out) the callers' own harnesses are discharged the same way, up the call graph: when every context
+// is unconditional (grounded) the callee's result rests only on what the call-site checks assumed, and on nothing
+// when that is nothing (PROVED). --pir-discharge-out also checks the call sites of external functions and of other
+// units' plans (--pir-obligations) and writes everything for prism-qa callsite-discharge.
+void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::string& ir_text, const Unit& u,
+                    pirmem::UnitInfo& uinfo, const TranslateOptions& topt, const Config& cfg,
+                    const std::shared_ptr<HoudiniBudget>& budget) {
+    namespace D = discharge;
+    using nlohmann::json;
+    const bool whole = !cfg.pir_discharge_out.empty();
+    const bool closure = whole || cfg.pir_discharge_closure;
+    const auto ug = D::unit_graph(mod, ir_text, topt.ops_table);
+    std::error_code fec;
+    const std::string file = fs::absolute(u.path, fec).lexically_normal().generic_string();
+    auto reaches = [&](const std::string& from, const std::string& target) {
+        std::set<std::string> seen;
+        std::vector<std::string> work{from};
+        while (!work.empty()) {
+            auto x = work.back();
+            work.pop_back();
+            if (!seen.insert(x).second) continue;
+            auto it = ug.calls.find(x);
+            if (it == ug.calls.end()) continue;
+            for (const auto& [y, k] : it->second) {
+                if (!ug.defined.count(y)) continue;
+                if (y == target) return true;
+                work.push_back(y);
+            }
+        }
+        return false;
+    };
+    // wall seconds for the whole pass ($PRISM_DISCHARGE_BUDGET, default 900): a site not reached is not checked
+    double pass_budget = 900;
+    (void)env_seconds("PRISM_DISCHARGE_BUDGET", pass_budget);
+    const auto t_pass = std::chrono::steady_clock::now();
+    const PtrModel pm = ptr_model_of(mod);
+    PtrModelScope pms(pm);
+    pirmem::Layout lay(mod);
+    pirmem::HarnessOptions ho;
+    ho.depth = cfg.pir_harness_deep ? std::max(cfg.pir_harness_depth, 4) : cfg.pir_harness_depth;
+    if (cfg.pir_harness_deep) ho.max_objects = 64;
+    ho.elems = cfg.pir_harness_elems;
+    ho.unknown_bytes = cfg.pir_harness_bytes;
+    ho.declared_types = cfg.pir_declared_types;  // the same plan as the translation (its obligations)
+    ho.priv_areas = cfg.pir_priv_areas;
+    ho.index_field_bounds = cfg.pir_index_field_bounds;
+    ho.heap_freed = cfg.pir_heap_freed;
+    ho.container_of = cfg.pir_container_of;
+    if (topt.ops_auto) {
+        ho.ops = &topt.ops_table;
+        ho.ops_module = &mod;
+    }
+    std::map<std::string, FnRec*> by_ir;
+    for (auto& r : recs)
+        if (r.irf) by_ir[r.irf->name] = &r;
+    auto display = [&](const std::string& ir_name) {
+        if (auto it = by_ir.find(ir_name); it != by_ir.end() && it->second->f.function) return *it->second->f.function;
+        if (const auto* f = mod.find(ir_name))
+            if (auto it = mod.subprograms.find(f->dbg); it != mod.subprograms.end() && !it->second.name.empty()) return it->second.name;
+        return ir_name;
+    };
+    // the obligation of each pointer parameter of a function defined here
+    struct PlanInfo {
+        bool done = false;
+        std::vector<std::shared_ptr<ObligationNode>> ob;
+        std::string why;  // no plan
+        std::vector<std::string> residual;
+    };
+    std::map<std::string, PlanInfo> plans;
+    auto plan_of = [&](const ir::Function& f) -> PlanInfo& {
+        auto& pi = plans[f.name];
+        if (pi.done) return pi;
+        pi.done = true;
+        ir::DISub sub;
+        if (auto it = mod.subprograms.find(f.dbg); it != mod.subprograms.end()) sub = it->second;
+        auto fopt0 = function_options(topt, f, uinfo, sub.line, cfg, sub.name.empty() ? f.name : sub.name);
+        pi.ob.assign(f.params.size(), nullptr);
+        bool any = false;
+        for (std::size_t i = 0; i < f.params.size(); ++i) {
+            const auto& p = f.params[i];
+            if (p.ty.kind != ir::Type::Ptr || p.attrs.find("byval(") != std::string::npos || p.attrs.find("sret(") != std::string::npos)
+                continue;
+            if (std::any_of(fopt0.contracts.begin(), fopt0.contracts.end(), [&](const PtrContract& c) { return c.param == p.name; })) {
+                pi.why = "parameter " + p.name + " has a requires clause or draft, not an automatic harness";
+                return pi;
+            }
+            std::string why;
+            auto plan = pirmem::plan_pointer_harness(mod, lay, f, p, ho, &why);
+            if (!plan) {
+                pi.why = "no harness plan for " + p.name + ": " + why;
+                return pi;
+            }
+            pi.ob[i] = obligation_of(*plan->root, lay, excess_access_align(mod, lay, f));
+            any = true;
+        }
+        if (!any) pi.why = "no pointer parameter with an automatic harness";
+        for (const auto& o : pi.ob)
+            if (o) residual_lines(*o, pi.residual);
+        return pi;
+    };
+    // plans of functions defined in other units (--pir-obligations), for the ones this unit calls
+    std::map<std::string, std::vector<std::shared_ptr<ObligationNode>>> ext;
+    if (!cfg.pir_obligations.empty()) {
+        std::ifstream in(cfg.pir_obligations);
+        if (!in) throw std::runtime_error("--pir-obligations: cannot read " + cfg.pir_obligations.string());
+        std::string line;
+        while (std::getline(in, line)) {
+            auto j = json::parse(line, nullptr, false);
+            if (!j.is_object() || j.value("record", "") != "plan" || !j.value("why_no_plan", std::string()).empty()) continue;
+            const std::string name = j.value("function", "");
+            if (name.empty() || !ug.callers.count(name) || ug.defined.count(name)) continue;  // not called here, or our own
+            std::vector<std::shared_ptr<ObligationNode>> ob;
+            bool ok = true, any = false;
+            for (const auto& p : j.value("params", json::array())) {
+                if (p.is_null()) {
+                    ob.push_back(nullptr);
+                    continue;
+                }
+                auto o = D::obligation_from_json(p);
+                if (!o) ok = false;
+                ob.push_back(o);
+                any = any || o != nullptr;
+            }
+            if (ok && any) ext[name] = std::move(ob);
+        }
+    }
+    std::vector<json> out_recs;
+    D::Grounder G;
+    std::deque<std::string> work;
+    std::set<std::string> queued;
+    auto push = [&](const std::string& x) {
+        if (queued.insert(x).second) work.push_back(x);
+    };
+    std::set<std::string> cand;
+    for (auto& r : recs)
+        if (r.irf && r.fn && r.f.status == laws::PROVED_ASSUMING && has_auto_harness(*r.fn)) {
+            cand.insert(r.irf->name);
+            push(r.irf->name);
+        }
+    for (const auto& [n, ob] : ext) push(n);
+    while (!work.empty()) {
+        const std::string x = work.front();
+        work.pop_front();
+        const auto* xf = mod.find(x);
+        const bool here = xf && !xf->is_declaration && !xf->is_model && ug.defined.count(x);
+        std::vector<std::shared_ptr<ObligationNode>> ob;
+        std::string why;
+        if (here) {
+            auto& pi = plan_of(*xf);
+            ob = pi.ob;
+            why = pi.why;
+        } else if (auto e = ext.find(x); e != ext.end()) {
+            ob = e->second;
+        } else {
+            continue;
+        }
+        std::vector<std::string> callers;
+        if (auto c = ug.callers.find(x); c != ug.callers.end())
+            for (const auto& f : c->second)
+                if (ug.defined.count(f)) callers.push_back(f);
+        const bool taken = ug.taken.count(x) > 0, named = ug.asm_tokens.count(x) > 0, rec = here && reaches(x, x);
+        // never discharged, not even over the whole build: a header function (--pir-header-fns; other includers call
+        // it too), and a proof under a symbolic length pairing (the obligations are the fixed-size harness plan, not
+        // the precondition the proof assumed)
+        const auto bi = by_ir.find(x);
+        const bool header_fn = here && bi != by_ir.end() && !bi->second->header_file.empty();
+        const bool paired = here && bi != by_ir.end() && bi->second->fn && has_length_pairing(*bi->second->fn);
+        std::string not_closed;
+        if (!here) not_closed = "defined in another unit: its callers over the whole build are decided by prism-qa callsite-discharge";
+        else if (header_fn)
+            not_closed = "a header function checked in this unit (--pir-header-fns): units other than this one call it too";
+        else if (paired)
+            not_closed = "a length pairing (an object sized by a count) is not discharged at call sites";
+        else if (!ug.internal.count(x)) not_closed = "the function has external linkage (an exported symbol: callers outside this unit are not known)";
+        else if (taken) not_closed = "its address is taken (it may be called through a pointer)";
+        else if (named) not_closed = "it is named in inline or module assembly (it may be called from there)";
+        else if (rec) not_closed = "it is recursive (a cycle in the call graph: the entry assumption stays)";
+        else if (callers.empty()) not_closed = "no call site in this unit";
+        else if (!why.empty()) not_closed = why;
+        if ((header_fn || paired) && why.empty()) why = not_closed;  // no usable plan, also for prism-qa callsite-discharge
+        D::Node n;
+        n.display = display(x);
+        n.closed = not_closed.empty();
+        n.why_not = not_closed;
+        n.callers = callers;
+        G.nodes[x] = n;
+        if (whole && here) {
+            json pj = {{"schema", "prism-pir-discharge/1"}, {"record", "plan"}, {"file", file}, {"unit", u.rel},
+                       {"function", x}, {"source_name", display(x)}, {"why_no_plan", why}, {"residual", plans[x].residual}};
+            json ps = json::array();
+            for (const auto& o : ob) ps.push_back(o ? D::obligation_json(*o) : json(nullptr));
+            pj["params"] = ps;
+            out_recs.push_back(pj);
+        }
+        // the sites: the unit's own closed world, or (whole build) every external function whose callers here can be checked
+        const bool usable = why.empty() && std::any_of(ob.begin(), ob.end(), [](const auto& o) { return o != nullptr; }) &&
+                            !taken && !named && !rec && !header_fn && !paired;
+        if (!(n.closed || (whole && usable))) continue;
+        for (const auto& fname : callers) {
+            if (G.sites.count({fname, x})) continue;
+            const auto* cf = mod.find(fname);
+            if (!cf) continue;
+            D::Site s;
+            s.caller = fname;
+            s.callee = x;
+            bool stop = false;
+            if (auto c = ug.calls.find(fname); c != ug.calls.end())
+                if (auto k = c->second.find(x); k != c->second.end()) s.sites = k->second;
+            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t_pass).count() > pass_budget) {
+                s.verdict = "NOT-CHECKED";
+                s.message = "the discharge budget of " + std::to_string(static_cast<int>(pass_budget)) +
+                            " s (PRISM_DISCHARGE_BUDGET) was spent before the call site in " + display(fname);
+            } else {
+                ir::DISub sub;
+                if (auto it = mod.subprograms.find(cf->dbg); it != mod.subprograms.end()) sub = it->second;
+                auto fopt = function_options(topt, *cf, uinfo, sub.line, cfg, sub.name.empty() ? cf->name : sub.name);
+                fopt.obligations[x] = ob;
+                stop = only_obligation_site(mod, *cf, x);
+                if (stop) fopt.obligation_stop.insert(x);
+                auto tr = translate(mod, *cf, fopt);
+                if (!tr.fn) {
+                    s.verdict = "NOT-ANALYSED";
+                    s.message = tr.reason;
+                } else {
+                    auto copt = check_options(cfg, budget);
+                    if (copt.function_budget_s > 0) copt.function_budget = std::make_shared<FunctionBudget>(copt.function_budget_s);
+                    auto v = check_function(*tr.fn, copt);
+                    s.verdict = v.status;
+                    s.message = v.message;
+                    s.line = v.line;
+                    s.assumptions = tr.fn->assumptions;
+                    for (const auto& a : s.assumptions)
+                        if (D::is_harness_line(a)) s.caller_harness.push_back(a);
+                    s.invented = tr.fn->invented_objects;
+                }
+            }
+            G.sites[{fname, x}] = s;
+            if (whole)
+                out_recs.push_back({{"schema", "prism-pir-discharge/1"}, {"record", "site"}, {"file", file}, {"unit", u.rel},
+                                    {"caller", fname}, {"callee", x}, {"sites", s.sites}, {"verdict", s.verdict},
+                                    {"message", s.message}, {"line", s.line}, {"assumptions", s.assumptions},
+                                    {"caller_harness", s.caller_harness}, {"invented", s.invented}, {"stop_at_call", stop}});
+            if (closure && D::site_proved(s) && !s.caller_harness.empty()) push(fname);
+            if (!whole && !D::site_proved(s)) break;  // one failure decides the unit's own discharge
+        }
+    }
+    // the candidates' results
+    auto discharged = [&](const std::string& g) { return G.nodes.count(g) && G.sites_failure(g).empty(); };
+    std::map<std::string, std::set<std::string>> roots_memo;
+    std::function<std::set<std::string>(const std::string&, std::set<std::string>&)> roots_of =
+        [&](const std::string& g, std::set<std::string>& open) -> std::set<std::string> {
+        if (auto it = roots_memo.find(g); it != roots_memo.end()) return it->second;
+        std::set<std::string> out;
+        if (!open.insert(g).second) return out;
+        if (auto it = G.nodes.find(g); it != G.nodes.end())
+            for (const auto& f : it->second.callers) {
+                if (discharged(f)) {
+                    auto s = roots_of(f, open);
+                    out.insert(s.begin(), s.end());
+                } else {
+                    out.insert(f);
+                }
+            }
+        open.erase(g);
+        return roots_memo[g] = out;
+    };
+    for (auto& r : recs) {
+        if (!r.irf || !r.fn || !cand.count(r.irf->name)) continue;
+        const std::string g = r.irf->name;
+        auto& f = r.f;
+        if (whole) {
+            json cj = {{"schema", "prism-pir-discharge/1"}, {"record", "candidate"}, {"file", file}, {"unit", u.rel},
+                       {"function", g}, {"source_name", f.function.value_or(g)}, {"start_line", f.line.value_or(0)},
+                       {"verdict", f.status}, {"assumptions", r.fn->assumptions}, {"invented", r.fn->invented_objects}};
+            if (auto it = f.extra.find("verdict_before_assumptions"); it != f.extra.end()) cj["verdict_before_assumptions"] = it->second;
+            if (auto it = f.extra.find("non_vacuity"); it != f.extra.end()) cj["non_vacuity"] = it->second;
+            out_recs.push_back(cj);
+        }
+        const auto fail = G.nodes.count(g) ? G.sites_failure(g) : std::string("not reached by the discharge pass");
+        if (!fail.empty()) {
+            f.extra["harness_discharge"] = "not discharged: " + fail;
+            continue;
+        }
+        const auto& node = G.nodes.at(g);
+        int nsites = 0;
+        bool site_invented = false;
+        std::string callers_s;
+        for (const auto& c : node.callers) {
+            nsites += G.sites.at({c, g}).sites;
+            site_invented = site_invented || G.sites.at({c, g}).invented;
+            callers_s += (callers_s.empty() ? "" : ", ") + display(c);
+        }
+        D::Grounding gr;
+        if (closure) gr = G.ground(g);
+        auto set_assumptions = [&](const std::vector<std::string>& kept) {
+            r.fn->assumptions = kept;
+            std::string s;
+            for (const auto& a : kept) s += (s.empty() ? "" : "; ") + a;
+            f.extra["assumptions"] = s;
+            f.extra["assumptions_json"] = json(kept).dump();
+            if (auto m = f.message.find(" -- assuming: "); m != std::string::npos) f.message = f.message.substr(0, m) + " -- assuming: " + s;
+        };
+        const std::string what =
+            "every call site (" + std::to_string(nsites) + " in " + callers_s +
+            "; the function is static, its address is not taken, it is not recursive) is checked to pass what the harness "
+            "assumed (a live, writable object of the harnessed size, aligned as its accesses need, with initialised bytes at the "
+            "stated offset, a local, a heap object or the caller's own harness object, nested pointer fields likewise, distinct "
+            "objects)";
+        if (gr.ok) {
+            auto vb = f.extra.find("verdict_before_assumptions");
+            auto o = D::outcome(vb != f.extra.end() ? vb->second : std::string(), r.fn->assumptions, plans[g].residual,
+                                r.fn->invented_objects, gr,
+                                "the automatic harness is discharged and grounded: " + what +
+                                    ", and every caller's context is unconditional or its own harness is discharged the same way");
+            f.extra["harness_discharge"] = "discharged and grounded at " + std::to_string(nsites) + " call sites in " + callers_s;
+            if (o.proved) {
+                f.extra["verdict_before_discharge"] = f.status + ": " + f.message;
+                f.status = o.status;
+                f.strength = std::string(laws::STRENGTH_PROVES);
+                if (auto m = f.message.find(" -- assuming: "); m != std::string::npos) f.message = f.message.substr(0, m);
+                f.message += " -- the automatic harness is discharged at every call site (" + std::to_string(nsites) + " in " +
+                             callers_s + "), each checked in an unconditional context: nothing is assumed";
+                r.fn->assumptions.clear();
+                f.extra.erase("assumptions");
+                f.extra.erase("assumptions_json");
+            } else {
+                set_assumptions(o.assumptions);
+            }
+            continue;
+        }
+        // discharged at the sites, not grounded: the result rests on the entry functions' assumptions
+        std::set<std::string> open;
+        std::string roots_s;
+        for (const auto& c : roots_of(g, open)) roots_s += (roots_s.empty() ? "" : ", ") + display(c);
+        std::vector<std::string> kept;
+        for (const auto& a : r.fn->assumptions)
+            if (!D::is_harness_line(a)) kept.push_back(a);
+        kept.push_back("the automatic harness is discharged: " + what + "; this rests on the assumptions of " +
+                       (roots_s.empty() ? std::string("no other function") : "the entry functions " + roots_s) + " (see their results)");
+        for (const auto& l : plans[g].residual) kept.push_back(l);
+        if (r.fn->invented_objects || site_invented) kept.push_back(D::invented_objects_line());
+        set_assumptions(kept);
+        f.extra["harness_discharge"] = "discharged at " + std::to_string(nsites) + " call sites in " + callers_s;
+        f.extra["discharge_entry"] = roots_s;
+        if (closure) f.extra["discharge_grounding"] = "not grounded: " + gr.reason;
+    }
+    if (whole) {
+        out_recs.push_back(D::unit_graph_json(ug, file, u.rel));
+        std::string text;
+        for (const auto& j : out_recs) text += j.dump() + "\n";
+        static std::mutex mu;
+        std::lock_guard<std::mutex> lock(mu);
+        std::error_code ec;
+        if (cfg.pir_discharge_out.has_parent_path()) fs::create_directories(cfg.pir_discharge_out.parent_path(), ec);
+        std::ofstream o(cfg.pir_discharge_out, std::ios::app | std::ios::binary);
+        o << text;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// --pir-input-hash: the input key of each function (docs/PIR.md "Input key")
+// ---------------------------------------------------------------------------
+// Two pir jobs with equal input keys check the same thing: the key covers the
+// translated function (every field check_function reads: the encoder and the
+// solver see only the Function and the CheckOptions), the check options, the
+// flags of the post-check passes, the alternate translation the memory policy
+// may check (mutable globals), the linkage facts the harness discharge reads,
+// and the clang, Z3 and PRISM versions. Where a function's row can depend on
+// the rest of the unit (harness discharge or the error-sink rule over its
+// callers, a lock-order record naming it, clang-folded UB in the unit, the
+// globals' initial state of main, C++), the key also covers the whole unit
+// (its IR text and source): scope "unit". Two keys are written:
+//   input_key           every field, source coordinates included
+//   input_key_loc_free  the same without source coordinates (file, lines,
+//                       columns, loop locations), which reach only messages
+//                       and labels, never a VC (copies of one function at
+//                       other lines or in other files share it)
+// Nothing is solved in this mode: each translated function's row is NOTRUN.
+namespace inkey {
+
+struct W {
+    std::string o;
+    void s(std::string_view x) {
+        o += std::to_string(x.size());
+        o += ':';
+        o += x;
+    }
+    void i(long long x) {
+        o += std::to_string(x);
+        o += ';';
+    }
+    void u(unsigned long long x) {
+        o += std::to_string(x);
+        o += ';';
+    }
+    void d(double x) {
+        char b[64];
+        std::snprintf(b, sizeof b, "%.17g;", x);
+        o += b;
+    }
+    void tag(const char* t) { o += t; }
+};
+
+// Every field of the PIR structs is written below. A field added to one of
+// them must be added here too: these sizes catch it on the build platform.
+#if defined(__x86_64__) && defined(__GLIBCXX__) && !defined(_GLIBCXX_DEBUG)
+static_assert(sizeof(Arg) == 24, "pir::Arg changed: update inkey::arg");
+static_assert(sizeof(Var) == 40, "pir::Var changed: update inkey::function");
+static_assert(sizeof(Stmt) == 216, "pir::Stmt changed: update inkey::stmt");
+static_assert(sizeof(Phi) == 32, "pir::Phi changed: update inkey::function");
+static_assert(sizeof(Term) == 72, "pir::Term changed: update inkey::function");
+static_assert(sizeof(Block) == 152, "pir::Block changed: update inkey::function");
+static_assert(sizeof(Function) == 448, "pir::Function changed: update inkey::function");
+static_assert(sizeof(PtrModel) == 32, "pir::PtrModel changed: update inkey::function");
+static_assert(sizeof(CheckOptions) == 328, "pir::CheckOptions changed: update inkey::check_options");
+static_assert(sizeof(EncodeOptions) == 8, "pir::EncodeOptions changed: update inkey::check_options");
+#endif
+
+void arg(W& w, const Arg& a) {
+    w.tag("A");
+    w.i(a.is_const);
+    w.u(a.width);
+    w.u(a.bits);
+    w.i(a.var);
+}
+
+void strs(W& w, const std::vector<std::string>& v) {
+    w.u(v.size());
+    for (auto& x : v) w.s(x);
+}
+
+void stmt(W& w, const Stmt& s, bool loc) {
+    w.tag("S");
+    w.i(static_cast<int>(s.kind));
+    w.i(s.dst);
+    w.i(static_cast<int>(s.op));
+    w.u(s.args.size());
+    for (auto& a : s.args) arg(w, a);
+    w.i(s.uninit);
+    w.i(s.nondet);
+    w.s(s.nondet_fn);
+    w.i(s.nondet_unsigned);
+    w.i(loc ? s.col : 0);
+    w.s(s.prop);
+    w.s(s.cls);
+    w.s(s.msg);
+    w.i(loc ? s.line : 0);
+    w.i(static_cast<int>(s.mkind));
+    w.i(s.init);
+    w.u(s.align);
+    w.u(s.tag);
+    w.i(s.dst2);
+    w.i(s.dst3);
+    w.i(s.ptr_arith);
+}
+
+void function(W& w, const Function& fn, bool loc) {
+    w.tag("F");
+    w.s(fn.name);
+    w.s(fn.ir_name);
+    w.s(loc ? fn.file : std::string());
+    w.i(loc ? fn.line : 0);
+    w.u(fn.vars.size());
+    for (auto& v : fn.vars) {
+        w.s(v.name);
+        w.u(v.width);
+        w.i(v.fp);
+    }
+    w.u(fn.params.size());
+    for (int p : fn.params) w.i(p);
+    w.u(fn.ret_width);
+    w.u(fn.blocks.size());
+    for (auto& b : fn.blocks) {
+        w.tag("B");
+        w.s(b.name);
+        w.u(b.phis.size());
+        for (auto& p : b.phis) {
+            w.i(p.dst);
+            w.u(p.in.size());
+            for (auto& [pred, a] : p.in) {
+                w.i(pred);
+                arg(w, a);
+            }
+        }
+        w.u(b.stmts.size());
+        for (auto& s : b.stmts) stmt(w, s, loc);
+        w.tag("T");
+        w.i(static_cast<int>(b.term.kind));
+        arg(w, b.term.cond);
+        w.i(b.term.t);
+        w.i(b.term.f);
+        w.i(b.term.val.has_value());
+        if (b.term.val) arg(w, *b.term.val);
+    }
+    w.i(fn.nondet);
+    strs(w, fn.inlined);
+    w.i(fn.uses_memory);
+    w.u(fn.ptr.w);
+    w.u(fn.ptr.obj_shift);
+    w.u(fn.ptr.max_obj_size);
+    w.u(fn.ptr.max_objects);
+    w.u(fn.ptr.fn_obj_base);
+    w.i(fn.mutable_globals);
+    strs(w, fn.mutable_global_names);
+    w.i(fn.returns_ptr);
+    strs(w, fn.ptr_params);
+    strs(w, fn.assumptions);
+    w.i(fn.invented_objects);
+    strs(w, fn.throws);
+    strs(w, fn.libm);
+    // loop locations reach only the exported invariants (a location > 0 is exported); without coordinates the key
+    // keeps which headers have one
+    w.u(fn.loop_locs.size());
+    for (auto& [h, lc] : fn.loop_locs) {
+        w.i(h);
+        w.i(loc ? lc.first : lc.first > 0);
+        w.i(loc ? lc.second : 0);
+    }
+}
+
+void check_options(W& w, const CheckOptions& c) {
+    w.tag("C");
+    w.i(c.unwind);
+    w.i(c.deepen_max);
+    w.d(c.timeout_s);
+    w.i(c.portfolio);
+    w.i(c.certified);
+    w.i(c.certify_combined);
+    w.d(c.check_timeout_s);
+    w.d(c.certify_budget_s);
+    w.d(c.function_budget_s);
+    w.i(c.function_budget != nullptr);
+    w.i(c.complexity);
+    w.d(c.function_units_s);
+    w.i(c.jobs);
+    w.i(static_cast<bool>(c.debug_before_query));
+    w.i(c.use_cache);
+    // cache_dir, max_parallel (hardware threads), tool_dirs/tool_paths (where the solvers are) and refuse_tools_under
+    // change where and how fast an answer is found, not which formula is asked; the solvers' versions are in the key
+    w.i(c.search_default_tools);
+    w.u(c.tool_paths.size());
+    for (auto& [k, v] : c.tool_paths) w.s(k);
+    w.i(static_cast<int>(c.encode.memory));
+    w.i(c.encode.havoc_uf);
+    w.i(c.houdini_budget != nullptr);
+    if (c.houdini_budget) w.d(c.houdini_budget->total_s);
+    strs(w, c.only_props);
+}
+
+// PRISM_* settings that reach the check (budgets, deepening, the divert cap); per-run paths and the function filter
+// are left out (they select functions or name output places).
+void env(W& w) {
+    std::vector<std::string> kv;
+    for (char** e = PRISM_ENVIRON; e && *e; ++e) {
+        std::string_view x(*e);
+        if (!x.starts_with("PRISM_")) continue;
+        const auto eq = x.find('=');
+        const auto k = x.substr(0, eq);
+        if (k == "PRISM_PIR_ONLY" || k == "PRISM_PIR_LEAN_EXPORT" || k == "PRISM_PIR_MINE_FIELDS" || k == "PRISM_CERT_CACHE_MAX" ||
+            k.find("CACHE_DIR") != std::string_view::npos || k.find("_HOME") != std::string_view::npos)
+            continue;
+        kv.emplace_back(x);
+    }
+    std::sort(kv.begin(), kv.end());
+    w.tag("E");
+    strs(w, kv);
+}
+
+// The unit's IR text without the names of this process's scratch files (TmpDir "prism_pir_<n>_<n>", the
+// preprocessed copy "prism-pre-<pid>-"), which the ModuleID and file records carry: the same unit lowered twice
+// gives the same text. Nothing else is rewritten.
+std::string stable_ir(const std::string& ir) {
+    std::string o;
+    o.reserve(ir.size());
+    auto skip = [&](std::size_t i, bool underscore) {
+        while (i < ir.size() && (std::isdigit(static_cast<unsigned char>(ir[i])) || (underscore && ir[i] == '_'))) ++i;
+        return i;
+    };
+    for (std::size_t i = 0; i < ir.size();) {
+        if (ir.compare(i, 10, "prism_pir_") == 0) {
+            o += "prism_pir_T";
+            i = skip(i + 10, true);
+        } else if (ir.compare(i, 10, "prism-pre-") == 0) {
+            o += "prism-pre-P";
+            i = skip(i + 10, false);
+        } else {
+            o += ir[i++];
+        }
+    }
+    return o;
+}
+
+}  // namespace inkey
+
 // Lowered IR -> one FnRec per function, translated in source order; each
 // encodable function also gets a CheckJob. No solver work happens here.
 Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
-                      const ModelLibrary& models) {
+                      const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
     auto& out = res.out;
     auto& recs = res.recs;
     const auto& ir = low.ir;
     const auto& folded = low.folded;
     const auto& sshl = low.sshl;
+    // A unit built for a target that is not LP64 (ILP32: arm, i386, m68k, mips32, hexagon, ppc32, ...): PIR's memory
+    // model, the pointer harness and the kernel specs are LP64 little-endian, and the unit was lowered for the host,
+    // so checking it would check it as x86-64. Not checked (Law 7), like a big-endian target. 32-bit x86 stays
+    // checked when --data-model ILP32 asks for it (the ILP32 pointer model and the i386 front-end target).
+    if (!low.not_lp64.empty() && !(low.not_lp64_x86_32 && is_ilp32(cfg.data_model))) {
+        auto f = base_finding(u);
+        f.status = std::string(laws::NOTRUN);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.message = "target data layout not supported (checked only for LP64 little-endian): the compile_commands.json "
+                    "entry builds for a target that is not LP64 (" + low.not_lp64 + "); not checked";
+        f.extra["frontend"] = fe.version;
+        f.extra["target"] = low.not_lp64;
+        out.push_back(std::move(f));
+        return res;
+    }
     if (!ir) {
         auto f = base_finding(u);
         f.status = std::string(laws::ERROR);
@@ -2608,17 +3744,96 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         f.extra["frontend_salvage"] = "cut";
         out.push_back(std::move(f));
     }
-    res.mod = std::make_unique<ir::Module>(ir::parse_module(*ir));
+    res.mod = std::make_unique<ir::Module>(cfg.pir_kernel_api.empty() ? ir::parse_module(*ir)
+                                                                       : ir::parse_module_kernel(*ir));
     auto& mod = *res.mod;
+    // A big-endian target (datalayout component "E": s390x, sparc64, big-endian powerpc64 / mips64): PIR's memory model
+    // assembles a multi-byte load little-endian (docs/PIR.md "Memory model"), so a byte-level view of a wider value
+    // (unions, casts, memcpy into a struct) would be the wrong value. Not checked rather than checked wrongly (Law 7).
+    {
+        bool big = false;
+        std::string comp;
+        for (char ch : mod.datalayout + "-") {
+            if (ch == '-') { big = big || comp == "E"; comp.clear(); }
+            else comp += ch;
+        }
+        if (big) {
+            auto f = base_finding(u);
+            f.status = std::string(laws::NOTRUN);
+            f.strength = std::string(laws::STRENGTH_SOME);
+            f.message = "big-endian target (datalayout \"" + mod.datalayout +
+                        "\"): PIR's memory model is little-endian; not checked";
+            f.extra["frontend"] = fe.version;
+            out.push_back(std::move(f));
+            return res;
+        }
+    }
     // library operational models for what the unit declares (docs/PIR.md "Library models")
-    link_models(mod, models);
+    link_models(mod, models, cfg.pir_kernel_api);
     TranslateOptions topt;
     topt.signed_shl = sshl;
     topt.shl_cxx = is_cxx(u.path);
     topt.folded = folded;
+    topt.wrapv = low.wrapv;
+    topt.kernel_stops = cfg.pir_kernel_stops;
+    topt.kernel_current = cfg.pir_kernel_current;
+    topt.global_harness = cfg.pir_global_harness;
+    topt.lock_wrappers = cfg.pir_lock_wrappers;
+    topt.lock_scopes = cfg.pir_lock_scopes;
+    topt.bpf_helpers = cfg.pir_bpf_helpers && cfg.pir_kernel_api == "linux";
+    topt.global_harness_deep = cfg.pir_global_harness_deep;
+    if (!cfg.ops_table.empty()) {  // --ops-table (docs/PIR.md "Indirect calls through ops tables")
+        std::string ops_err;
+        topt.ops_table = load_ops_table(cfg.ops_table, ops_err);
+        if (!ops_err.empty()) throw std::runtime_error("--ops-table " + ops_err);
+    }
+    if (!cfg.pir_field_invariants.empty()) {  // --pir-field-invariants (field_mine.cpp)
+        std::string fi_err;
+        topt.field_invariants = load_field_invariants(cfg.pir_field_invariants, fi_err);
+        if (!fi_err.empty()) throw std::runtime_error("--pir-field-invariants " + fi_err);
+    }
+    if (!cfg.pir_callback_models.empty()) {  // --pir-callback-models (callback_models.cpp, docs/DRIVER_ENV_MODELS.md)
+        std::string cb_err;
+        auto rows = load_callback_models(cfg.pir_callback_models, cb_err);
+        if (!cb_err.empty()) throw std::runtime_error("--pir-callback-models " + cb_err);
+        topt.callback_models = std::make_shared<const std::vector<CallbackModel>>(std::move(rows));
+    }
+    if (const char* mine = std::getenv("PRISM_PIR_MINE_FIELDS"); mine && *mine) {  // field_mine.cpp
+        std::ofstream mf(mine, std::ios::app);
+        if (mf) mine_field_stores(mod, u.path.string(), mf);
+    }
+    if (!cfg.pir_param_preconditions.empty()) {  // --pir-param-preconditions (field_mine.cpp): rows in this unit's scope
+        std::string pp_err;
+        auto rows = load_param_preconditions(cfg.pir_param_preconditions, pp_err);
+        if (!pp_err.empty()) throw std::runtime_error("--pir-param-preconditions " + pp_err);
+        const std::string up = u.path.generic_string();
+        for (auto& r : rows)
+            if (r.scope == "*" || up.find(r.scope) != std::string::npos) topt.param_preconditions.push_back(std::move(r));
+    }
+    if (!cfg.callee_contracts.empty()) {  // --callee-contracts (docs/HARNESS_PHASE2.md)
+        std::string cc_err;
+        topt.callee_contracts = load_callee_contracts(cfg.callee_contracts, cc_err);
+        if (!cc_err.empty()) throw std::runtime_error("--callee-contracts " + cc_err);
+    }
+    if (cfg.pir_ops_auto) {  // --pir-ops-auto: the unit's own function-pointer stores and initialisers
+        topt.ops_auto = true;
+        merge_ops_tables(topt.ops_table, derive_ops_table(mod, topt.ops_max_targets));
+    }
+    topt.addr_values = cfg.pir_addr_values;
+    topt.builtin_contracts = cfg.pir_builtin_contracts;
+    topt.icall_havoc = cfg.pir_icall_havoc;
+    topt.variadic = cfg.pir_variadic;
+    topt.recursion = cfg.pir_recursion;
+    topt.kernel_sprintf = cfg.pir_kernel_sprintf;
+    topt.addrspace = cfg.pir_addrspace;
+    topt.wide_int = cfg.pir_wide_int;
     std::set<int> used_folded;
-    const auto unit_name = u.path.filename().string();
-    std::vector<std::string> src_lines = presumed_lines(split_lines(read_file(u.path)));
+    // A preprocessed copy (x.i, --compile-commands) names x.c in its #line
+    // markers: the unit's own functions are those of x.c, and its lines are x.c's.
+    std::error_code src_ec;
+    const bool pre_main = !low.cc_main.empty() && fs::is_regular_file(low.cc_main, src_ec);
+    const auto unit_name = (pre_main ? low.cc_main : u.path).filename().string();
+    std::vector<std::string> src_lines = presumed_lines(split_lines(read_file(pre_main ? low.cc_main : u.path)));
     pirmem::UnitInfo uinfo{u.path, u.rel, is_cxx(u.path), src_lines, std::nullopt};
     std::vector<int> starts;  // DISubprogram lines of this unit, sorted
     if (is_cxx(u.path)) {
@@ -2627,13 +3842,109 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         std::sort(starts.begin(), starts.end());
     }
     const bool export_only = std::getenv("PRISM_PIR_EXPORT_ONLY") && std::getenv("PRISM_PIR_LEAN_EXPORT");
+    // --jsonl: source line ranges (cparse's view of the unit) for the records
+    const bool want_jsonl = !cfg.jsonl.empty();
+    std::map<std::string, std::vector<std::pair<int, int>>> fn_spans;
+    std::map<std::string, std::vector<std::string>> header_lines;  // --pir-header-fns: a header's source lines
+    if (want_jsonl) {
+        try {
+            for (auto& fi : extract_functions(pre_main ? low.cc_main : u.path, u.rel))
+                if (fi.span.second > 0) fn_spans[fi.name].push_back(fi.span);
+        } catch (...) {
+        }
+    }
+    // --pir-input-hash: the unit's context of the input keys (inkey above)
+    struct KeyCtx {
+        std::string base;                  // versions, flags, environment
+        std::string unit_sha;              // the unit's IR text and source (scope "unit")
+        LinkInfo link;
+        std::set<std::string> called;      // IR names with a caller in the unit
+        std::set<std::string> lock_named;  // functions a lock-order record names
+        std::vector<int> starts;           // DISubprogram lines of the unit's own functions, sorted
+        // Folded UB not carried by an instruction of the function can still decide its row (the end of this
+        // function): an entry with line > 0 by equality with the row's line (the function's first line or its
+        // violation's, both before the next function's first line); an entry with line <= 0 by the owner rule
+        // (finalize_unit owner_of: the source span that contains it, else every function whose span is not known).
+        // A function is clear of both when no entry with line > 0 lies in [its line, the next function's line) and
+        // the unit has no entry with line <= 0.
+        bool folded_reaches(const std::vector<FoldedUb>& folded, int line) const {
+            if (folded.empty()) return false;
+            if (line <= 0) return true;
+            auto nx = std::upper_bound(starts.begin(), starts.end(), line);
+            const int next = nx == starts.end() ? std::numeric_limits<int>::max() : *nx;
+            for (const auto& x : folded) {
+                if (x.line > 0 && x.line >= line && x.line < next) return true;
+                // an entry with line <= 0 goes to the function whose source span contains it, or to every function
+                // whose span is not known (finalize_unit owner_of): any function of the unit may be charged
+                if (x.line <= 0) return true;
+            }
+            return false;
+        }
+    };
+    std::optional<KeyCtx> kctx;
+    if (cfg.pir_input_hash) {
+        kctx.emplace();
+        inkey::W w;
+        w.tag("prism-pir-input-key/1\n");
+#ifdef PRISM_VERSION_STRING
+        w.s(PRISM_VERSION_STRING);
+#else
+        w.s("");
+#endif
+        w.s(fe.version);
+#ifdef PRISM_HAS_Z3
+        w.s(Z3_get_full_version());
+#endif
+        w.i(cfg.pir_vacuity);
+        w.i(cfg.pir_discharge);
+        w.i(cfg.pir_discharge_closure);
+        w.i(!cfg.pir_discharge_out.empty());
+        w.s(cfg.pir_obligations.empty() ? std::string() : sha256_hex(read_file(cfg.pir_obligations)));
+        w.i(cfg.pir_header_fns);
+        w.i(cfg.pir_harness);
+        w.i(cfg.strict_aliasing);
+        w.s(cfg.pir_kernel_api);
+        w.i(cfg.certified);
+        w.s(cfg.data_model);
+        w.i(cfg.allow_exec);
+        inkey::env(w);
+        kctx->base = std::move(w.o);
+        kctx->unit_sha = sha256_hex(inkey::stable_ir(*ir) + "\n\x01source\n" + read_file(pre_main ? low.cc_main : u.path));
+        kctx->link = link_info(mod, *ir, topt.ops_table);
+        for (const auto& fn : mod.functions) {
+            if (fn.is_declaration || fn.is_model) continue;
+            for (const auto& b : fn.blocks)
+                for (const auto& in : b.insts)
+                    if (!in.callee.empty()) kctx->called.insert(in.callee);
+        }
+        if (!cfg.pir_kernel_api.empty()) {
+            const auto contracts = cfg.pir_lock_contracts.empty() ? std::vector<LockContract>{}
+                                                                  : read_lock_contracts(cfg.pir_lock_contracts);
+            const auto rep = lock_order_report(mod, contracts, cfg.pir_lock_scopes);
+            for (auto& x : rep.inversions) kctx->lock_named.insert(x.function);
+            for (auto& x : rep.cycles)
+                if (!x.functions.empty()) kctx->lock_named.insert(x.functions.back());
+            for (auto& x : rep.ctx_mismatches) kctx->lock_named.insert(x.function);
+            for (auto& x : rep.hardirq_sleeps) kctx->lock_named.insert(x.function);
+        }
+        for (const auto& fn : mod.functions) {
+            auto it = mod.subprograms.find(fn.dbg);
+            if (it == mod.subprograms.end() || it->second.line <= 0) continue;
+            if (!it->second.file.empty() && fs::path(it->second.file).filename().string() != unit_name) continue;
+            kctx->starts.push_back(it->second.line);
+        }
+        std::sort(kctx->starts.begin(), kctx->starts.end());
+    }
     for (auto& irf : mod.functions) {
         ir::DISub sub;
         if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
         if (sub.artificial || irf.name.starts_with("__cxx_global_var_init") || irf.name.starts_with("_GLOBAL__") ||
             irf.is_model)
             continue;
-        if (!sub.file.empty() && fs::path(sub.file).filename().string() != unit_name) continue;  // header code
+        // header code: not this unit's function (every includer would check it again). --pir-header-fns: a header
+        // function PRISM_PIR_ONLY names for this unit is checked here (a stub unit made for its header functions).
+        const bool other_file = !sub.file.empty() && fs::path(sub.file).filename().string() != unit_name;
+        if (other_file && !(cfg.pir_header_fns && pir_only_names(u.rel, sub.name.empty() ? irf.name : sub.name))) continue;
         FnRec rec;
         rec.irf = &irf;
         auto& f = rec.f;
@@ -2643,8 +3954,40 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         f.line = sub.line ? std::optional<int>(sub.line) : std::nullopt;
         f.extra["frontend"] = fe.version;
         if (!sub.linkage.empty()) f.extra["ir_name"] = irf.name;
-        auto fopt = pirmem::function_options(topt, irf, uinfo, sub.line, cfg, sub.name.empty() ? irf.name : sub.name);
+        // a header function: its source lines (requires / asm contracts, harness drafts) are its own file's
+        std::optional<pirmem::UnitInfo> hinfo;
+        if (other_file) {
+            rec.header_file = sub.file;
+            f.extra["header_file"] = sub.file;
+            f.extra["header_context"] = "a function of " + sub.file +
+                                        ", checked as compiled in this unit (its macros, configuration and flags; --pir-header-fns)";
+            auto [it, fresh] = header_lines.try_emplace(sub.file);
+            fs::path hp(sub.file);
+            if (hp.is_relative()) hp = u.path.parent_path() / hp;
+            std::error_code hec;
+            if (fresh && fs::is_regular_file(hp, hec)) it->second = split_lines(read_file(hp));
+            hinfo.emplace(pirmem::UnitInfo{hp, sub.file, is_cxx(hp), it->second, std::nullopt});
+        }
+        FnStats stats{recs, recs.size(), want_jsonl, prism::clock::Stopwatch{}};
+        if (want_jsonl) {
+            membudget::reset_peak();
+            if (auto it = other_file ? fn_spans.end() : fn_spans.find(*f.function); it != fn_spans.end()) {
+                const std::pair<int, int>* best = nullptr;
+                for (auto& sp : it->second)
+                    if (!best || std::abs(sp.first - sub.line) < std::abs(best->first - sub.line)) best = &sp;
+                if (best) {
+                    f.extra["start_line"] = std::to_string(best->first);
+                    f.extra["end_line"] = std::to_string(best->second);
+                }
+            }
+        }
+        auto fopt = pirmem::function_options(topt, irf, hinfo ? *hinfo : uinfo, sub.line, cfg, sub.name.empty() ? irf.name : sub.name);
         auto tr = translate(mod, irf, fopt);
+        if (want_jsonl) {
+            const auto lc = lean_coverage(mod, irf, fopt, tr);
+            f.extra["lean_supported"] = lc.supported ? "yes" : "no";
+            if (!lc.supported) f.extra["lean_reason"] = lc.reason;
+        }
         if (!tr.fn || tr.fn->ptr.w == 64) export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);  // Lean: LP64 only
         for (int k : tr.folded_used) used_folded.insert(k);
         if (export_only) {
@@ -2709,11 +4052,81 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
             for (auto& n : fn.inlined) s += (s.empty() ? "" : ",") + n;
             f.extra["inlined"] = s;
         }
+        if (kctx) {  // --pir-input-hash: the key, no check
+            auto ko = check_options(cfg, budget);
+            if (ko.function_budget_s > 0) ko.function_budget = std::make_shared<FunctionBudget>(ko.function_budget_s);
+            const bool has_callers = kctx->called.count(irf.name) > 0;
+            const bool internal = kctx->link.internal.count(irf.name) > 0, taken = kctx->link.taken.count(irf.name) > 0;
+            std::vector<std::string> unit_why;
+            // the harness discharge (discharge_pass) changes only a PROVED-ASSUMING row under an automatic harness of
+            // a static, not address-taken function called in the unit: its callers decide it
+            // (--pir-discharge-closure, --pir-discharge-out and --pir-obligations read more of the unit, and other
+            // units' plans: any harnessed function's row is then the unit's)
+            const bool wide = cfg.pir_discharge_closure || !cfg.pir_discharge_out.empty() || !cfg.pir_obligations.empty();
+            if (cfg.pir_discharge && cfg.pir_harness && has_auto_harness(fn) && (wide || (internal && !taken && has_callers)))
+                unit_why.push_back("discharge");
+            // Not scoped: the error-sink rule (caller_discharged_asserts) reads which callers were checked in the
+            // same process, which no key can cover. It acts only on a FAILED "assert:" row (and makes it "error
+            // sink: ..."); the row before it is the check's own, so equal keys agree on whether it can act. Such
+            // rows must not be transferred (docs/PIR.md "Input key").
+            if (kctx->lock_named.count(*f.function) || kctx->lock_named.count(irf.name)) unit_why.push_back("lock-order");
+            if (kctx->folded_reaches(folded, sub.line) || (!rec.header_file.empty() && !low.folded_other.empty()))
+                unit_why.push_back("folded-ub");
+            if (fopt.globals_initial) unit_why.push_back("globals-initial");
+            if (is_cxx(u.path)) unit_why.push_back("c++");
+            if (cfg.allow_exec) unit_why.push_back("translation-validation");  // replays the unit's own IR (lli)
+            // the memory policy re-translates a function with mutable globals with the other globals mode
+            std::optional<Translation> alt;
+            if (fn.mutable_globals) {
+                auto o = fopt;
+                o.globals_initial = !fopt.globals_initial;
+                alt = translate(mod, irf, o);
+            }
+            auto key = [&](bool loc) {
+                inkey::W w;
+                w.o = kctx->base;
+                inkey::function(w, fn, loc);
+                inkey::check_options(w, ko);
+                w.i(internal);
+                w.i(taken);
+                w.i(has_callers);
+                w.tag("G");
+                w.i(alt.has_value());
+                if (alt) {
+                    w.s(alt->status);
+                    w.s(alt->reason);
+                    w.i(alt->fn.has_value());
+                    if (alt->fn) {
+                        auto g = *alt->fn;
+                        g.name = fn.name;
+                        g.file = fn.file;
+                        g.line = fn.line;
+                        inkey::function(w, g, loc);
+                    }
+                }
+                inkey::strs(w, unit_why);
+                if (!unit_why.empty()) w.s(kctx->unit_sha);
+                return sha256_hex(w.o);
+            };
+            f.extra["input_key"] = key(true);
+            f.extra["input_key_loc_free"] = key(false);
+            std::string sc;
+            for (auto& x : unit_why) sc += (sc.empty() ? "" : ",") + x;
+            f.extra["input_scope"] = unit_why.empty() ? std::string("function") : "unit:" + sc;
+            f.status = std::string(laws::NOTRUN);
+            f.strength = std::string(laws::STRENGTH_SOME);
+            f.message = "input key only (--pir-input-hash): not checked";
+            recs.push_back(std::move(rec));
+            continue;
+        }
         rec.fn = std::move(tr.fn);
         res.jobs.push_back(CheckJob{recs.size(), std::move(fopt), used_folded});
         recs.push_back(std::move(rec));
     }
     res.job_err.assign(res.jobs.size(), std::string());
+    res.topt = topt;  // for finalize_unit: the --pir-discharge pass runs after every check
+    res.src_lines = src_lines;
+    res.export_only = export_only;
     return res;
 }
 
@@ -2783,6 +4196,8 @@ void check_rec(Analyzed& a, std::size_t j, const Config& cfg, const Lowered& low
     if (fresh_helps && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
         f.extra["pir_rerun"] = "pending";  // checked again in a fresh process (rerun_after_oom)
     pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
+    // a length pairing is always checked for satisfiability (it is never a proof of anything by itself)
+    if (cfg.pir_vacuity || has_length_pairing(fn)) apply_vacuity(v, fn, copt);
     if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
     f.status = v.status;
     f.message = v.message;
@@ -2797,8 +4212,39 @@ void check_rec(Analyzed& a, std::size_t j, const Config& cfg, const Lowered& low
         f.extra["prop"] = v.prop;
         if (v.line) f.line = v.line;
     }
+    // A header function (--pir-header-fns): clang's folded-UB diagnostics of its own file between its first line and
+    // the next function of that file have no IR marker (markers are placed for the unit's own file only), so the
+    // function cannot be proved; the unit's own diagnostics (other line numbers' file) do not apply to it.
+    ir::DISub sub;
+    if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
+    if (!rec.header_file.empty() && f.status != laws::FAILED && f.status != laws::NEEDS_HARNESS && sub.line > 0) {
+        int next = std::numeric_limits<int>::max();
+        for (const auto& g : mod.functions)
+            if (auto it = mod.subprograms.find(g.dbg); it != mod.subprograms.end() && it->second.file == sub.file &&
+                                                       it->second.line > sub.line)
+                next = std::min(next, it->second.line);
+        const auto same_file = [&](const std::string& p) {
+            if (fs::path(p).lexically_normal() == fs::path(sub.file).lexically_normal()) return true;
+            std::error_code ec;
+            return fs::equivalent(fs::path(p), fs::path(sub.file), ec);
+        };
+        for (const auto& [p, fu] : low.folded_other) {
+            if (fu.line < sub.line || fu.line >= next || !same_file(p)) continue;
+            if (low.wrapv && wraps_under_fwrapv(fu)) continue;  // --pir-build-semantics: wraps, not UB
+            f.extra["verdict_before_folded"] = f.status;
+            f.extra.erase(std::string(laws::CERTIFICATE_KEY));
+            f.status = std::string(laws::NEEDS_HARNESS);
+            f.strength = std::string(laws::STRENGTH_SOME);
+            f.message = "UNENCODED: clang-folded UB in " + sub.file + " at line " + std::to_string(fu.line) +
+                        ", in this header function, not attributable to an IR instruction (" + fu.msg + ")";
+            rec.cex.clear();
+            f.counterexample.clear();
+            f.extra.erase("cex");
+            break;
+        }
+    }
     // Folded UB whose IR marker was dropped or not encoded must not stand as PROVED.
-    for (std::size_t k = 0; k < folded.size(); ++k) {
+    for (std::size_t k = 0; k < folded.size() && rec.header_file.empty(); ++k) {
         if (used_folded.count(static_cast<int>(k))) continue;
         if (folded[k].line <= 0) continue;
         if (!f.line || *f.line != folded[k].line) continue;
@@ -2823,7 +4269,8 @@ void check_rec(Analyzed& a, std::size_t j, const Config& cfg, const Lowered& low
 }
 
 // After every check of the unit: rows that depend on more than one function.
-void finalize_unit(Analyzed& res, const Unit& u, const Frontend& fe, const Lowered& low) {
+void finalize_unit(Analyzed& res, const Unit& u, const Frontend& fe, const Lowered& low, const Config& cfg,
+                   const std::shared_ptr<HoudiniBudget>& budget) {
     auto& out = res.out;
     auto& recs = res.recs;
     const auto& folded = low.folded;
@@ -2840,25 +4287,193 @@ void finalize_unit(Analyzed& res, const Unit& u, const Frontend& fe, const Lower
         return;
     }
     if (!res.mod) return;  // the front end failed: the unit's row is already in out
+    // --pir-input-hash: nothing was checked, so the passes over checked rows below have nothing to do (what they
+    // read is in the keys' scope)
+    if (cfg.pir_input_hash && !recs.empty()) return;
+    // the unit's main file, as prepare_unit saw it (the folded-UB owner rule below reads every function of it)
+    const auto& mod = *res.mod;
+    std::error_code src_ec;
+    const bool pre_main = !low.cc_main.empty() && fs::is_regular_file(low.cc_main, src_ec);
+    const auto unit_name = (pre_main ? low.cc_main : u.path).filename().string();
+    const std::map<std::string, std::vector<std::pair<int, int>>> fn_spans;  // empty: owner_of reads the spans itself
     // Folded UB that no instruction carries: the function cannot be proved.
+    // Its owner is decided over ALL functions of the unit's main file, never only the ones this process checks
+    // (PRISM_PIR_ONLY chunks, re-runs): the function whose source span (cparse start..end line) contains the line. When
+    // the line is in no known span, every function whose span is not known (cparse did not find it, e.g. one a macro
+    // generates) is charged, since any of them may contain it; with every span known, the line is at file scope. The verdict
+    // of each function is then the same whatever else is selected (OS-Proving docs/coverage/DEDUPE.md: before, the UB went to the selected
+    // function with the largest line before it, so the true owner could be reported clean in another chunk).
+    struct OwnSpan {
+        const ir::Function* irf;
+        int start, end;  // end 0: not known
+    };
+    std::vector<OwnSpan> own_spans;
+    bool own_spans_done = false;
+    auto owner_of = [&](int line) -> std::vector<const ir::Function*> {
+        if (!own_spans_done) {
+            own_spans_done = true;
+            std::map<std::string, std::vector<std::pair<int, int>>> spans = fn_spans;
+            if (spans.empty()) {
+                try {
+                    for (auto& fi : extract_functions(pre_main ? low.cc_main : u.path, u.rel))
+                        if (fi.span.second > 0) spans[fi.name].push_back(fi.span);
+                } catch (...) {
+                }
+            }
+            for (auto& irf : mod.functions) {
+                ir::DISub sub;
+                if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
+                if (irf.is_model || !sub.line) continue;
+                if (!sub.file.empty() && fs::path(sub.file).filename().string() != unit_name) continue;  // header code
+                OwnSpan s{&irf, sub.line, 0};
+                if (auto it = spans.find(sub.name.empty() ? irf.name : sub.name); it != spans.end()) {
+                    const std::pair<int, int>* best = nullptr;
+                    for (auto& sp : it->second)
+                        if (!best || std::abs(sp.first - sub.line) < std::abs(best->first - sub.line)) best = &sp;
+                    if (best && best->first <= sub.line && sub.line <= best->second) s = {&irf, best->first, best->second};
+                }
+                own_spans.push_back(s);
+            }
+            std::sort(own_spans.begin(), own_spans.end(), [](const OwnSpan& a, const OwnSpan& b) { return a.start < b.start; });
+        }
+        std::vector<const ir::Function*> r;
+        for (const auto& s : own_spans)  // a known span that contains the line: that function alone
+            if (s.end && s.start <= line && line <= s.end) return {s.irf};
+        // no known span contains it: each function whose span is not known may (a macro-generated function, one cparse
+        // did not find), so each is charged; with every span known, the line is at file scope (an initialiser: nothing
+        // executes it) and no function is charged
+        for (const auto& s : own_spans)
+            if (!s.end) r.push_back(s.irf);
+        return r;
+    };
     for (std::size_t k = 0; k < folded.size(); ++k) {
         if (folded[k].line > 0) continue;  // marker is in the IR: checked (or its function is not encoded)
+        if (low.wrapv && wraps_under_fwrapv(folded[k])) continue;  // --pir-build-semantics: wraps, not UB
         int line = -folded[k].line;
-        FnRec* owner = nullptr;
-        for (auto& r : recs)
-            if (r.f.line && *r.f.line <= line && (!owner || *owner->f.line < *r.f.line)) owner = &r;
-        if (!owner) continue;
-        if (owner->f.status == laws::FAILED || owner->f.status == laws::NEEDS_HARNESS) continue;
-        owner->f.extra["verdict_before_folded"] = owner->f.status;
-        owner->f.extra.erase(std::string(laws::CERTIFICATE_KEY));
-        owner->f.status = std::string(laws::NEEDS_HARNESS);
-        owner->f.strength = std::string(laws::STRENGTH_SOME);
-        const std::string folded_msg = folded.at(k).msg;
-        owner->f.message = "UNENCODED: clang-folded UB at line " + std::to_string(line) +
-                           " not attributable to an IR instruction (" + folded_msg + ")";
-        owner->fn.reset();
+        const auto owners = owner_of(line);
+        const bool definite = owners.size() == 1 && [&] {
+            for (const auto& s : own_spans)
+                if (s.irf == owners[0]) return s.end != 0;
+            return false;
+        }();
+        for (auto& rec : recs) {
+            if (!rec.header_file.empty()) continue;  // a header function (--pir-header-fns): its lines are its header's
+            if (std::find(owners.begin(), owners.end(), rec.irf) == owners.end()) continue;  // not an owner, or not checked here
+            FnRec* owner = &rec;
+            if (owner->f.status == laws::FAILED || owner->f.status == laws::NEEDS_HARNESS) continue;
+            owner->f.extra["verdict_before_folded"] = owner->f.status;
+            owner->f.extra.erase(std::string(laws::CERTIFICATE_KEY));
+            owner->f.status = std::string(laws::NEEDS_HARNESS);
+            owner->f.strength = std::string(laws::STRENGTH_SOME);
+            const std::string folded_msg = folded.at(k).msg;
+            // Reported at its source line with the reason it is not decided (not an UNENCODED construct): clang folded the
+            // expression into a constant, so no IR instruction carries it and whether an execution of the function reaches
+            // it is not known. Never PROVED, never FAILED (the expression may sit on a path that is never taken).
+            owner->f.message = "clang-folded UB at line " + std::to_string(line) + " (" + folded_msg +
+                               "): no IR instruction carries it (folded into a constant), so whether the function reaches it "
+                               "is not decided" +
+                               (definite ? std::string()
+                                         : std::string("; the line is in no known function span, so every function whose "
+                                                       "span is not known may contain it"));
+            owner->f.extra["folded_line"] = std::to_string(line);
+            owner->f.extra["folded_class"] = folded.at(k).cls;
+            owner->fn.reset();
+        }
     }
     caller_discharged_asserts(recs, *res.mod);
+    // LOCK-ORDER-INVERSION (lock_order.cpp, docs/KERNEL_CONCURRENCY.md section 14): one record per
+    // lock-class pair taken in both orders, on the function that takes the second order
+    if (!cfg.pir_kernel_api.empty()) {
+        const auto contracts = cfg.pir_lock_contracts.empty() ? std::vector<LockContract>{}
+                                                              : read_lock_contracts(cfg.pir_lock_contracts);
+        // interrupt context (LOCK-CTX-MISMATCH, SLEEP-IN-ATOMIC in hardirq) and cycles of three or more
+        // lock classes (LOCK-ORDER-INVERSION with extra "cycle") come from the same pass
+        const auto rep = lock_order_report(*res.mod, contracts, cfg.pir_lock_scopes);
+        if (std::getenv("PRISM_LOCK_COVERAGE")) {  // diagnostic only: one line per unit on stderr, no finding
+            const auto& cv = rep.coverage;
+            std::string kinds, fl;
+            for (auto& [k, n] : cv.static_kind) kinds += (kinds.empty() ? "" : ",") + k + "=" + std::to_string(n);
+            for (auto& c : cv.field_classes) fl += (fl.empty() ? "" : ";") + c;
+            std::fprintf(stderr,
+                         "LOCK-COVERAGE unit=%s functions=%ld acquire_sites=%ld acquire_reached=%ld acquire_resolved=%ld "
+                         "release_sites=%ld release_reached=%ld release_resolved=%ld table_sites=%ld geps=%ld field_geps=%ld "
+                         "field_classes=%zu global_classes=%zu pairs=%ld steps=%ld step_limit=%d kinds=%s field_class_list=%s\n",
+                         u.rel.c_str(), cv.functions, cv.acquire_sites, cv.acquire_reached, cv.acquire_resolved,
+                         cv.release_sites, cv.release_reached, cv.release_resolved, cv.table_sites, cv.geps, cv.field_geps,
+                         cv.field_classes.size(), cv.global_classes.size(), cv.pairs, cv.steps, cv.step_limit_hit ? 1 : 0,
+                         kinds.empty() ? "-" : kinds.c_str(), fl.empty() ? "-" : fl.c_str());
+            for (auto& [n, c] : cv.unmodelled_lock_calls)
+                std::fprintf(stderr, "LOCK-COVERAGE-UNMODELLED unit=%s callee=%s calls=%ld\n", u.rel.c_str(), n.c_str(), c);
+        }
+        for (auto& inv : rep.inversions) {
+            FnRec r;
+            r.f = base_finding(u);
+            r.f.status = std::string(laws::FAILED);
+            r.f.strength = std::string(laws::STRENGTH_PROVES);
+            r.f.function = inv.function;
+            r.f.cls = "LOCK-ORDER-INVERSION";
+            r.f.message = "locks " + inv.first + " and " + inv.second + " are taken in both orders: " + inv.first +
+                          " then " + inv.second + " in " + inv.other + ", " + inv.second + " then " + inv.first +
+                          " in " + inv.function + " (ABBA deadlock)";
+            r.f.extra["other_function"] = inv.other;
+            r.f.extra["lock_classes"] = inv.first + "," + inv.second;
+            recs.push_back(std::move(r));
+        }
+        for (auto& cyc : rep.cycles) {
+            FnRec r;
+            r.f = base_finding(u);
+            r.f.status = std::string(laws::FAILED);
+            r.f.strength = std::string(laws::STRENGTH_PROVES);
+            r.f.function = cyc.functions.back();
+            r.f.cls = "LOCK-ORDER-INVERSION";
+            std::string chain, witnesses, classes;
+            for (std::size_t i = 0; i < cyc.classes.size(); ++i) {
+                const auto& next = cyc.classes[(i + 1) % cyc.classes.size()];
+                if (i) { chain += ", "; witnesses += ","; classes += ","; }
+                chain += cyc.classes[i] + " then " + next + " in " + cyc.functions[i];
+                witnesses += cyc.functions[i];
+                classes += cyc.classes[i];
+            }
+            r.f.message = std::to_string(cyc.classes.size()) + "-lock cycle (ABBA generalised, deadlock): " + chain;
+            r.f.extra["lock_classes"] = classes;
+            r.f.extra["cycle"] = classes;
+            r.f.extra["cycle_functions"] = witnesses;
+            recs.push_back(std::move(r));
+        }
+        for (auto& cm : rep.ctx_mismatches) {
+            FnRec r;
+            r.f = base_finding(u);
+            r.f.status = std::string(laws::FAILED);
+            r.f.strength = std::string(laws::STRENGTH_PROVES);
+            r.f.function = cm.function;
+            r.f.cls = "LOCK-CTX-MISMATCH";
+            r.f.message = "spinlock " + cm.lock_class + " is taken in hardirq context (interrupt handler " +
+                          cm.handler + ") and with interrupts enabled in " + cm.function +
+                          " (spin_lock without irqsave): an interrupt on the same CPU spins on it forever "
+                          "(lockdep {IN-HARDIRQ-W} -> {HARDIRQ-ON-W})";
+            r.f.extra["other_function"] = cm.handler;
+            r.f.extra["lock_classes"] = cm.lock_class;
+            recs.push_back(std::move(r));
+        }
+        for (auto& hs : rep.hardirq_sleeps) {
+            FnRec r;
+            r.f = base_finding(u);
+            r.f.status = std::string(laws::FAILED);
+            r.f.strength = std::string(laws::STRENGTH_PROVES);
+            r.f.function = hs.function;
+            r.f.cls = "SLEEP-IN-ATOMIC";
+            r.f.message = "sleeping primitive " + hs.callee + " reached in hardirq context from interrupt handler " +
+                          hs.handler + " (an interrupt handler cannot sleep)";
+            r.f.extra["context"] = "hardirq";
+            r.f.extra["other_function"] = hs.handler;
+            r.f.extra["callee"] = hs.callee;
+            recs.push_back(std::move(r));
+        }
+    }
+    if (cfg.pir_discharge && cfg.pir_harness && !res.export_only && low.ir) {
+        pirmem::UnitInfo uinfo{u.path, u.rel, is_cxx(u.path), res.src_lines, std::nullopt};
+        discharge_pass(recs, *res.mod, *low.ir, u, uinfo, res.topt, cfg, budget);
+    }
     if (recs.empty()) {
         auto f = base_finding(u);
         f.status = std::string(laws::NOFUNC);
@@ -2978,6 +4593,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         for (auto& r : a.recs) per.at(i).push_back(std::move(r.f));
         if (!low.at(i).cxx_models.empty())
             for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
+        if (!low.at(i).cc_note.empty())
+            for (auto& f : per.at(i)) f.extra["front_end_flags"] = low.at(i).cc_note;
         low.at(i).ir.reset();
         a = Analyzed{};
     };
@@ -3009,7 +4626,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     auto close_unit = [&](std::size_t i) {
         const Unit& u = batch.at(i);
         try {
-            finalize_unit(an.at(i), u, fe, low.at(i));
+            finalize_unit(an.at(i), u, fe, low.at(i), cfg, budget);
         } catch (const std::exception& ex) {
             unit_error(i, ex.what());
         }
@@ -3040,15 +4657,38 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 if (!f.starts_with("-std=")) inc.push_back(f);
                 else if (auto k = f.find("++"); k != std::string::npos) cxx_std = cxx_std_number(f.substr(k + 2));
             }
-            if (inc.empty() && !root.empty()) {
+            // --compile-commands: this unit's own flags (GNU C dialect, kernel
+            // defines and ABI flags) replace the scan-root database.
+            bool cc_found = false;
+            if (!cfg.compile_commands.empty()) {
+                auto cc = unit_cc_flags(cfg.compile_commands, u.path, cfg.pir_build_semantics);
+                cc_found = cc.found;
+                if (cc.found) {
+                    inc = std::move(cc.flags);
+                    if (cc.cxx_std > 0) cxx_std = cc.cxx_std;
+                    l.cc_note = std::move(cc.note);
+                    l.cc_main = std::move(cc.main_file);
+                    l.wrapv = cc.wrapv;
+                    l.not_lp64 = cc.not_lp64;
+                    l.not_lp64_x86_32 = cc.not_lp64_x86_32;
+                } else {
+                    l.cc_note = cc.ambiguous
+                                    ? "--compile-commands: several entries match this preprocessed unit's stem; default flags used"
+                                    : "--compile-commands: no entry for this unit; default flags used";
+                }
+            }
+            if (inc.empty() && !root.empty() && !cc_found) {
                 std::error_code ec;
                 inc = {"-idirafter", root.string()};
                 if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});
             }
             if (u.header) inc.insert(inc.begin(), {"-x", "c", "-femit-all-decls"});
+            // --pir-header-fns: the header functions the unit does not call get IR too (clang drops unused inline ones)
+            if (cfg.pir_header_fns && !u.header) inc.push_back("-femit-all-decls");
             const prism::clock::Stopwatch lt0;
             progress_note("lower-start", u.path, 0.0);
-            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std);
+            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std,
+                               cfg.pir_header_fns ? &l.folded_other : nullptr);
             if (!l.ir && !u.header) {
                 // clang reports the first error only (first_error): cut the
                 // functions it names, re-lower, and repeat with the errors
@@ -3066,11 +4706,13 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                     inc2.insert(inc2.begin(), {"-iquote", u.path.parent_path().string()});
                     std::string err2;
                     Lowered l2;
-                    l2.ir = lower_to_ir(fe, cp, std::max(10.0, cfg.timeout), err2, &l2.folded, &l2.sshl, &l2.cxx_models, inc2, cxx_std);
+                    l2.ir = lower_to_ir(fe, cp, std::max(10.0, cfg.timeout), err2, &l2.folded, &l2.sshl, &l2.cxx_models, inc2, cxx_std,
+                                        cfg.pir_header_fns ? &l2.folded_other : nullptr);
                     if (l2.ir) {
                         l.ir = std::move(l2.ir);
                         l.folded = std::move(l2.folded);
                         l.sshl = std::move(l2.sshl);
+                        l.folded_other = std::move(l2.folded_other);
                         l.cxx_models = std::move(l2.cxx_models);
                         l.dropped = std::move(sv->dropped);
                         l.err.clear();
@@ -3096,7 +4738,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         try {
             unit_t0.at(i) = std::chrono::steady_clock::now();
             progress_note("start", u.path, 0.0);
-            an.at(i) = prepare_unit(u, fe, cfg, low.at(i), models);
+            an.at(i) = prepare_unit(u, fe, cfg, low.at(i), models, budget);
         } catch (const std::exception& ex) {
             unit_error(i, ex.what());
         }
@@ -3195,7 +4837,9 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             }
             out.push_back(std::move(f));
         }
-    return exec_gate_note("pir", std::move(out), "pir translation validation (lli)");
+    auto gated = exec_gate_note("pir", std::move(out), "pir translation validation (lli)");
+    write_jsonl(cfg, gated);
+    return gated;
 }
 
 }  // namespace prism::pir

@@ -28,12 +28,17 @@
 #include "prism/pir.hpp"
 
 #include "fp.hpp"
+#include "callee_contract.hpp"
+#include "harness.hpp"
 #include "translate_fp.hpp"
 #include "translate_mem.hpp"
+#include "models/asm/x86_64_asm.h"
 
 #include <algorithm>
+#include <functional>
 #include <array>
 #include <cctype>
+#include <fstream>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -51,7 +56,7 @@ bool has_flag(const ir::Inst& in, std::string_view f) {
 
 unsigned int_width(const ir::Type& t, std::string_view what = "type") {
     if (t.kind != ir::Type::Int) throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
-    if (t.bits == 0 || t.bits > 64)
+    if (t.bits == 0 || t.bits > pirmem::max_int_bits())
         throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text + " (wider than 64 bits)"};
     return t.bits;
 }
@@ -82,6 +87,11 @@ struct Frame {
     // results, { ptr, i32 } exception pairs, and scalar pairs such as the
     // { ptr, i8 } an ABI returns std::pair<iterator, bool> in (scalar_pair)
     std::map<std::string, std::pair<int, int>> pairs;
+    // --kernel-api: the result of an inline asm with three or more direct outputs ({ i32, i32, i32, i32 } of cpuid),
+    // one variable per field; only extractvalue reads it (asm_havoc writes every field)
+    std::map<std::string, std::vector<int>> tuples;
+    // --pir-kernel-current: integer asm outputs that hold a pointer (Linux `current`: this_cpu_read_stable(current_task))
+    std::set<std::string> ptr_ints;
     // a scalar pair load's field-1 address, numbered between its two fields
     // (the order export_lean's `L pload` gives the Lean frame)
     std::map<std::string, int> pairq;
@@ -130,6 +140,9 @@ struct Tr final : pirmem::TrApi {
     std::vector<Stmt> prologue;  // runs before block 0 (globals, pointer-parameter objects)
     std::vector<std::string> model_stack;  // library models being inlined (outermost first)
     std::string top_file;                  // source file of the analysed function
+    // the objects of the root's automatic pointer harness (roots and nested objects, not field-invariant objects):
+    // the only Extern objects a call-site obligation accepts (MemTr::obligation_object, ob-origin)
+    std::vector<Arg> harness_objs;
 
     // ---- control-flow lowering (translate_ctl.inc; docs/PIR.md "Exceptions",
     // "setjmp/longjmp", "Indirect calls", "Inline assembly") ----
@@ -170,6 +183,11 @@ struct Tr final : pirmem::TrApi {
     int caught_var_ = -1;                             // caught_'s preassigned variable                        // oom_ preassigned, its object not yet emitted
 
     Arg fn_addr(const std::string& name) override;
+    // --pir-global-harness-deep (defined after alloc_harness_node)
+    void global_harness_nest(Arg obj, const std::string& name) override;
+    void list_head_harness(Arg p, const std::string& name) override;
+    uint64_t list_head_pad(const std::string& name) override;
+    const ir::Function* root_fn_ = nullptr;  // the analysed function
     Snap snap();
     void restore(const Snap& s);
     void soft_stop(int b, const std::string& msg, int line);
@@ -192,6 +210,87 @@ struct Tr final : pirmem::TrApi {
     bool sjlj_call(Frame& fr, const ir::Inst& in, int& cur, int line, bool& noreturn);
     void indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, bool& noreturn);
     void asm_call(Frame& fr, const ir::Inst& in, int& cur, int line);
+    // kernel mode (translate_kernel.inc, docs/KERNEL_MODELS.md)
+    void note_assumption(const std::string& text);
+    void asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std::string& tag = "asm-havoc", const std::string& extra = "");
+    bool asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line);
+    bool asm_mmio(Frame& fr, const ir::Inst& in, int& cur, int line);
+    void unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line);
+    // --pir-icall-havoc: an indirect call not resolved to inlined targets is a havoc of all memory (translate_kernel.inc)
+    Arg icall_havoc(int& cur, const ir::Inst& in, unsigned w, int line, const std::string& why);
+    // --pir-variadic (translate_va.inc): va_start / va_copy / va_end over arbitrary argument areas (named)
+    int va_layout() const;
+    void va_intrinsic(const std::string& n, Arg ap, Arg src, int& cur, int line);
+    // --pir-recursion (translate_rec.inc): a recursive call is the callee's own verdict and a havoc (named)
+    void recursive_call(Frame& fr, const ir::Inst& in, int& cur, int line);
+    // --pir-kernel-sprintf (translate_ksprintf.inc): Linux sprintf with a literal format; false = not handled
+    bool kernel_sprintf(Frame& fr, const ir::Inst& in, int& cur, int line);
+    // --pir-addrspace (translate_seg.inc): segment pointers (x86 %gs / %fs per-CPU data), named
+    std::optional<Arg> pcpu_;                       // hidden object: the current CPU's per-CPU area
+    std::map<std::string, bool> seg_null_memo_;
+    bool seg_ptr(const ir::Type& t) const;
+    Arg seg_operand(Frame& fr, const ir::Operand& o, int cur, int line);
+    Arg seg_addr(int b, Arg p, int line);
+    bool seg_global_null(const ir::Operand& o);
+    bool variadic_ok(const ir::Function& f) const { return opt.variadic && f.variadic && f.parse_error == "variadic function"; }
+    Arg opaque_ptr(int& cur, const std::string& what, int line);
+    // ghost lock state (translate_lock.inc, docs/KERNEL_CONCURRENCY.md)
+    std::optional<Arg> lk_;                           // hidden object: held locks, atomic depth
+    int lk_var_ = -1;                                 // lk_'s preassigned variable (object emitted in run_frame)
+    bool lk_pending_ = false;
+    static bool reaches_lock_state(const ir::Module& m, const ir::Function& f);
+    static int lock_effects(const ir::Module& m, const ir::Function& f);
+    int lock_wrapper_ = 0;      // --pir-lock-wrappers: 1 acquire-only root, 2 release-only root, 0 neither
+    std::string root_name_;     // the analysed function
+    void lock_return_check(int b, int line);
+    void emit_lock_state();
+    Arg lock_word(int b, unsigned i, int line);
+    void lock_take(int b, Arg p, Arg spin, int line);
+    void lock_drop(int b, Arg p, Arg spin, int line);
+    void sleep_point(int b, int line);
+    void sleep_if(int b, Arg may, int line);
+    void lock_bump(int b, unsigned w, Arg delta, int line);
+    Arg lock_contains(int b, unsigned base, Arg p, int line);
+    void lock_insert(int b, unsigned base, Arg p, Arg fresh, int line);
+    void lock_declare(int b, bool entry, Arg p, Arg spin, int line);
+    void lock_table(Frame& fr);
+    void lock_scopes_entry(Frame& fr);
+    // every object's contents become arbitrary, except PRISM's ghost objects (lock state, allocation-failure flag)
+    void havoc_memory(int b, int line);
+    std::vector<Arg> lk_exempt_;  // --pir-lock-scopes: locks the root acquires and never releases (returned held)
+    bool lk_rcu_exempt_ = false;  // --pir-lock-scopes: the root only enters RCU read-side sections (returns inside one)
+    bool lk_pre_exempt_ = false;  // --pir-lock-scopes: the root only disables preemption / bh (returns with it disabled)
+    bool lock_contracted(const std::string& fn) const;
+    void atomic_add(int b, Arg delta, int line);
+    void rcu_add(int b, Arg delta, int line);
+    bool lock_root(const Frame& fr) const { return !frames.empty() && &fr == frames.front(); }
+    // --pir-bpf-helpers: parameters of the analysed helper whose bpf_func_proto types them as any value (ARG_ANYTHING)
+    // or a pointer that may be NULL: the contract states they are arbitrary, so a violation through them is a defect
+    std::set<std::string> bpf_free_params_;
+    // An integer that comes from a parameter or another unknown input (a load, a call result): its value is the
+    // caller's or the environment's. Constants and values computed from them (and from ptrtoint of known objects) are
+    // not. Law 6: an integer-to-pointer cast of such a value is an unconstrained address.
+    bool int_from_input(Frame& fr, const ir::Operand& o, int depth = 0) {
+        if (depth > 64) return true;
+        if (o.v.kind != ir::Value::Local) return false;  // constants and constant expressions
+        auto it = fr.defs.find(o.v.name);
+        if (it == fr.defs.end() || it->second == nullptr) {
+            // a parameter of this frame: the analysed function's (contract-stated free under --pir-bpf-helpers, else
+            // an input), or an inlined callee's (its argument's origin is not followed: an input)
+            return !(lock_root(fr) && bpf_free_params_.count(o.v.name));
+        }
+        const ir::Inst& in = *it->second;
+        static const std::set<std::string> kPure{"add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr", "zext",
+                                                 "sext", "trunc", "udiv", "sdiv", "urem", "srem", "select", "phi",
+                                                 "freeze", "bitcast"};
+        if (in.op == "ptrtoint") return false;  // the address of an object the function has
+        if (!kPure.count(in.op)) return true;   // load, call, ... : unknown
+        for (const auto& x : in.ops)
+            if (int_from_input(fr, x, depth + 1)) return true;
+        for (const auto& [x, from] : in.incoming)
+            if (int_from_input(fr, x, depth + 1)) return true;
+        return false;
+    }
 
     static std::string model_display(const std::string& n) {
         static const std::map<std::string, std::string> k{
@@ -246,6 +345,8 @@ struct Tr final : pirmem::TrApi {
     }
     void check(int b, Arg viol, std::string prop, std::string cls, std::string msg, int line) override {
         if (viol.is_const && viol.bits == 0) return;  // statically safe
+        // --pir-discharge: only the call-site obligations are properties of this translation
+        if (!opt.obligations.empty() && cls != "HARNESS-OBLIGATION") return;
         Stmt s;
         s.kind = Stmt::Check;
         s.args = {viol};
@@ -312,7 +413,18 @@ struct Tr final : pirmem::TrApi {
     // taken, read while indeterminate).
     Arg operand(Frame& fr, const ir::Operand& o, int b, int line, bool use = true) {
         switch (o.v.kind) {
-            case ir::Value::Int: return Arg::c(int_width(o.ty, "operand type"), o.v.bits);
+            case ir::Value::Int: {
+                const unsigned w = int_width(o.ty, "operand type");
+                if (w <= 64 || o.v.hi == 0) return Arg::c(w, o.v.bits);  // (Arg::c zero-extends past 64 bits)
+                // --pir-wide-int: a literal with bits above 63, built in the prologue (defined before every use):
+                // (zext hi) << 64 | (zext lo) at min(w, 128) bits; a wider type extends it by the literal's sign (the
+                // parser keeps literals of at most 128 bits of magnitude)
+                const unsigned lw = std::min(w, 128u);
+                Arg hi = assign(-1, Op::Shl, lw, {assign(-1, Op::ZExt, lw, {Arg::c(64, o.v.hi)}), Arg::c(lw, 64)}, "wide");
+                Arg v = assign(-1, Op::Or, lw, {hi, assign(-1, Op::ZExt, lw, {Arg::c(64, o.v.bits)})}, "wide");
+                if (w == lw) return v;
+                return assign(-1, o.v.negative ? Op::SExt : Op::ZExt, w, {v}, "wide");
+            }
             case ir::Value::Local: {
                 if (fr.pairs.count(o.v.name)) throw Unenc{"UNENCODED: aggregate value %" + o.v.name};
                 auto it = fr.env.find(o.v.name);
@@ -360,6 +472,8 @@ struct Tr final : pirmem::TrApi {
                 break;
             case ir::Value::ConstExpr:
                 if (o.v.ce_op == "getelementptr") return mt.const_gep(b, o.v, line);
+                if (opt.addr_values && (o.v.ce_op == "ptrtoint" || o.v.ce_op == "inttoptr" || o.v.ce_op == "bitcast"))
+                    return mt.const_addr(b, o.v, line);  // --pir-addr-values
                 if ((o.v.ce_op == "inttoptr" || o.v.ce_op == "bitcast") && o.ty.kind == ir::Type::Ptr &&
                     !o.v.elems.empty() && o.v.elems[0].v.kind == ir::Value::Int && o.v.elems[0].v.bits == 0)
                     return Arg::c(ptr_w(), 0);
@@ -527,6 +641,17 @@ struct Tr final : pirmem::TrApi {
             // the hidden caught-exceptions stack, when a handler can be entered:
             // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
             if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", ptr_w());
+            // the ghost lock state, when a lock spec can reach it (translate_lock.inc)
+            root_name_ = f.name;
+            if (opt.lock_wrappers && !lock_contracted(f.name)) {
+                const int fx = lock_effects(m, f);
+                lock_wrapper_ = fx == 1 ? 1 : fx == 2 ? 2 : 0;
+                root_name_ = f.name;
+            }
+            if (reaches_lock_state(m, f) || lock_contracted(f.name)) {
+                lk_var_ = newvar("_lock", ptr_w());
+                lk_pending_ = true;
+            }
         }
         std::set<std::string> maybe_uninit;
         for (auto& bl : f.blocks) {
@@ -552,6 +677,21 @@ struct Tr final : pirmem::TrApi {
                     fr.defs[in.result] = &in;
                     continue;
                 }
+                if (in.op == "call" && in.is_asm && !opt.kernel_api.empty() && in.ty.kind == ir::Type::Struct &&
+                    in.ty.elems.size() > 2) {
+                    bool scalar = true;
+                    for (auto& e : in.ty.elems)
+                        scalar = scalar && ((e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) || e.kind == ir::Type::Ptr);
+                    if (scalar) {
+                        std::vector<int> vs;
+                        for (std::size_t k = 0; k < in.ty.elems.size(); ++k)
+                            vs.push_back(newvar(fr.prefix + in.result + "." + std::to_string(k),
+                                                in.ty.elems[k].kind == ir::Type::Ptr ? ptr_w() : in.ty.elems[k].bits));
+                        fr.tuples[in.result] = std::move(vs);
+                        fr.defs[in.result] = &in;
+                        continue;
+                    }
+                }
                 if (in.op == "insertvalue" || in.op == "call" || in.op == "invoke" || in.op == "load")
                     if (auto sp = scalar_pair(in.ty)) {
                         // two-field aggregate (the { ptr, i32 } exception pair
@@ -566,13 +706,13 @@ struct Tr final : pirmem::TrApi {
                     }
                 fr.defs[in.result] = &in;
                 auto ty = in.op == "icmp" || in.op == "fcmp" ? ir::Type{ir::Type::Int, 1, "i1", {}} : in.ty;
-                if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, ptr_w(), "ptr", {}};
+                if (ty.kind == ir::Type::Ptr && (ty.text == "ptr" || seg_ptr(ty))) ty = ir::Type{ir::Type::Int, ptr_w(), "ptr", {}};
                 bool is_fp = false;
                 if (auto fw = fp::width_of(ty)) {
                     ty = ir::Type{ir::Type::Int, *fw, ty.text, {}};  // IEEE bits
                     is_fp = true;
                 }
-                if (ty.kind == ir::Type::Int && ty.bits > 0 && ty.bits <= 64) {
+                if (ty.kind == ir::Type::Int && ty.bits > 0 && ty.bits <= pirmem::max_int_bits()) {
                     int v = newvar(fr.prefix + in.result, ty.bits);
                     out.vars[static_cast<std::size_t>(v)].fp = is_fp;
                     fr.env[in.result] = Arg::v(v, ty.bits);
@@ -623,7 +763,7 @@ struct Tr final : pirmem::TrApi {
             work.pop_back();
             if (!seen.insert(n).second || !by.count(n)) continue;
             for (auto& in : by[n]->insts) {
-                if (in.op == "br" || in.op == "switch")
+                if (in.op == "br" || in.op == "switch" || in.op == "callbr")
                     for (auto& t : in.targets) work.push_back(t);
                 if (in.op == "switch")
                     for (auto& [c, t] : in.cases) work.push_back(t);
@@ -643,6 +783,9 @@ struct Tr final : pirmem::TrApi {
             }
             if (caught_var_ >= 0 && !caught_)
                 caught_ = mt.alloc(-1, Arg::c(64, 72), MemKind::Static, 1, "caught exceptions (PRISM)", 0, caught_var_);
+            if (lk_pending_) emit_lock_state();  // translate_lock.inc
+            if (lk_) lock_table(fr);            // --lock-contracts of this root (translate_lock.inc)
+            if (lk_) lock_scopes_entry(fr);     // --pir-lock-scopes (translate_lock.inc)
         }
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)
@@ -716,6 +859,56 @@ struct Tr final : pirmem::TrApi {
                     if (pu.dst >= 0) pphis.push_back(std::move(pu));
                     continue;
                 }
+                if (in.op == "callbr") {
+                    // asm goto: the asm (havoc, translate_kernel.inc), then a nondeterministic jump to the
+                    // fallthrough block or to the one indirect label (docs/KERNEL_MODELS.md)
+                    if (opt.kernel_api.empty())
+                        throw Unenc{"UNENCODED: asm goto (--kernel-api models it as a nondeterministic jump)"};
+                    if (!in.parsed || in.targets.empty())
+                        throw Unenc{"UNENCODED: asm goto without a parsed label list"};
+                    auto tgt = [&](const std::string& n) {
+                        auto it = head.find(fr.prefix + n);
+                        if (it == head.end()) throw Unenc{"UNENCODED: asm goto to unknown block " + n};
+                        return it->second;
+                    };
+                    ir::Inst call = in;
+                    call.op = "call";
+                    call.targets.clear();
+                    bool nr = false;
+                    inst(fr, call, cur, l, nr);
+                    const std::size_t nind = in.targets.size() - 1;  // indirect labels
+                    Term t;
+                    t.kind = Term::Br;
+                    t.cond = havoc(cur, 1, false, false);
+                    if (nind == 1) {
+                        t.t = tgt(in.targets[0]);
+                        t.f = tgt(in.targets[1]);
+                    } else {
+                        // chain: cur picks label 1 or goes on; block k picks label k+1 or goes on; the last picks
+                        // the fallthrough. Every label is reachable; the order is nondeterministic, not a guess.
+                        std::vector<int> chain{cur};
+                        for (std::size_t k = 1; k < nind; ++k)
+                            chain.push_back(newblock(fr.prefix + "asmgoto." + std::to_string(line) + "." +
+                                                     std::to_string(k)));
+                        for (std::size_t k = 0; k < nind; ++k) {
+                            const int b = chain[k];
+                            Term tk;
+                            tk.kind = Term::Br;
+                            tk.cond = (b == cur) ? t.cond : havoc(b, 1, false, false);
+                            tk.t = tgt(in.targets[k + 1]);
+                            tk.f = (k + 1 < nind) ? chain[k + 1] : tgt(in.targets[0]);
+                            out.blocks[static_cast<std::size_t>(b)].term = tk;
+                        }
+                        t = out.blocks[static_cast<std::size_t>(cur)].term;
+                    }
+                    note_assumption("asm-goto: \"" + in.asm_constraints + "\" (line " + std::to_string(line) +
+                                    "): the asm continues at the next statement or jumps to one of its " +
+                                    std::to_string(nind) + " label(s), any of them");
+                    out.blocks[static_cast<std::size_t>(cur)].term = t;
+                    tail[q] = cur;
+                    terminated = true;
+                    continue;
+                }
                 if (in.op == "invoke") {
                     // the call with the landing pad as its exception destination
                     // (a throw inside jumps there: translate_ctl.inc), then the normal edge
@@ -744,6 +937,44 @@ struct Tr final : pirmem::TrApi {
                     tail[q] = cur;
                     terminated = true;
                     continue;
+                }
+                if (in.op == "call" && in.is_asm && opt.kernel_stops && !opt.kernel_api.empty() &&
+                    in.asm_text.find("__bug_table") != std::string::npos) {
+                    // --pir-kernel-stops: Linux BUG() is `asm volatile(ASM_UD2 (.byte 0x0f, 0x0b) + a __bug_table entry);
+                    // __builtin_unreachable()`. Only that shape: the asm followed (after other asm statements only, such
+                    // as annotations) by unreachable. WARN() uses the same asm and continues, so it never matches.
+                    // At -O0 the unreachable is often in the next block (`br label %n` then `n: unreachable`): follow
+                    // unconditional branches, a few hops, over result-less asm only.
+                    const ir::Block* cb = &bl;
+                    auto k = static_cast<std::size_t>(&in - bl.insts.data()) + 1;
+                    bool reaches = false;
+                    for (int hops = 0; hops < 4; ++hops) {
+                        while (k < cb->insts.size() && cb->insts[k].op == "call" && cb->insts[k].is_asm &&
+                               cb->insts[k].result.empty())
+                            ++k;
+                        if (k >= cb->insts.size()) break;
+                        const auto& nx = cb->insts[k];
+                        if (nx.op == "unreachable") {
+                            reaches = true;
+                            break;
+                        }
+                        if (nx.op != "br" || nx.targets.size() != 1) break;
+                        const ir::Block* to = nullptr;
+                        for (auto& b2 : fr.f->blocks)
+                            if (b2.name == nx.targets[0]) to = &b2;
+                        if (!to) break;
+                        cb = to;
+                        k = 0;
+                    }
+                    if (reaches) {
+                        note_assumption("kernel-stop: assuming the BUG() / BUG_ON() condition never triggers (line " + std::to_string(line) +
+                                        "): BUG() (ud2 with a __bug_table entry, then unreachable) stops the kernel, the paths that reach "
+                                        "it are not checked, and the verdict holds only for executions in which it never triggers");
+                        out.blocks[static_cast<std::size_t>(cur)].term = Term{};
+                        tail[q] = cur;
+                        terminated = true;
+                        continue;
+                    }
                 }
                 inst(fr, in, cur, l, noreturn);
                 if (noreturn) {
@@ -861,6 +1092,7 @@ struct Tr final : pirmem::TrApi {
                     mt.stack_escape_check(cur, Arg::v(src, out.vars[static_cast<std::size_t>(src)].width),
                                           fr.allocas, line);
             }
+            lock_return_check(cur, line);
             Term t;
             t.kind = Term::Ret;
             out.blocks[static_cast<std::size_t>(cur)].term = t;
@@ -926,6 +1158,7 @@ struct Tr final : pirmem::TrApi {
             }
             return;
         }
+        lock_return_check(cur, line);  // LOCK-HELD-ON-RETURN (translate_lock.inc)
         Term t;
         t.kind = Term::Ret;
         t.val = v;
@@ -983,7 +1216,9 @@ struct Tr final : pirmem::TrApi {
             check(cur, p2(cur, Op::ShiftOob, a, b), "shift", "INT-SHIFT-UB", "shift amount >= width", line);
             bool signed_c = std::find(opt.signed_shl.begin(), opt.signed_shl.end(),
                                       std::make_pair(l.line, l.col)) != opt.signed_shl.end();
-            if (signed_c && opt.shl_cxx) {
+            if (signed_c && opt.wrapv) {
+                // --pir-build-semantics, -fwrapv build: a signed << wraps like an unsigned one (only the amount is checked)
+            } else if (signed_c && opt.shl_cxx) {
                 check(cur, p2(cur, Op::ShlNuwOvf, a, b), "shift-base", "INT-SHIFT-UB",
                       "signed left shift whose result does not fit the unsigned type (C++ before C++20)", line);
                 check(cur, p2(cur, Op::Slt, a, zero), "shift-base", "INT-SHIFT-UB",
@@ -1023,6 +1258,17 @@ struct Tr final : pirmem::TrApi {
             std::string what = op;
             for (auto& fl : in.flags) what += " " + fl;
             throw Unenc{"UNENCODED: " + what};
+        }
+        if (!in.kernel_note.empty()) {
+            // atomics and barriers: modelled only with --kernel-api, each use a named assumption
+            if (opt.kernel_api.empty())
+                throw Unenc{"UNENCODED: atomic or barrier instruction (" + in.kernel_note + "; --kernel-api models it)"};
+            note_assumption("atomics-sequential: " + in.kernel_note +
+                            " (no other thread, interrupt or device changes memory between this function's accesses)");
+        } else if (!opt.kernel_api.empty() && (op == "load" || op == "store") &&
+                   std::ranges::find(in.flags, std::string("volatile")) != in.flags.end()) {
+            note_assumption("volatile-access: volatile (READ_ONCE/WRITE_ONCE/MMIO) accesses are ordinary reads and writes "
+                            "of the object in program order (no concurrent or hardware change between accesses)");
         }
         undef_def(fr, in, cur);
         if (mem_inst(fr, in, cur, line)) return;
@@ -1147,6 +1393,13 @@ struct Tr final : pirmem::TrApi {
         if (op == "extractvalue") {
             if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Local || in.indices.size() != 1)
                 throw Unenc{"UNENCODED: extractvalue"};
+            if (auto tu = fr.tuples.find(in.ops[0].v.name); tu != fr.tuples.end()) {
+                if (in.indices[0] >= tu->second.size()) throw Unenc{"UNENCODED: extractvalue"};
+                const int src = tu->second[in.indices[0]];
+                int dst = result_var(fr, in);
+                if (dst >= 0) emit_assign(cur, dst, Op::Copy, {Arg::v(src, out.vars[static_cast<std::size_t>(src)].width)});
+                return;
+            }
             auto it = fr.pairs.find(in.ops[0].v.name);
             if (it == fr.pairs.end()) throw Unenc{"UNENCODED: extractvalue of " + in.ops[0].ty.text};
             int src = in.indices[0] == 0 ? it->second.first : it->second.second;
@@ -1165,6 +1418,17 @@ struct Tr final : pirmem::TrApi {
     void call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, bool& noreturn) {
         int line = l.line;
         const auto& n = in.callee;
+        if (opt.kernel_stops && !opt.kernel_api.empty() && (n == "panic" || n == "vpanic" || n == "kassert_panic")) {
+            const auto* def = m.find(n);
+            if (!def || def->is_model || def->blocks.empty()) {
+                // --pir-kernel-stops: the kernel does not return from panic(9) / KASSERT's kassert_panic
+                note_assumption("kernel-stop: assuming the @" + n + " condition never triggers (line " + std::to_string(line) +
+                                "): the kernel does not return from @" + n + ", the paths that call it are not checked, and the verdict "
+                                "holds only for executions in which it is never called");
+                noreturn = true;
+                return;
+            }
+        }
         {
             // undef arguments (refinement finding 4): UB for a noundef
             // parameter; an inlined callee would use the value as one value,
@@ -1202,9 +1466,19 @@ struct Tr final : pirmem::TrApi {
             // floating-point intrinsics and libm calls (translate_fp.cpp)
             pirfp::Ctx c{[&](std::size_t i) { return arg(i); },
                          [&] { return in.result.empty() ? -1 : result_var(fr, in); }, line};
-            if (fpt.call(cur, in, c)) return;
+            // kernel code has no libm: its `log`, `abs`, ... are the kernel's (docs/KERNEL_MODELS.md)
+            if ((opt.kernel_api.empty() || starts(n, "llvm.")) && fpt.call(cur, in, c)) return;
         }
         if (starts(n, "llvm.")) {
+            if (opt.wide_int) {
+                // --pir-wide-int: integers of 65..128 bits reach only the intrinsics that are plain operators of any width
+                auto wide = [](const ir::Type& t) { return t.kind == ir::Type::Int && t.bits > 64; };
+                bool w = wide(in.ty);
+                for (auto& o : in.ops) w = w || wide(o.ty);
+                if (w && !starts(n, "llvm.smax.") && !starts(n, "llvm.smin.") && !starts(n, "llvm.umax.") &&
+                    !starts(n, "llvm.umin.") && !starts(n, "llvm.expect."))
+                    throw Unenc{"UNENCODED: call @" + n + " (integers wider than 64 bits)"};
+            }
             if (is_overflow_intrinsic(n)) {
                 auto it = fr.pairs.find(in.result);
                 Arg a = arg(0), b = arg(1);
@@ -1297,6 +1571,12 @@ struct Tr final : pirmem::TrApi {
                 assume(cur, c);
                 return;
             }
+            if (starts(n, "llvm.va_start") || starts(n, "llvm.va_end") || starts(n, "llvm.va_copy")) {
+                // --pir-variadic (translate_va.inc): va_list over arbitrary argument areas (named)
+                if (!opt.variadic) throw Unenc{"UNENCODED: call @" + n + " (variadic arguments; --pir-variadic models them)"};
+                va_intrinsic(n, arg(0), starts(n, "llvm.va_copy") ? arg(1) : Arg::c(1, 0), cur, line);
+                return;
+            }
             if (starts(n, "llvm.memcpy.") || starts(n, "llvm.memmove.")) {
                 // the intrinsic allows an exact self-copy (a C memcpy call is
                 // not lowered to it: the stage compiles with -fno-builtin-memcpy)
@@ -1339,13 +1619,55 @@ struct Tr final : pirmem::TrApi {
                 noreturn = true;
                 return;
             }
+            if (opt.builtin_contracts && !opt.kernel_api.empty()) {
+                // --pir-builtin-contracts (docs/HARNESS_PHASE2.md): contracts of the body-less intrinsics the kernel headers emit
+                const int dst = in.result.empty() ? -1 : result_var(fr, in);
+                if (starts(n, "llvm.read_register.")) {
+                    // __builtin_read_register / current_stack_pointer: the value of a hardware register
+                    if (dst >= 0) {
+                        if (in.ty.kind == ir::Type::Ptr || in.ty.kind == ir::Type::Int) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, false, dst);
+                        else throw Unenc{"UNENCODED: call @" + n + " (result of type " + in.ty.text + ")"};
+                    }
+                    note_assumption("builtin-contract: @llvm.read_register reads a hardware register: its value is arbitrary (a pointer result is an "
+                                    "arbitrary value that points to no object); it changes no memory");
+                    return;
+                }
+                if (starts(n, "llvm.write_register.")) {
+                    // Only the stack pointer: the write-back clang emits after an asm with a "+r"(current_stack_pointer)
+                    // operand (Linux ASM_CALL_CONSTRAINT), which writes back the value the asm statement left there.
+                    // The stack is not addressed through registers in this model, so the write changes nothing it
+                    // sees; any other register stays UNENCODED.
+                    std::string reg;
+                    if (!in.ops.empty() && in.ops[0].v.kind == ir::Value::Other)
+                        if (auto it = m.md_strings.find(in.ops[0].v.text); it != m.md_strings.end()) reg = it->second;
+                    if (reg != "rsp" && reg != "esp" && reg != "sp") throw Unenc{"UNENCODED: call @" + n + (reg.empty() ? "" : " (register " + reg + ")")};
+                    note_assumption("builtin-contract: @llvm.write_register of the stack pointer " + reg +
+                                    " (the write-back of an asm \"+r\"(current_stack_pointer) operand) leaves the stack pointer as the asm "
+                                    "statement left it: no effect on the program state the model sees");
+                    return;
+                }
+                if (starts(n, "llvm.prefetch.")) {
+                    note_assumption("builtin-contract: @llvm.prefetch has no effect on the program state (a hint: the address is not accessed, "
+                                    "so it need not be valid)");
+                    return;
+                }
+                if (starts(n, "llvm.objectsize.")) {
+                    // __builtin_object_size / __builtin_dynamic_object_size: the size of the object, or the "unknown" constant
+                    if (dst >= 0) havoc(cur, out.vars[static_cast<std::size_t>(dst)].width, false, false, dst);
+                    note_assumption("builtin-contract: @llvm.objectsize returns an arbitrary value (the object size or the unknown marker): "
+                                    "fortify-style checks that depend on it are not decided");
+                    return;
+                }
+            }
             throw Unenc{"UNENCODED: call @" + n};
         }
         if (starts(n, "__prism_")) {
             model_intrinsic(fr, in, cur, line);
             return;
         }
-        if (format_call(fr, in, cur, line)) return;
+        // the kernel's printf/snprintf take extensions (%pX, %D, %b): the kernel specs answer them
+        if (opt.kernel_api.empty() && format_call(fr, in, cur, line)) return;
+        if (kernel_sprintf(fr, in, cur, line)) return;  // --pir-kernel-sprintf
         if (n == "__prism.keep") return;  // keeps a setjmp function's local in memory (lower_ctl.cpp)
         if (starts(n, "__prism.uninit.")) {
             int dst = result_var(fr, in);
@@ -1358,6 +1680,10 @@ struct Tr final : pirmem::TrApi {
             if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Int) throw Unenc{"UNENCODED: call @" + n};
             auto k = static_cast<std::size_t>(in.ops[0].v.bits);
             std::string cls = "UB-POISON", msg = "undefined behaviour folded by clang";
+            if (k < opt.folded.size() && opt.wrapv && wraps_under_fwrapv(opt.folded[k])) {
+                folded_used.insert(static_cast<int>(k));
+                return;  // -fwrapv build: clang's folded signed overflow / signed shift is the wrapped value, not UB
+            }
             if (k < opt.folded.size()) {
                 cls = opt.folded[k].cls;
                 msg = "undefined behaviour folded by clang: " + opt.folded[k].msg;
@@ -1375,6 +1701,17 @@ struct Tr final : pirmem::TrApi {
             return;
         }
         const bool defined = m.find(n) != nullptr;
+        // --pir-discharge: the callee's harness as properties of this call site, whether the callee is defined in this
+        // unit or only declared (a callee of another unit, --pir-obligations). With obligation_stop the path ends here: the
+        // caller reaches this call at most once on any execution (stage.cpp only_obligation_site), so nothing after it
+        // is an obligation and the callee's effect need not be modelled.
+        if (auto ob = opt.obligations.find(n); ob != opt.obligations.end()) {
+            call_obligations(fr, in, ob->second, cur, line);
+            if (opt.obligation_stop.count(n)) {
+                noreturn = true;
+                return;
+            }
+        }
         // SV-COMP error sinks: a reachable call is the violation whatever the
         // unit's definition does (a static no-op reach_error included).
         if ((n == "__VERIFIER_error" || n == "reach_error") && in.ops.empty()) {
@@ -1490,19 +1827,128 @@ struct Tr final : pirmem::TrApi {
                 noreturn = true;
                 return;
             }
+            if (auto cc = opt.callee_contracts.find(n); cc != opt.callee_contracts.end()) {
+                // --callee-contracts (docs/HARNESS_PHASE2.md): requires checked here, assigns havocked, ensures assumed
+                std::vector<Arg> sargs;
+                std::vector<ir::Type> stys;
+                for (auto& o : in.ops) {
+                    sargs.push_back(operand(fr, o, cur, line));
+                    stys.push_back(o.ty);
+                }
+                pirmem::StubCall sc;
+                sc.callee = n;
+                sc.args = std::move(sargs);
+                sc.arg_types = std::move(stys);
+                sc.ret = in.ty;
+                sc.line = line;
+                auto so = pirmem::apply_callee_contract(*this, mt, cc->second, sc, cur);
+                if (so.applied) {
+                    note_assumption(so.assumption);
+                    if (!in.result.empty()) {
+                        if (int dst = result_var(fr, in); dst >= 0 && so.result) emit_assign(cur, dst, Op::Copy, {*so.result});
+                    }
+                    return;
+                }
+                // not applied (reason in so.why): the call is handled exactly as if there were no contract
+            }
+            if (opt.assume_unknown_calls) {  // opt-in: result and pointed-to objects havocked (translate_kernel.inc)
+                unknown_call(fr, in, cur, line);
+                return;
+            }
             throw Unenc{"UNENCODED: call @" + n};
         }
         inline_call(fr, in, cur, line);
     }
 
+    // --pir-discharge: the callee's automatic harness as properties of this call site (docs/HARNESS_GENERATOR.md).
+    // The pointer arguments must be what the harness assumed: a live, writable, 16-aligned object of the stated
+    // size and alignment, initialised, the pointer at the stated offset into it, the nested pointer fields likewise, and every
+    // object of the call distinct from every other.
+    void oblige_node(Arg p, const ObligationNode& nd, const std::string& callee, std::vector<Arg>& objs, int cur,
+                     int line) {
+        const std::string what = "call of @" + callee + ": argument " + nd.name;
+        mt.obligation_object(cur, p, nd.bytes, nd.member_off, nd.align, nd.check_init, harness_objs, what, line);
+        objs.push_back(p);
+        for (const auto& [off, child] : nd.nested) {
+            int slot = newvar(tmpname("obslot"), ptr_w());
+            mt.gep(cur, slot, p, ir::parse_type("i8"), {Arg::c(64, off)}, true, line);
+            int val = newvar(tmpname("obptr"), ptr_w());
+            mt.load(cur, val, ir::parse_type("ptr"), Arg::v(slot, ptr_w()), 1, line, false);
+            oblige_node(Arg::v(val, ptr_w()), *child, callee, objs, cur, line);
+        }
+    }
+    void call_obligations(Frame& fr, const ir::Inst& in, const std::vector<std::shared_ptr<ObligationNode>>& ob,
+                          int& cur, int line) {
+        std::vector<Arg> objs;
+        for (std::size_t i = 0; i < in.ops.size() && i < ob.size(); ++i)
+            if (ob[i]) oblige_node(operand(fr, in.ops[i], cur, line), *ob[i], in.callee, objs, cur, line);
+        // a call that passes fewer arguments than the harnessed parameters (an unprototyped call) establishes nothing
+        for (std::size_t i = in.ops.size(); i < ob.size(); ++i)
+            if (ob[i])
+                check(cur, Arg::c(1, 1), "ob-null", "HARNESS-OBLIGATION",
+                      "call of @" + in.callee + ": argument " + ob[i]->name + " is not passed (fewer arguments than parameters)", line);
+        for (std::size_t i = 0; i < objs.size(); ++i)
+            for (std::size_t j = i + 1; j < objs.size(); ++j)
+                mt.obligation_distinct(cur, objs[i], objs[j], "call of @" + in.callee, line);
+    }
+
+    // Instructions of g and of every function it calls directly, transitively (TranslateOptions::small_inline_insts);
+    // an indirect call, an asm goto, a recursive tree or one over the limit counts as "large" (limit + 1).
+    std::map<const ir::Function*, long> small_memo;
+    long small_tree(const ir::Function& g) {
+        const long big = static_cast<long>(opt.small_inline_insts) + 1;
+        if (auto it = small_memo.find(&g); it != small_memo.end()) return it->second;
+        small_memo[&g] = big;  // in progress: a cycle is large
+        long n = 0;
+        for (auto& bl : g.blocks) {
+            for (auto& ins : bl.insts) {
+                if (++n >= big) return big;
+                if (ins.op == "callbr" || ins.op == "invoke" || (ins.op == "call" && !ins.is_asm && ins.callee.empty()))
+                    return big;
+                if (ins.op == "call" && !ins.callee.empty())
+                    if (const auto* c = m.find(ins.callee); c && !c->blocks.empty()) {
+                        n += small_tree(*c);
+                        if (n >= big) return big;
+                    }
+            }
+        }
+        small_memo[&g] = n;
+        return n;
+    }
+
     void inline_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
         const auto& n = in.callee;
         const auto* callee = m.find(n);
-        if (std::ranges::find(stack, n) != stack.end())
+        if (std::ranges::find(stack, n) != stack.end()) {
+            if (opt.recursion && callee && !callee->is_model) {  // --pir-recursion (translate_rec.inc): the callee's own verdict, named
+                recursive_call(fr, in, cur, line);
+                return;
+            }
             throw Unenc{"UNENCODED: recursive call @" + n};
-        if (static_cast<int>(stack.size()) > opt.inline_depth)
-            throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
-        if (!callee->parse_error.empty())
+        }
+        // Depth: user frames (stack minus the library-model frames on it) are bounded by inline_depth; a model callee
+        // is exempt from that bound and bounded only by inline_depth + model_inline_depth frames in all (models are
+        // inlined exactly, so the exemption adds no assumption). Past either bound the call is UNENCODED, as before.
+        {
+            const int frames = static_cast<int>(stack.size());
+            const bool model_call = callee && callee->is_model && opt.model_inline_depth > 0;
+            if (model_call) {
+                const int cap = opt.inline_depth + opt.model_inline_depth;
+                if (frames > cap)
+                    throw Unenc{"UNENCODED: call depth > " + std::to_string(cap) + " (@" + n + ") (library model frames)"};
+            } else {
+                const int user = opt.model_inline_depth > 0 ? frames - static_cast<int>(model_stack.size()) : frames;
+                // a small call tree (the kernel's one-line wrappers: kasan_check_*, kobject_name, refcount_read ->
+                // atomic_read -> ...) is inlined past inline_depth when its whole tree has at most
+                // small_inline_insts instructions; the total cap still holds
+                const bool small = opt.small_inline_insts > 0 && callee && user > opt.inline_depth &&
+                                   frames <= opt.inline_depth + opt.model_inline_depth &&
+                                   small_tree(*callee) <= opt.small_inline_insts;
+                if (user > opt.inline_depth && !small)
+                    throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
+            }
+        }
+        if (!callee->parse_error.empty() && !variadic_ok(*callee))
             throw Unenc{"UNENCODED: call @" + n + " (unparsed IR: " + callee->parse_error + ")"};
         const auto ret_pair = scalar_pair(callee->ret);
         if (callee->ret.kind != ir::Type::Void && !ret_pair) vwidth(callee->ret, "call @" + n + " returning");
@@ -1514,6 +1960,12 @@ struct Tr final : pirmem::TrApi {
                        fr.raw.count(fr.env[o.v.name].var);
             raw_arg.push_back(raw);
             args.push_back(operand(fr, o, cur, line, !raw));  // passing raw bytes is no use
+        }
+        // a variadic model (printk-like specs) ignores the arguments after its fixed ones; they were
+        // evaluated above (undef and poison uses are still checked)
+        if (args.size() > callee->params.size() && callee->variadic && (callee->is_model || variadic_ok(*callee))) {
+            args.resize(callee->params.size());
+            raw_arg.resize(callee->params.size());
         }
         if (args.size() != callee->params.size()) throw Unenc{"UNENCODED: call @" + n + " arity"};
         if (callee->is_model && !callee->blocks.empty()) {
@@ -1622,7 +2074,9 @@ struct Tr final : pirmem::TrApi {
     }
 
     bool is_ptrtoint(Frame& fr, const ir::Operand& o) {
+        if (opt.addr_values && o.v.kind == ir::Value::ConstExpr && o.v.ce_op == "ptrtoint") return true;
         if (o.v.kind != ir::Value::Local) return false;
+        if (fr.ptr_ints.count(o.v.name)) return true;
         auto it = fr.defs.find(o.v.name);
         return it != fr.defs.end() && it->second != nullptr && it->second->op == "ptrtoint";
     }
@@ -1691,7 +2145,7 @@ struct Tr final : pirmem::TrApi {
             return true;
         }
         if (op == "load") {
-            if (in.ops.empty() || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+            if (in.ops.empty() || in.ops[0].ty.kind != ir::Type::Ptr || (in.ops[0].ty.text != "ptr" && !seg_ptr(in.ops[0].ty)))
                 throw Unenc{"UNENCODED: load"};
 
             // C alignment of the access, not LLVM's: since LLVM 23 clang
@@ -1754,8 +2208,13 @@ struct Tr final : pirmem::TrApi {
                 }
                 return arith ? nat : ir_al;
             };
-            Arg p = operand(fr, in.ops[0], cur, line);
+            Arg p = seg_ptr(in.ops[0].ty) ? seg_addr(cur, seg_operand(fr, in.ops[0], cur, line), line)
+                                          : operand(fr, in.ops[0], cur, line);
             vwidth(in.ty, "load of");
+            if (seg_ptr(in.ty) && seg_global_null(in.ops[0])) {  // FreeBSD's `static __pc = NULL`: never written
+                if (int d = result_var(fr, in); d >= 0) emit_assign(cur, d, Op::Copy, {Arg::c(ptr_w(), 0)});
+                return true;
+            }
             // An integer load of a whole aggregate object (ABI coercion of a
             // struct passed or returned by value) copies bytes: padding may be
             // uninitialised without a defect, so its shadow follows the value
@@ -1800,7 +2259,7 @@ struct Tr final : pirmem::TrApi {
             return true;
         }
         if (op == "store") {
-            if (in.ops.size() != 2 || in.ops[1].ty.kind != ir::Type::Ptr || in.ops[1].ty.text != "ptr")
+            if (in.ops.size() != 2 || in.ops[1].ty.kind != ir::Type::Ptr || (in.ops[1].ty.text != "ptr" && !seg_ptr(in.ops[1].ty)))
                 throw Unenc{"UNENCODED: store"};
 
             // (as for load) C alignment of the access, not LLVM's: since LLVM 23 clang
@@ -1888,14 +2347,16 @@ struct Tr final : pirmem::TrApi {
                     init = init.is_const ? (init.bits != 0 ? d : init) : assign(cur, Op::And, 1, {init, d}, "init");
                 }
             }
-            Arg p = operand(fr, in.ops[1], cur, line);
+            Arg p = seg_ptr(in.ops[1].ty) ? seg_addr(cur, seg_operand(fr, in.ops[1], cur, line), line)
+                                          : operand(fr, in.ops[1], cur, line);
             mt.store(cur, p, v, init, vo.ty, c_align(in.ops[1].v, vo.ty, in.align), line);
             return true;
         }
         if (op == "getelementptr") {
-            if (in.ty.kind != ir::Type::Ptr || in.ops.empty() || in.ops[0].ty.text != "ptr")
+            if (in.ty.kind != ir::Type::Ptr || in.ops.empty() || (in.ops[0].ty.text != "ptr" && !seg_ptr(in.ops[0].ty)))
                 throw Unenc{"UNENCODED: vector getelementptr"};
-            Arg base = operand(fr, in.ops[0], cur, line);
+            Arg base = seg_ptr(in.ops[0].ty) ? seg_addr(cur, seg_operand(fr, in.ops[0], cur, line), line)
+                                             : operand(fr, in.ops[0], cur, line);
             std::vector<Arg> idx;
             for (std::size_t k = 1; k < in.ops.size(); ++k) {
                 Arg x = operand(fr, in.ops[k], cur, line);
@@ -1956,33 +2417,40 @@ struct Tr final : pirmem::TrApi {
             return true;
         }
         if (op == "ptrtoint") {
-            // Only pointer differences are modelled: every use must be a sub
-            // of two ptrtoint values (checked to be in the same object).
+            // The pointer value is carried as its packed integer representation, so
+            // ptrtoint is a plain copy; an inttoptr of this value round-trips exactly,
+            // and pointer differences are still checked in the sub path.
             if (in.ty.kind != ir::Type::Int || in.ty.bits != ptr_w())
                 throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
-            for (auto& bl : fr.f->blocks)
-                for (auto& u : bl.insts) {
-                    bool uses = false;
-                    for (auto& o : u.ops)
-                        if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
-                    for (auto& [o, _] : u.incoming)
-                        if (o.v.kind == ir::Value::Local && o.v.name == in.result) uses = true;
-                    if (!uses) continue;
-                    if ((u.op != "sub" && u.op != "icmp") || u.ops.size() != 2 || !is_ptrtoint(fr, u.ops[0]) ||
-                        !is_ptrtoint(fr, u.ops[1]))
-                        throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
-                }
             Arg p = operand(fr, in.ops[0], cur, line);
             emit_assign(cur, result_var(fr, in), Op::Copy, {p});
             return true;
         }
         if (op == "inttoptr") {
             const auto& o = in.ops[0];
-            if (o.v.kind == ir::Value::Int && o.v.bits == 0) {
+            if (o.ty.kind != ir::Type::Int || o.ty.bits != ptr_w())
+                throw Unenc{"UNENCODED: inttoptr (operand is not pointer width)"};
+            if (is_ptrtoint(fr, o)) {
+                emit_assign(cur, result_var(fr, in), Op::Copy, {operand(fr, o, cur, line)});
+                return true;
+            }
+            Arg iv = operand(fr, o, cur, line);
+            if (iv.is_const && iv.bits == 0) {
                 emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(ptr_w(), 0)});
                 return true;
             }
-            throw Unenc{"UNENCODED: inttoptr (integer-to-pointer casts are not modelled)"};
+            note_assumption("inttoptr-opaque: integer-to-pointer cast of a value that is not a ptrtoint result (line " +
+                            std::to_string(line) + ")");
+            if (!iv.is_const && int_from_input(fr, o))
+                note_assumption("int-to-pointer parameter: the integer converted to a pointer at line " + std::to_string(line) +
+                                " comes from a parameter or another unknown input; that it is a valid address is the "
+                                "caller's precondition (Law 6)");
+            if (iv.is_const) {
+                emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(ptr_w(), iv.bits)});
+                return true;
+            }
+            emit_assign(cur, result_var(fr, in), Op::Copy, {havoc(cur, ptr_w(), false, true)});
+            return true;
         }
         if (op == "bitcast" && in.ty.kind == ir::Type::Ptr && in.ops[0].ty.kind == ir::Type::Ptr) {
             emit_assign(cur, result_var(fr, in), Op::Copy, {operand(fr, in.ops[0], cur, line)});
@@ -2049,6 +2517,13 @@ struct Tr final : pirmem::TrApi {
             cur = newblock("incomplete.after");  // unreachable
             return;
         }
+        if (n == "__prism_assumption") {
+            // a kernel API spec records the assumption it introduces (docs/KERNEL_MODELS.md)
+            auto txt = in.ops.empty() ? std::nullopt : mt.const_string(in.ops.at(0).v);
+            if (!txt) throw Unenc{"UNENCODED: __prism_assumption without a literal text"};
+            note_assumption(*txt);
+            return;
+        }
         if (n == "__prism_assume") {
             Arg c = arg(0);
             assume(cur, assign(cur, Op::Ne, 1, {c, Arg::c(c.width, 0)}, "c"));
@@ -2090,6 +2565,39 @@ struct Tr final : pirmem::TrApi {
         }
         if (n == "__prism_read_range") {
             mt.read_range(cur, arg(0), arg(1), line);
+            return;
+        }
+        // ghost lock state of the kernel lock specs (translate_lock.inc)
+        if (n == "__prism_lock_acquire") {
+            lock_take(cur, arg(0), arg(1), line);
+            return;
+        }
+        if (n == "__prism_lock_release") {
+            lock_drop(cur, arg(0), arg(1), line);
+            return;
+        }
+        if (n == "__prism_sleep_point") {
+            sleep_point(cur, line);
+            return;
+        }
+        if (n == "__prism_sleep_if") {
+            sleep_if(cur, arg(0), line);
+            return;
+        }
+        if (n == "__prism_atomic_add") {
+            atomic_add(cur, arg(0), line);
+            return;
+        }
+        if (n == "__prism_rcu_add") {
+            rcu_add(cur, arg(0), line);
+            return;
+        }
+        if (n == "__prism_lock_entry" || n == "__prism_lock_exit") {
+            // Without --kernel-api the lock primitives are the single-threaded library contracts (models/kernel/
+            // kernel.cpp: no ghost lock state), so a declared entry lock could never be released: not encoded
+            if (opt.kernel_api.empty()) throw Unenc{"UNENCODED: call @" + n + " (lock contract markers need --kernel-api)"};
+            // contract markers: read only in the analysed function (translate_lock.inc)
+            if (lock_root(fr)) lock_declare(cur, n == "__prism_lock_entry", arg(0), n == "__prism_lock_entry" ? arg(1) : Arg::c(1, 0), line);
             return;
         }
         if (n == "__prism_havoc_bytes") {
@@ -2169,6 +2677,13 @@ struct Tr final : pirmem::TrApi {
 };
 
 #include "translate_ctl.inc"
+#include "translate_kernel.inc"
+#include "translate_va.inc"
+#include "translate_rec.inc"
+#include "translate_ksprintf.inc"
+#include "translate_seg.inc"
+#include "translate_asm.inc"
+#include "translate_lock.inc"
 
 bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     const auto& n = in.callee;
@@ -2332,7 +2847,7 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
             }
         if (pv < 0) throw Unenc{"UNENCODED: contract size " + c.count_param + " is not an integer parameter"};
         Arg n = Arg::v(pv, tr.out.vars[static_cast<std::size_t>(pv)].width);
-        if (n.width < 64) n = tr.assign(-1, Op::SExt, 64, {n});
+        if (n.width < 64) n = tr.assign(-1, c.count_unsigned ? Op::ZExt : Op::SExt, 64, {n});
         if (c.count_add) n = tr.assign(-1, Op::Add, 64, {n, Arg::c(64, static_cast<uint64_t>(c.count_add))});
         if (c.count_min != INT64_MIN || c.count_max != INT64_MAX) {
             // drafted size range (the draft's own assumption, listed)
@@ -2341,12 +2856,26 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
             tr.out.assumptions.push_back(std::to_string(c.count_min) + " <= " + c.count_param +
                                          " <= " + std::to_string(c.count_max) + " (drafted size range)");
         }
-        Arg pos = tr.assign(-1, Op::Sgt, 1, {n, Arg::c(64, 0)});
-        Arg nn = tr.assign(-1, Op::Select, 64, {pos, n, Arg::c(64, 0)});
+        Arg nn = n;
+        if (!c.count_unsigned) {
+            Arg pos = tr.assign(-1, Op::Sgt, 1, {n, Arg::c(64, 0)});
+            nn = tr.assign(-1, Op::Select, 64, {pos, n, Arg::c(64, 0)});
+        }
         tr.assume(-1, tr.assign(-1, Op::Ult, 1, {nn, Arg::c(64, max_obj_size() / esz)}));
         size = tr.assign(-1, Op::Mul, 64, {nn, Arg::c(64, esz)});
         count_text = c.count_param + (c.count_add ? (c.count_add > 0 ? "+" : "") + std::to_string(c.count_add) : "");
-        tr.out.assumptions.push_back(count_text + " * " + std::to_string(esz) + " < 2^47 (object size fits the model)");
+        tr.out.assumptions.push_back(count_text + (c.count_unsigned ? " (unsigned)" : "") + " * " + std::to_string(esz) +
+                                     " < 2^47 (object size fits the model)");
+    }
+    if (c.source == "length pairing") {  // --pir-length-pairing (harness.cpp infer_param_length)
+        auto obj = tr.mt.alloc(-1, size, MemKind::Extern, 2, "*" + p.name + " (length pairing)", 0);
+        top.env[p.name] = obj;
+        tr.out.ptr_params.push_back(p.name);
+        tr.out.assumptions.push_back("length pairing: " + p.name + " points to at least " + c.count_param +
+                                     " elements (inferred from usage): an object of " +
+                                     (c.count_unsigned ? c.count_param + " (unsigned)" : "max(" + c.count_param + ", 0)") +
+                                     " x " + std::to_string(esz) + " bytes, 16-byte aligned, arbitrary contents; " + c.text);
+        return;
     }
     auto obj = tr.mt.alloc(-1, size, c.read_only ? MemKind::Const : MemKind::Extern, 2, "*" + p.name + " (contract)", 0);
     top.env[p.name] = obj;
@@ -2356,14 +2885,683 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
                                  c.source + ": " + c.text + ")");
 }
 
+// --pir-length-pairing: the object of a pointer field paired with an integer field of the containing object `parent`
+// (harness.cpp paired_field): count elements, the count read from the parent at entry; signed: max(count, 0)
+Arg alloc_paired_node(Tr& tr, const pirmem::HarnessNode& c, Arg parent, uint64_t member_off) {
+    const auto& lp = *c.pair;
+    const unsigned bits = lp.count_bits;
+    int slot = tr.newvar(tr.tmpname("hlen"), ptr_w());
+    tr.mt.gep(-1, slot, parent, ir::parse_type("i8"), {Arg::c(64, member_off + lp.count_off)}, true, 0);
+    int v = tr.newvar(tr.tmpname("hlenv"), bits);
+    tr.mt.load(-1, v, ir::parse_type("i" + std::to_string(bits)), Arg::v(slot, ptr_w()), 1, 0, false);
+    Arg n = Arg::v(v, bits);
+    if (bits < 64) n = tr.assign(-1, lp.is_signed ? Op::SExt : Op::ZExt, 64, {n});
+    if (lp.is_signed) {
+        Arg pos = tr.assign(-1, Op::Sgt, 1, {n, Arg::c(64, 0)});
+        n = tr.assign(-1, Op::Select, 64, {pos, n, Arg::c(64, 0)});
+    }
+    tr.assume(-1, tr.assign(-1, Op::Ult, 1, {n, Arg::c(64, max_obj_size() / lp.elem_bytes)}));
+    Arg size = tr.assign(-1, Op::Mul, 64, {n, Arg::c(64, lp.elem_bytes)});
+    return tr.mt.alloc(-1, size, MemKind::Extern, 2, "*" + c.name + " (length pairing)", 0, -1, c.align);
+}
+
+// --pir-param-preconditions: the rows of parameter p (by name or 0-based index) of f
+std::vector<const ParamPrecondition*> param_rows(const TranslateOptions& o, const ir::Function& f, const ir::Param& p) {
+    std::vector<const ParamPrecondition*> out;
+    if (o.param_preconditions.empty()) return out;
+    std::size_t idx = 0;
+    while (idx < f.params.size() && &f.params[idx] != &p) ++idx;
+    for (const auto& r : o.param_preconditions)
+        if (r.function == f.name && ((!p.name.empty() && r.param == p.name) || r.param == std::to_string(idx)))
+            out.push_back(&r);
+    return out;
+}
+
+// Allocates the objects of an automatic pointer harness (harness.cpp) and
+// stores the nested pointers: returns the pointer to `n`'s object.
+Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
+    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), n.heap ? MemKind::Heap : MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0, -1, n.align);
+    tr.harness_objs.push_back(obj);
+    const auto ptr_ty = ir::parse_type("ptr");
+    std::set<uint64_t> bound;  // byte offsets (from the object start) that got an object of their own
+    for (const auto& [off, child] : n.nested) {
+        // --pir-field-invariants "valid N" on a pointer field that already has its own harness object: the object is
+        // made N bytes when that is larger than the harness chose (one named assumption, as for an unbound field)
+        const pirmem::HarnessNode* use = child.get();
+        pirmem::HarnessNode grown;
+        if (!child->pair && n.type_known && n.type.kind == ir::Type::Struct)
+            for (const auto& fi : tr.opt.field_invariants) {
+                if (fi.kind != "valid" || fi.struct_type != n.type.text || fi.offset != n.member_off + off ||
+                    static_cast<uint64_t>(fi.a) <= use->bytes)
+                    continue;
+                grown = *use;
+                grown.bytes = static_cast<uint64_t>(fi.a);
+                use = &grown;
+                const std::string a = "field-invariant: " + n.name + "->@" + std::to_string(fi.offset) + " (" + fi.struct_type +
+                                      " at byte " + std::to_string(fi.offset) + ") points to a valid object of " +
+                                      std::to_string(fi.a) + " bytes (its harness object grown from " +
+                                      std::to_string(child->bytes) + " bytes) (--pir-field-invariants; status " + fi.status +
+                                      "; source " + fi.source + "; not checked here)";
+                if (std::find(tr.out.assumptions.begin(), tr.out.assumptions.end(), a) == tr.out.assumptions.end())
+                    tr.out.assumptions.push_back(a);
+            }
+        Arg cp = child->pair ? alloc_paired_node(tr, *child, obj, n.member_off) : alloc_harness_node(tr, *use);
+        int slot = tr.newvar(tr.tmpname("hslot"), ptr_w());
+        tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off + off)}, true, 0);
+        tr.mt.store(-1, Arg::v(slot, ptr_w()), cp, Arg::c(1, 1), ptr_ty, 1, 0);
+        bound.insert(n.member_off + off);
+    }
+    // --pir-field-invariants: value invariants of this struct's fields (the first element only), one named assumption
+    // per row used; a field that already has its own harness object is left as it is
+    if (n.type_known && n.type.kind == ir::Type::Struct && !tr.opt.field_invariants.empty()) {
+        const uint64_t obj_bytes = n.bytes;
+        for (const auto& fi : tr.opt.field_invariants) {
+            if (fi.struct_type != n.type.text || fi.offset + fi.width > obj_bytes || bound.count(fi.offset)) continue;
+            int slot = tr.newvar(tr.tmpname("hfi"), ptr_w());
+            tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, fi.offset)}, true, 0);
+            const Arg at = Arg::v(slot, ptr_w());
+            std::string what;
+            if (fi.kind == "valid") {
+                auto o = tr.mt.alloc(-1, Arg::c(64, static_cast<uint64_t>(fi.a)), MemKind::Extern, 2,
+                                     "*" + n.name + "->@" + std::to_string(fi.offset) + " (field invariant)", 0);
+                tr.mt.store(-1, at, o, Arg::c(1, 1), ptr_ty, 1, 0);
+                what = "points to a valid object of " + std::to_string(fi.a) + " bytes (arbitrary contents)";
+            } else {
+                const unsigned bits = fi.kind == "nonnull" ? ptr_w() : fi.width * 8;
+                const auto ty = fi.kind == "nonnull" ? ptr_ty : ir::parse_type("i" + std::to_string(bits));
+                int v = tr.newvar(tr.tmpname("hfiv"), bits);
+                tr.mt.load(-1, v, ty, at, 1, 0, false);
+                const Arg val = Arg::v(v, bits);
+                if (fi.kind == "nonnull") {
+                    tr.assume(-1, tr.assign(-1, Op::Ne, 1, {val, Arg::c(bits, 0)}, "fi"));
+                    what = "is not NULL";
+                } else {
+                    const uint64_t m = bits == 64 ? ~uint64_t{0} : (uint64_t{1} << bits) - 1;
+                    Arg lo = Arg::c(bits, static_cast<uint64_t>(fi.a) & m), hi = Arg::c(bits, static_cast<uint64_t>(fi.b) & m);
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {val, lo}, "fi"), Arg::c(1, 1)}, "fi"));
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {hi, val}, "fi"), Arg::c(1, 1)}, "fi"));
+                    what = "is in [" + std::to_string(fi.a) + ", " + std::to_string(fi.b) + "] (signed, " +
+                           std::to_string(bits) + " bits)";
+                }
+            }
+            const std::string a = "field-invariant: " + n.name + "->@" + std::to_string(fi.offset) + " (" + fi.struct_type +
+                                  " at byte " + std::to_string(fi.offset) + ") " + what + " (--pir-field-invariants; scope " +
+                                  (fi.scope.empty() ? std::string("global") : fi.scope) + "; status " + fi.status + "; source " +
+                                  fi.source + "; not checked here)";
+            if (std::find(tr.out.assumptions.begin(), tr.out.assumptions.end(), a) == tr.out.assumptions.end())
+                tr.out.assumptions.push_back(a);
+        }
+    }
+    // --pir-index-field-bounds: an index field of an in-object array is in [0, count - 1] at entry (named in the plan)
+    for (const auto& ib : n.index_bounds) {
+        int slot = tr.newvar(tr.tmpname("hib"), ptr_w());
+        tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, ib.offset)}, true, 0);
+        const unsigned bits = ib.width * 8;
+        int v = tr.newvar(tr.tmpname("hibv"), bits);
+        tr.mt.load(-1, v, ir::parse_type("i" + std::to_string(bits)), Arg::v(slot, ptr_w()), 1, 0, false);
+        const Arg val = Arg::v(v, bits);
+        tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {val, Arg::c(bits, 0)}, "ib"), Arg::c(1, 1)}, "ib"));
+        tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {Arg::c(bits, ib.count - 1), val}, "ib"), Arg::c(1, 1)}, "ib"));
+    }
+    // function-pointer fields known to the ops tables (--pir-ops-auto): one of the targets, chosen freely
+    for (const auto& fp : n.fp_fields) {
+        Arg val = tr.fn_addr(fp.targets.front());
+        for (std::size_t i = 1; i < fp.targets.size(); ++i) {
+            Arg pick = tr.havoc(-1, 1, false, false);
+            val = tr.assign(-1, Op::Select, ptr_w(), {pick, tr.fn_addr(fp.targets[i]), val});
+        }
+        int slot = tr.newvar(tr.tmpname("hfp"), ptr_w());
+        tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off + fp.offset)}, true, 0);
+        tr.mt.store(-1, Arg::v(slot, ptr_w()), val, Arg::c(1, 1), ptr_ty, 1, 0);
+    }
+    if (n.member_off) {  // container_of: the parameter points into the containing object
+        int mp = tr.newvar(tr.tmpname("hmember"), ptr_w());
+        tr.mt.gep(-1, mp, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off)}, true, 0);
+        return Arg::v(mp, ptr_w());
+    }
+    return obj;
+}
+
+// --pir-bpf-helpers: integer leaves of a constant initialiser, by byte offset (width in bytes, bits).
+void flat_leaves(const pirmem::Layout& lay, const ir::Type& ty, const ir::Value& v, uint64_t off,
+                 std::map<uint64_t, std::pair<unsigned, uint64_t>>& ints) {
+    const auto& r = lay.resolve(ty);
+    if (v.kind == ir::Value::Int) {
+        if (r.kind == ir::Type::Int) ints[off] = {std::max(1u, r.bits / 8), v.bits};
+        return;
+    }
+    if (v.kind != ir::Value::Aggregate) return;
+    for (std::size_t i = 0; i < v.elems.size(); ++i) {
+        uint64_t eo = off;
+        if (r.kind == ir::Type::Struct) eo += lay.field_offset(r, static_cast<unsigned>(i));
+        else if (r.kind == ir::Type::Array && !r.elems.empty()) eo += i * lay.alloc_size(r.elems[0]);
+        else return;
+        flat_leaves(lay, v.elems[i].ty, v.elems[i].v, eo, ints);
+    }
+}
+
+// --pir-bpf-helpers (Linux): the BPF verifier's argument contract of a helper. A helper is the `.func` of a
+// `struct bpf_func_proto` constant of the unit (include/linux/bpf.h, Linux 6.18: func, four bools, ret_type, then
+// arg1_type..arg5_type as enum bpf_arg_type, then the arg_btf_id / arg_size union). For each argument typed
+// ARG_PTR_TO_* without PTR_MAYBE_NULL (and not a user, per-CPU, arena or callback pointer), the verifier rejects a
+// program that passes NULL or anything but valid memory of that kind, so the parameter (a u64 of the BPF_CALL_x
+// wrapper) is bound to a valid object: of the size argument's bytes for ARG_PTR_TO_MEM followed by
+// ARG_CONST_SIZE[_OR_ZERO], of arg_size bytes for MEM_FIXED_SIZE, otherwise kUnknownPtrBytes arbitrary bytes.
+// One named assumption per argument. Two protos naming the same function must agree on an argument, or it stays free.
+void bind_bpf_helper_args(Tr& tr, const ir::Function& f, Frame& top) {
+    const auto& lay = tr.mt.layout();
+    std::optional<std::array<uint64_t, 5>> types, sizes;
+    std::string proto;
+    bool conflict[5] = {false, false, false, false, false};
+    for (const auto& g : tr.m.globals) {
+        if (g.init.empty() || g.init[0].v.kind != ir::Value::Aggregate || g.init[0].v.elems.empty()) continue;
+        if (g.init[0].v.elems[0].v.kind != ir::Value::Global || g.init[0].v.elems[0].v.name != f.name) continue;
+        try {
+            const auto& r = lay.resolve(g.ty);
+            // the shape of struct bpf_func_proto: ptr, i8 x 4, i32, the arg-type union (20 bytes), the arg_size union
+            if (r.kind != ir::Type::Struct || r.elems.size() < 8 || r.elems[0].kind != ir::Type::Ptr) continue;
+            // the arg_size union: the next field after the arg-type union, past clang's [N x i8] padding
+            unsigned ui = 7;
+            while (ui < r.elems.size() && r.elems[ui].kind == ir::Type::Array && !r.elems[ui].elems.empty() &&
+                   r.elems[ui].elems[0].kind == ir::Type::Int && r.elems[ui].elems[0].bits == 8 &&
+                   lay.store_size(r.elems[ui]) < 8)
+                ++ui;
+            if (ui >= r.elems.size()) continue;
+            bool shape = lay.resolve(r.elems[5]).kind == ir::Type::Int && lay.resolve(r.elems[5]).bits == 32 &&
+                         lay.store_size(r.elems[6]) == 20 && lay.store_size(r.elems[ui]) == 40;
+            for (unsigned i = 1; i <= 4 && shape; ++i)
+                shape = lay.resolve(r.elems[i]).kind == ir::Type::Int && lay.resolve(r.elems[i]).bits == 8;
+            if (!shape) continue;
+            std::map<uint64_t, std::pair<unsigned, uint64_t>> ints;
+            flat_leaves(lay, g.ty, g.init[0].v, 0, ints);
+            const uint64_t at = lay.field_offset(r, 6), as = lay.field_offset(r, ui);
+            std::array<uint64_t, 5> t{}, s{};
+            for (unsigned i = 0; i < 5; ++i) {
+                auto it = ints.find(at + 4 * i);
+                t[i] = it == ints.end() ? 0 : (it->second.second & 0xffffffffu);
+                auto is = ints.find(as + 8 * i);
+                s[i] = is == ints.end() ? 0 : is->second.second;
+            }
+            if (!types) {
+                types = t;
+                sizes = s;
+                proto = g.name;
+            } else {
+                for (unsigned i = 0; i < 5; ++i)
+                    if ((*types)[i] != t[i] || (*sizes)[i] != s[i]) conflict[i] = true;
+                proto += ", " + g.name;
+            }
+        } catch (const Unenc&) {
+        }
+    }
+    if (!types) return;
+    constexpr uint64_t kMaybeNull = 1u << 8, kMemUser = 1u << 11, kMemPercpu = 1u << 12, kMemUninit = 1u << 15,
+                       kFixedSize = 1u << 18;
+    static const std::map<uint64_t, const char*> kPtrKinds{
+        {1, "ARG_CONST_MAP_PTR"},       {2, "ARG_PTR_TO_MAP_KEY"},  {3, "ARG_PTR_TO_MAP_VALUE"},
+        {4, "ARG_PTR_TO_MEM"},          {8, "ARG_PTR_TO_CTX"},      {11, "ARG_PTR_TO_SPIN_LOCK"},
+        {12, "ARG_PTR_TO_SOCK_COMMON"}, {13, "ARG_PTR_TO_SOCKET"},  {14, "ARG_PTR_TO_BTF_ID"},
+        {15, "ARG_PTR_TO_RINGBUF_MEM"}, {17, "ARG_PTR_TO_BTF_ID_SOCK_COMMON"}, {20, "ARG_PTR_TO_STACK"},
+        {21, "ARG_PTR_TO_CONST_STR"},   {22, "ARG_PTR_TO_TIMER"},   {23, "ARG_KPTR_XCHG_DEST"},
+        {24, "ARG_PTR_TO_DYNPTR"}};
+    for (unsigned i = 0; i < 5 && i < f.params.size(); ++i) {
+        const auto& p = f.params[i];
+        if (conflict[i] || p.ty.kind != ir::Type::Int || p.ty.bits != ptr_w()) continue;
+        const uint64_t t = (*types)[i], base = t & 0xff;
+        // the proto allows any value here (ARG_ANYTHING, or a pointer that may be NULL): used as a pointer, a violation
+        // is a defect the verifier lets through, not a missing precondition
+        if (base == 9 || (kPtrKinds.count(base) && (t & kMaybeNull))) tr.bpf_free_params_.insert(p.name);
+        auto k = kPtrKinds.find(base);
+        if (k == kPtrKinds.end() || (t & (kMaybeNull | kMemUser | kMemPercpu))) continue;
+        Arg size = Arg::c(64, kUnknownPtrBytes);
+        std::string size_text = std::to_string(kUnknownPtrBytes) + " arbitrary bytes (the size is a model bound)";
+        const uint64_t nb = i + 1 < 5 ? ((*types)[i + 1] & 0xff) : 0;
+        if (base == 4 && (t & kFixedSize)) {
+            if (!(*sizes)[i]) continue;
+            size = Arg::c(64, (*sizes)[i]);
+            size_text = std::to_string((*sizes)[i]) + " bytes (MEM_FIXED_SIZE, arg" + std::to_string(i + 1) + "_size)";
+        } else if (base == 4 && (nb == 6 || nb == 7) && !conflict[i + 1] && i + 1 < f.params.size() &&
+                   f.params[i + 1].ty.kind == ir::Type::Int && top.env.count(f.params[i + 1].name)) {
+            Arg n = top.env.at(f.params[i + 1].name);
+            if (n.width < 64) n = tr.assign(-1, Op::ZExt, 64, {n}, "bpfsz");
+            if (nb == 6) tr.assume(-1, tr.assign(-1, Op::Ne, 1, {n, Arg::c(64, 0)}, "bpfsz"));
+            size = n;
+            size_text = "arg" + std::to_string(i + 2) + " (" + f.params[i + 1].name + ") bytes (" +
+                        (nb == 6 ? "ARG_CONST_SIZE: not 0" : "ARG_CONST_SIZE_OR_ZERO") + ")";
+        } else if (base == 4) {
+            continue;  // memory without a size the proto states: left free
+        }
+        const int init = (t & kMemUninit) ? 0 : 2;
+        Arg obj = tr.mt.alloc(-1, size, MemKind::Extern, init, "*" + p.name + " (bpf verifier: " + k->second + ")", 0);
+        top.env[p.name] = obj;
+        top.ptr_ints.insert(p.name);
+        tr.out.assumptions.push_back("bpf verifier: argument arg" + std::to_string(i + 1) + " (" + p.name + ") of @" +
+                                     f.name + " typed " + k->second + ((t & ~uint64_t{0xff}) ? " (with flags)" : "") +
+                                     " in " + proto + " is non-null: a valid object of " + size_text +
+                                     (init ? ", initialised with arbitrary values" : ", uninitialised (MEM_UNINIT)") +
+                                     " (the BPF verifier rejects a program that passes anything else; in-kernel callers "
+                                     "of the helper are not checked here)");
+    }
+}
+
+// Pointer parameter bound to an object built from the IR types (--pir-harness).
+// Returns false (and `why`) when no object can be built.
+bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame& top, std::string* why,
+                       const CallbackBinding* trailing = nullptr, const CallbackBinding* drvdata = nullptr) {
+    pirmem::HarnessOptions ho;
+    ho.depth = tr.opt.auto_harness.depth;
+    ho.elems = tr.opt.auto_harness.elems;
+    ho.unknown_bytes = tr.opt.auto_harness.unknown_bytes;
+    ho.max_objects = tr.opt.auto_harness.max_objects;
+    ho.container_of = tr.opt.container_of;
+    ho.length_pairing = tr.opt.auto_harness.length_pairing;
+    if (tr.opt.ops_auto) {
+        ho.ops = &tr.opt.ops_table;
+        ho.ops_module = &tr.m;
+    }
+    ho.declared_types = tr.opt.auto_harness.declared_types;
+    ho.priv_areas = tr.opt.auto_harness.priv_areas;
+    ho.index_field_bounds = tr.opt.auto_harness.index_field_bounds;
+    ho.heap_freed = tr.opt.auto_harness.heap_freed;
+    // --pir-param-preconditions: "valid N" / "type S" rows set the parameter's own object
+    std::vector<const ParamPrecondition*> used;
+    for (const auto* r : param_rows(tr.opt, f, p)) {
+        if (r->kind == "valid") {
+            ho.root_min_bytes = std::max<uint64_t>(ho.root_min_bytes, static_cast<uint64_t>(r->a));
+            used.push_back(r);
+        } else if (r->kind == "type") {
+            auto it = tr.m.types.find(r->type_name.substr(1));
+            if (it == tr.m.types.end() || it->second.kind != ir::Type::Struct) continue;  // not this unit's type
+            ir::Type t;
+            t.kind = ir::Type::Struct;
+            t.text = r->type_name;
+            ho.root_type = t;
+            used.push_back(r);
+        }
+    }
+    auto plan = pirmem::plan_pointer_harness(tr.m, tr.mt.layout(), f, p, ho, why);
+    if (!plan) return false;
+    // --pir-callback-models trailing-alloc: the object is the driver's own allocation with its private area appended
+    // (net_device + priv): only when the harness object is one object of exactly that struct type, at its start. The
+    // harness may have grown it to cover the accesses it saw past the struct (netdev_priv: "2 x %struct.net_device, one
+    // object"); an indexed pointer (an array of the type) is not one object and is left alone
+    std::string trailing_text;
+    if (trailing && plan->root->type_known && plan->root->type.text == trailing->struct_type &&
+        plan->root->basis.find(", indexed") == std::string::npos && plan->root->member_off == 0) {
+        // exactly the allocation (struct + private area): the harness's own size (from the accesses it sees) is replaced,
+        // so an access past the driver's private area is still out of bounds
+        const uint64_t want = tr.mt.layout().alloc_size(plan->root->type) + trailing->extra_bytes;
+        uint64_t need = 0;  // the harness's own pointer fields must stay inside the object
+        for (const auto& [off, child] : plan->root->nested) need = std::max<uint64_t>(need, off + 8);
+        for (const auto& fp : plan->root->fp_fields) need = std::max<uint64_t>(need, fp.offset + 8);
+        if (want <= max_obj_size() && need <= want) {
+            plan->root->elems = 1;
+            plan->root->bytes = want;
+            // the harness's own line for this object names the size it planned: say which size holds instead
+            // (not always the first line: size tags such as harness-size-from-access come before it). The access-sized
+            // tag of the root no longer applies: its size is the allocation's
+            const std::string head = p.name + " points to the start of a valid object of ";
+            const std::string size_tag = "harness-size-from-access: " + p.name + " sized ";
+            std::erase_if(plan->assumptions, [&](const std::string& a) { return a.starts_with(size_tag); });
+            for (auto& a : plan->assumptions)
+                if (a.starts_with(head)) {
+                    a = head + std::to_string(want) + " bytes (1 x " + plan->root->type.text +
+                        " and its private area: driver environment model below), " + std::to_string(plan->root->align) +
+                        "-byte aligned, fields initialised with arbitrary values (auto harness)";
+                    break;
+                }
+            trailing_text = trailing->text + "; object size " + std::to_string(want) + " bytes (replaces the automatic harness size)";
+        }
+    }
+    // --pir-callback-models drvdata: probe ran first and stored one constant-size allocation in driver_data. The field is
+    // found in the harness object through the device struct it contains (the parameter itself, or the platform_device /
+    // i2c_client / pci_dev that a container_of took it to); its harness object becomes exactly that allocation.
+    std::string drvdata_text;
+    if (drvdata && plan->root->type_known) {
+        const auto& lay = tr.mt.layout();
+        std::vector<uint64_t> devoffs;  // byte offsets of the device struct inside the root object (not through pointers)
+        std::function<void(const ir::Type&, uint64_t, int)> walk = [&](const ir::Type& t, uint64_t base, int depth) {
+            if (depth > 6) return;
+            if (t.text == drvdata->struct_type) {
+                devoffs.push_back(base);
+                return;
+            }
+            try {
+                const auto& r = lay.resolve(t);
+                if (r.kind != ir::Type::Struct) return;
+                for (unsigned k = 0; k < r.elems.size(); ++k) walk(lay.field_type(r, k), base + lay.field_offset(r, k), depth + 1);
+            } catch (const pirmem::Unenc&) {
+            }
+        };
+        walk(plan->root->type, 0, 0);
+        const int64_t key = devoffs.size() == 1 ? static_cast<int64_t>(devoffs[0] + drvdata->field_off) -
+                                                      static_cast<int64_t>(plan->root->member_off)
+                                                : -1;
+        if (key >= 0) {
+            const auto ukey = static_cast<uint64_t>(key);
+            const uint64_t S = drvdata->extra_bytes;
+            std::shared_ptr<pirmem::HarnessNode> child;
+            for (auto& [off, c] : plan->root->nested)
+                if (off == ukey) child = c;
+            const bool unbound = std::find(plan->root->unbound_fields.begin(), plan->root->unbound_fields.end(), ukey) !=
+                                 plan->root->unbound_fields.end();
+            bool ok = false;
+            if (child) {
+                // the harness typed and sized it from the callback's own uses; the allocation replaces that size (an access
+                // past it, also one through a larger struct type than the probe allocated, is out of bounds). Only the
+                // harness's own pointer fields must fit
+                uint64_t need = 0;
+                for (const auto& [off, c] : child->nested) need = std::max<uint64_t>(need, child->member_off + off + 8);
+                if (child->member_off == 0 && need <= S) {
+                    const std::string head = child->name + " points to the start of a valid object of ";
+                    const std::string size_tag = "harness-size-from-access: " + child->name + " sized ";
+                    std::erase_if(plan->assumptions, [&](const std::string& a) { return a.starts_with(size_tag); });
+                    for (auto& a : plan->assumptions)
+                        if (a.starts_with(head))
+                            a = head + std::to_string(S) + " bytes (the object probe allocated: driver environment model " +
+                                "below), " + std::to_string(child->align) +
+                                "-byte aligned, fields initialised with arbitrary values (auto harness)";
+                    child->bytes = S;
+                    ok = true;
+                }
+            } else if (unbound) {
+                auto c = std::make_shared<pirmem::HarnessNode>();
+                c->name = p.name + "->@" + std::to_string(ukey);
+                c->type = ir::parse_type("i8");
+                c->elems = S;
+                c->bytes = S;
+                plan->root->nested.emplace_back(ukey, c);
+                auto& u = plan->root->unbound_fields;
+                u.erase(std::remove(u.begin(), u.end(), ukey), u.end());
+                // the harness's line naming the root's arbitrary pointer fields: without this one now
+                const std::string uh = "pointer fields of " + plan->root->name + " at byte offsets ";
+                for (auto it = plan->assumptions.begin(); it != plan->assumptions.end(); ++it)
+                    if (it->starts_with(uh)) {
+                        if (u.empty()) {
+                            plan->assumptions.erase(it);
+                        } else {
+                            std::string offs;
+                            for (auto o : u) offs += (offs.empty() ? "" : ",") + std::to_string(o);
+                            const auto tail = it->find(" that the function loads");
+                            *it = uh + offs + (tail == std::string::npos ? std::string() : it->substr(tail));
+                        }
+                        break;
+                    }
+                plan->assumptions.push_back(c->name + " points to the start of a valid object of " + std::to_string(S) +
+                                            " bytes (the object probe allocated: driver environment model below; the "
+                                            "harness had no type evidence for it), 16-byte aligned, fields initialised with "
+                                            "arbitrary values (auto harness)");
+                ok = true;
+            }
+            if (ok) drvdata_text = drvdata->text + "; " + p.name + "->@" + std::to_string(ukey) + " is driver_data";
+        }
+    }
+    top.env[p.name] = alloc_harness_node(tr, *plan->root);
+    tr.out.ptr_params.push_back(p.name);
+    for (auto& a : plan->assumptions) tr.out.assumptions.push_back(a);
+    if (!trailing_text.empty()) tr.out.assumptions.push_back(trailing_text);
+    if (!drvdata_text.empty()) tr.out.assumptions.push_back(drvdata_text);
+    if (plan->root_override_used)
+        for (const auto* r : used) tr.out.assumptions.push_back(param_precondition_text(*r));
+    return true;
+}
+
+// --pir-callback-models id-entry: the parameter points to one entry 0..count-1 of the driver's constant id table
+void bind_id_entry(Tr& tr, const ir::Param& p, const CallbackBinding& b, Frame& top) {
+    Arg base = tr.mt.global(b.global);
+    Arg k = tr.havoc(-1, 64, false, false);
+    tr.assume(-1, tr.assign(-1, Op::Ult, 1, {k, Arg::c(64, b.count)}, "cbm"));
+    int slot = tr.newvar(tr.tmpname("cbm_id"), ptr_w());
+    tr.mt.gep(-1, slot, base, ir::parse_type("i8"), {tr.assign(-1, Op::Mul, 64, {k, Arg::c(64, b.elem_bytes)}, "cbm")}, true, 0);
+    top.env[p.name] = Arg::v(slot, ptr_w());
+    tr.out.ptr_params.push_back(p.name);
+    tr.out.assumptions.push_back(b.text);
+}
+
+// --pir-global-harness-deep: the values loaded from @name at offset 0 (`load ptr, ptr @name`, also through a
+// getelementptr constant expression with all-zero indices) in the analysed function and the unit functions it calls
+// (directly, to the inlining depth): the roots the harness planner follows.
+std::vector<std::pair<const ir::Function*, std::string>> global_load_roots(const Tr& tr, const std::string& name) {
+    std::vector<std::pair<const ir::Function*, std::string>> roots;
+    if (!tr.root_fn_) return roots;
+    auto at_global = [&](const ir::Operand& o) {
+        if (o.v.kind == ir::Value::Global) return o.v.name == name;
+        if (o.v.kind != ir::Value::ConstExpr || o.v.ce_op != "getelementptr" || o.v.elems.empty() ||
+            o.v.elems[0].v.kind != ir::Value::Global || o.v.elems[0].v.name != name)
+            return false;
+        for (std::size_t k = 1; k < o.v.elems.size(); ++k) {
+            const auto& v = o.v.elems[k].v;
+            if (!(v.kind == ir::Value::Zero || (v.kind == ir::Value::Int && v.bits == 0))) return false;
+        }
+        return true;
+    };
+    std::set<const ir::Function*> seen;
+    std::vector<std::pair<const ir::Function*, int>> todo{{tr.root_fn_, 0}};
+    while (!todo.empty()) {
+        auto [g, d] = todo.back();
+        todo.pop_back();
+        if (!seen.insert(g).second) continue;
+        for (auto& b : g->blocks)
+            for (auto& in : b.insts) {
+                if (in.op == "load" && in.ty.kind == ir::Type::Ptr && !in.ops.empty() && !in.result.empty() &&
+                    at_global(in.ops[0]))
+                    roots.emplace_back(g, in.result);
+                if ((in.op == "call" || in.op == "invoke") && !in.callee.empty() && d < tr.opt.inline_depth)
+                    if (const auto* h = tr.m.find(in.callee); h && !h->blocks.empty() && !h->is_model)
+                        todo.emplace_back(h, d + 1);
+            }
+        // a loop's cursor (list_for_each: phi [ head->next, pos->next ]) holds such a value too
+        std::set<std::string> mine;
+        for (auto& [rf, rv] : roots)
+            if (rf == g) mine.insert(rv);
+        for (bool grew = !mine.empty(); grew;) {
+            grew = false;
+            for (auto& b : g->blocks)
+                for (auto& in : b.insts) {
+                    if (in.op != "phi" || in.ty.kind != ir::Type::Ptr || in.result.empty() || mine.count(in.result)) continue;
+                    for (auto& [o, from] : in.incoming)
+                        if (o.v.kind == ir::Value::Local && mine.count(o.v.name)) {
+                            mine.insert(in.result);
+                            roots.emplace_back(g, in.result);
+                            grew = true;
+                            break;
+                        }
+                }
+        }
+    }
+    return roots;
+}
+
+pirmem::HarnessOptions global_harness_options(const Tr& tr) {
+    pirmem::HarnessOptions ho;
+    ho.depth = tr.opt.auto_harness.depth;
+    ho.elems = tr.opt.auto_harness.elems;
+    ho.unknown_bytes = tr.opt.auto_harness.unknown_bytes;
+    ho.max_objects = tr.opt.auto_harness.max_objects;
+    ho.container_of = true;  // a list node is reached through container_of
+    return ho;
+}
+
 }  // namespace
+
+// --pir-global-harness-deep: the pointer fields of a harnessed pointer global's object that the function (or a unit
+// function it calls) loads and uses get objects of their own, typed by those uses as for a pointer parameter (the
+// auto-harness planner, harness.cpp, to its depth bound). The global's own object stays the global harness's
+// kUnknownPtrBytes arbitrary bytes. Each nested object is a named assumption; fields without type evidence stay
+// arbitrary (named too).
+void Tr::global_harness_nest(Arg obj, const std::string& name) {
+    const auto roots = global_load_roots(*this, name);
+    if (roots.empty()) return;
+    auto ho = global_harness_options(*this);
+    ho.container_of = opt.container_of;
+    ho.keep_untyped = true;  // an MMIO base field used only through readl / writel
+    ho.unknown_bytes = kUnknownPtrBytes;
+    std::string why;
+    auto plan = pirmem::plan_harness_roots(m, mt.layout(), roots, "@" + name + "->*", ho, &why);
+    if (!plan || !plan->root || plan->root->member_off) return;
+    const auto ptr_ty = ir::parse_type("ptr");
+    bool any = false;
+    for (const auto& [off, child] : plan->root->nested) {
+        if (off + 8 > kUnknownPtrBytes) continue;
+        Arg c = alloc_harness_node(*this, *child);
+        int slot = newvar(tmpname("gnest"), ptr_w());
+        mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, off)}, true, 0);
+        mt.store(-1, Arg::v(slot, ptr_w()), c, Arg::c(1, 1), ptr_ty, 1, 0);
+        any = true;
+    }
+    if (!any) return;
+    const std::string pre = "@" + name + "->*->@";
+    for (auto& a : plan->assumptions)
+        if (a.starts_with(pre) || a.starts_with("pointer fields of @" + name + "->*->@"))
+            note_assumption("global harness (deep): " + a);
+}
+
+// --pir-global-harness-deep: the list member's offset in the entries of the list_head global @name (the planner's
+// container_of), placed as a pad before the head in its object: container_of(&@name), which list_for_each_entry
+// computes for its end test, then stays inside an object (the encoding has no negative offsets). Named in
+// list_head_harness.
+uint64_t Tr::list_head_pad(const std::string& name) {
+    const auto roots = global_load_roots(*this, name);
+    if (roots.empty()) return 0;
+    std::string why;
+    auto plan = pirmem::plan_harness_roots(m, mt.layout(), roots, "@" + name + ".next", global_harness_options(*this), &why);
+    if (!plan || !plan->root || plan->root->member_off + 16 > plan->root->bytes) return 0;
+    return plan->root->member_off;
+}
+
+// --pir-global-harness-deep: a mutable `struct list_head` global (a static LIST_HEAD, set up by its initialiser and
+// changed only by list operations) is at entry either empty (next == prev == &@name) or a list of one node: a valid
+// object built by the harness planner from how the function uses the entries (container_of: the containing struct),
+// whose link points back to @name in both directions. Longer lists and broken links are not explored (named).
+void Tr::list_head_harness(Arg p, const std::string& name) {
+    const auto ptr_ty = ir::parse_type("ptr");
+    const auto roots = global_load_roots(*this, name);
+    std::optional<Arg> node;
+    std::string node_text;
+    if (!roots.empty()) {
+        std::string why;
+        auto plan = pirmem::plan_harness_roots(m, mt.layout(), roots, "@" + name + ".next", global_harness_options(*this), &why);
+        if (plan && plan->root && plan->root->member_off + 16 <= plan->root->bytes) {
+            node = alloc_harness_node(*this, *plan->root);
+            for (auto& a : plan->assumptions) node_text += (node_text.empty() ? "" : "; ") + a;
+        }
+    }
+    Arg next = p, prev = p;
+    if (node) {
+        Arg one = havoc(-1, 1, false, false);
+        next = assign(-1, Op::Select, ptr_w(), {one, *node, p}, "lh");
+        prev = next;
+        // the node's own links: back to the head
+        mt.store(-1, *node, p, Arg::c(1, 1), ptr_ty, 1, 0);
+        int slot = newvar(tmpname("lhprev"), ptr_w());
+        mt.gep(-1, slot, *node, ir::parse_type("i8"), {Arg::c(64, 8)}, true, 0);
+        mt.store(-1, Arg::v(slot, ptr_w()), p, Arg::c(1, 1), ptr_ty, 1, 0);
+    }
+    mt.store(-1, p, next, Arg::c(1, 1), ptr_ty, 1, 0);
+    int ps = newvar(tmpname("lhp"), ptr_w());
+    mt.gep(-1, ps, p, ir::parse_type("i8"), {Arg::c(64, 8)}, true, 0);
+    mt.store(-1, Arg::v(ps, ptr_w()), prev, Arg::c(1, 1), ptr_ty, 1, 0);
+    if (const uint64_t pad = node ? list_head_pad(name) : 0)
+        note_assumption("global harness (deep): @" + name + " is placed " + std::to_string(pad) +
+                        " bytes into its object (the entries' list member offset), so container_of(&@" + name +
+                        ") of the list's end test is an address of that object; the pad bytes are not program memory "
+                        "and an access to them is not reported");
+    note_assumption("global harness (deep): @" + name + " (a struct list_head) is at entry " +
+                    (node ? "an empty list (next == prev == &@" + name + ") or a list of one node whose links point back "
+                            "to @" + name + " (the node: " + node_text + "); longer lists are not explored"
+                          : "an empty list (next == prev == &@" + name + "): no use of an entry gives a node's type") +
+                    " (its initialiser and the unit's list operations keep it a valid circular list; not checked here)");
+}
+
+std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error) {
+    error.clear();
+    std::ifstream in(file);
+    if (!in) {
+        error = "cannot read " + file.string();
+        return {};
+    }
+    std::vector<OpsField> out;
+    // (struct_type, field) -> entry in out; position of a field = its first-seen order per struct
+    std::map<std::pair<std::string, std::string>, std::size_t> at;
+    std::map<std::string, int> nfields;
+    auto trim = [](const std::string& s) {
+        std::string::size_type b = 0, e = s.size();
+        while (b < e && s[b] == ' ') ++b;
+        while (e > b && s[e - 1] == ' ') --e;
+        return s.substr(b, e - b);
+    };
+    std::string line;
+    for (int line_no = 1; std::getline(in, line); ++line_no) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        std::vector<std::string> cols;
+        for (std::string::size_type start = 0;;) {
+            const auto p = line.find('\t', start);
+            cols.push_back(line.substr(start, p == std::string::npos ? std::string::npos : p - start));
+            if (p == std::string::npos) break;
+            start = p + 1;
+        }
+        if (cols.size() < 4 || cols.size() > 5) {
+            error = "line " + std::to_string(line_no) + ": expected 4 or 5 tab-separated columns";
+            return {};
+        }
+        OpsField f;
+        f.struct_type = trim(cols[0]);
+        f.field = trim(cols[1]);
+        f.role = cols[3];
+        for (std::string::size_type s = 0; s <= cols[2].size();) {
+            const auto p = cols[2].find(',', s);
+            std::string t = cols[2].substr(s, p == std::string::npos ? std::string::npos : p - s);
+            t = trim(t);
+            if (!t.empty()) f.targets.push_back(t);
+            if (p == std::string::npos) break;
+            s = p + 1;
+        }
+        if (f.targets.empty()) {
+            error = "line " + std::to_string(line_no) + ": no targets";
+            return {};
+        }
+        const auto key = std::make_pair(f.struct_type, f.field);
+        if (auto it = at.find(key); it != at.end()) {  // a field listed twice: one entry
+            auto& e = out[it->second];
+            e.targets.insert(e.targets.end(), f.targets.begin(), f.targets.end());
+            continue;
+        }
+        f.index = nfields[f.struct_type]++;
+        if (cols.size() == 5 && !cols[4].empty()) {
+            try {
+                std::size_t used = 0;
+                f.index = std::stoi(cols[4], &used);
+                if (used != cols[4].size() || f.index < 0) throw std::invalid_argument(cols[4]);
+                for (const auto& e : out) {
+                    if (e.struct_type == f.struct_type && e.index == f.index) {
+                        error = "line " + std::to_string(line_no) + ": duplicate field_index";
+                        return {};
+                    }
+                }
+            } catch (const std::exception&) {
+                error = "line " + std::to_string(line_no) + ": bad field_index";
+                return {};
+            }
+        }
+        at.emplace(key, out.size());
+        out.push_back(std::move(f));
+    }
+    if (in.bad()) {
+        error = "cannot read " + file.string();
+        return {};
+    }
+    return out;
+}
 
 Translation translate(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt) {
     const PtrModel pm = ptr_model_of(m);
     PtrModelScope pms(pm);
+    // --pir-wide-int: i65..i512 inside the body (512: the per-byte uninitialised-shadow mask of a value stays <= 64 bits)
+    pirmem::IntWidthScope iws(opt.wide_int ? 512u : 64u);
     Translation t;
     t.status = std::string(laws::NEEDS_HARNESS);
-    if (!f.parse_error.empty()) {
+    if (!f.parse_error.empty() && !(opt.variadic && f.variadic && f.parse_error == "variadic function")) {
         t.reason = "UNENCODED: unparsed IR (" + f.parse_error + ")";
         return t;
     }
@@ -2376,7 +3574,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         return attrs.find("byval(") != std::string::npos || attrs.find("sret(") != std::string::npos;
     };
     for (auto& p : f.params) {
-        if (p.ty.kind == ir::Type::Ptr && !own_object(p.attrs) && !contract_of(p.name)) {
+        if (p.ty.kind == ir::Type::Ptr && !own_object(p.attrs) && !contract_of(p.name) && !opt.auto_harness.on) {
             t.reason = "pointer parameter: unguarded model checking reports missing preconditions, "
                        "not defects (Law 6)";
             return t;
@@ -2386,8 +3584,18 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         Tr tr(m, opt);
         tr.out.ir_name = f.name;
         tr.out.name = f.name;
+        tr.root_fn_ = &f;
         Frame top;
         top.f = &f;
+        // --pir-callback-models: the driver environment models of this function's callback kind(s)
+        std::vector<CallbackBinding> cbs;
+        if (opt.callback_models) cbs = resolve_callback_bindings(m, f, *opt.callback_models);
+        auto binding = [&](const ir::Param* p, const char* kind) -> const CallbackBinding* {
+            const int idx = static_cast<int>(p - f.params.data());
+            for (const auto& b : cbs)
+                if ((b.param == idx || b.param == -1) && b.kind == kind) return &b;
+            return nullptr;
+        };
         std::vector<const ir::Param*> ptrs;
         for (auto& p : f.params) {
             if (p.ty.kind == ir::Type::Ptr) {
@@ -2395,11 +3603,41 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
                 continue;
             }
             auto w = p.ty.kind == ir::Type::Float ? tr.vwidth(p.ty, "parameter type") : int_width(p.ty, "parameter type");
+            if (w > 64) throw Unenc{"UNENCODED: parameter type " + p.ty.text + " (wider than 64 bits)"};  // even with --pir-wide-int
             int v = tr.newvar(p.name.empty() ? tr.tmpname("arg") : p.name, w);
             tr.out.vars[static_cast<std::size_t>(v)].fp = p.ty.kind == ir::Type::Float;
             tr.out.params.push_back(v);
             top.env[p.name] = Arg::v(v, w);
+            if (const auto* b = binding(&p, "range"); b && p.ty.kind == ir::Type::Int && w <= 64) {
+                // lo <= v <= hi, signed, at the parameter's width (bounds outside it: that side is no constraint)
+                const Arg val = Arg::v(v, w);
+                const int64_t mn = w == 64 ? INT64_MIN : -(int64_t{1} << (w - 1));
+                const int64_t mx = w == 64 ? INT64_MAX : (int64_t{1} << (w - 1)) - 1;
+                const uint64_t mk = w == 64 ? ~uint64_t{0} : (uint64_t{1} << w) - 1;
+                if (b->lo > mn && b->lo <= mx)
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {val, Arg::c(w, static_cast<uint64_t>(b->lo) & mk)}, "cbm"), Arg::c(1, 1)}, "cbm"));
+                if (b->hi < mx && b->hi >= mn)
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {Arg::c(w, static_cast<uint64_t>(b->hi) & mk), val}, "cbm"), Arg::c(1, 1)}, "cbm"));
+                if (b->hi < mn || b->lo > mx) tr.assume(-1, Arg::c(1, 0));  // empty at this width: no execution
+                tr.out.assumptions.push_back(b->text);
+            }
+            // --pir-param-preconditions "range A B" of an integer parameter: A <= v <= B (signed), named
+            if (p.ty.kind == ir::Type::Int)
+                for (const auto* r : param_rows(opt, f, p)) {
+                    if (r->kind != "range" || w > 64 || w < 1) continue;
+                    if (w < 64) {  // bounds must be signed w-bit values, else the row does not apply
+                        const int64_t smax = (int64_t{1} << (w - 1)) - 1, smin = -smax - 1;
+                        if (r->a < smin || r->b > smax) continue;
+                    }
+                    const uint64_t m = w == 64 ? ~uint64_t{0} : (uint64_t{1} << w) - 1;
+                    const Arg val = Arg::v(v, w);
+                    const Arg lo = Arg::c(w, static_cast<uint64_t>(r->a) & m), hi = Arg::c(w, static_cast<uint64_t>(r->b) & m);
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {val, lo}, "pp"), Arg::c(1, 1)}, "pp"));
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {hi, val}, "pp"), Arg::c(1, 1)}, "pp"));
+                    tr.out.assumptions.push_back(param_precondition_text(*r));
+                }
         }
+        if (opt.bpf_helpers && !opt.kernel_api.empty()) bind_bpf_helper_args(tr, f, top);  // --pir-bpf-helpers
         int contracts = 0;
         for (auto* p : ptrs) {
             auto sret = p->attrs.find("sret(");
@@ -2411,7 +3649,33 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
                 top.env[p->name] = tr.mt.alloc(-1, Arg::c(64, sz), MemKind::Stack, bt ? 2 : 0, p->name, 0);
                 continue;
             }
-            bind_contract(tr, f, *p, *contract_of(p->name), top);
+            std::optional<pirmem::LengthPair> lp;
+            if (const auto* pc = contract_of(p->name)) {
+                bind_contract(tr, f, *p, *pc, top);
+            } else if (const auto* ib = binding(p, "id-entry")) {
+                bind_id_entry(tr, *p, *ib, top);
+            } else if (const auto* bb = binding(p, "buffer")) {
+                // --pir-callback-models buffer: the core passes a buffer of that size (sysfs show / store: PAGE_SIZE)
+                top.env[p->name] = tr.mt.alloc(-1, Arg::c(64, bb->extra_bytes), MemKind::Extern, 2,
+                                               "*" + p->name + " (driver environment model)", 0);
+                tr.out.ptr_params.push_back(p->name);
+                tr.out.assumptions.push_back(bb->text + ", 16-byte aligned");
+            } else if (opt.auto_harness.length_pairing &&
+                       (lp = pirmem::infer_param_length(m, tr.mt.layout(), f, *p))) {
+                // --pir-length-pairing: (pointer, integer parameter) pair shown by the IR (harness.cpp)
+                PtrContract pc;
+                pc.param = p->name;
+                pc.count_param = lp->count;
+                pc.elem_bytes = static_cast<unsigned>(lp->elem_bytes);
+                pc.count_unsigned = !lp->is_signed;
+                pc.source = "length pairing";
+                pc.text = "evidence: " + lp->evidence;
+                bind_contract(tr, f, *p, pc, top);
+            } else {
+                std::string why;
+                if (!bind_auto_harness(tr, f, *p, top, &why, binding(p, "trailing-alloc"), binding(p, "drvdata")))
+                    throw Unenc{"UNENCODED: automatic pointer harness for parameter " + p->name + ": " + why};
+            }
             ++contracts;
         }
         if (contracts > 1)
@@ -2419,6 +3683,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         // a scalar pair result is not returned (Tr::term): width 0
         if (f.ret.kind != ir::Type::Void && !tr.scalar_pair(f.ret)) {
             tr.out.ret_width = tr.vwidth(f.ret, "return type");
+            if (tr.out.ret_width > 64) throw Unenc{"UNENCODED: return type " + f.ret.text + " (wider than 64 bits)"};
             tr.out.returns_ptr = f.ret.kind == ir::Type::Ptr;
         }
         if (f.blocks.empty()) throw Unenc{"UNENCODED: empty function body"};

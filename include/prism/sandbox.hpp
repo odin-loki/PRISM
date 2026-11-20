@@ -51,6 +51,11 @@ PRISM_API std::string kind();
 PRISM_API std::vector<std::string> bwrap_argv(const std::string& bwrap,
                                               const std::vector<std::string>& argv,
                                               const std::filesystem::path& scratch);
+// True when `rc` is what the jail reports for a jailed program killed by a crash signal. bwrap
+// exits 128+signal instead of re-raising it, so a segfault inside the jail never shows as a
+// signalled child; only SIGILL/SIGABRT/SIGBUS/SIGFPE/SIGSEGV count, and only while the jail is on
+// (a program that itself exits 139 is read as a crash there: the price of this one rule).
+PRISM_API bool jail_crash_rc(int rc);
 // argv inside the jail when bwrap works here, else unchanged.
 PRISM_API std::vector<std::string> wrap_argv(const std::vector<std::string>& argv,
                                              const std::filesystem::path& scratch);

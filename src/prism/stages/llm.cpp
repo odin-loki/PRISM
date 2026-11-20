@@ -202,7 +202,7 @@ nlohmann::json sandbox_run(const std::string& source, double timeout, bool allow
     suppress_crash_dialogs();  // a crashing child must not hang on a Windows error dialog
     auto rr = run_argv(sandbox::wrap_argv({exe.string()}, td), {}, timeout, sandbox::limits_for(timeout));
     bool ok = rr.rc == 0 && !rr.timeout;
-    bool crashed = rr.crashed || rr.rc < 0 || static_cast<unsigned>(rr.rc) >= 0xC0000000u ||
+    bool crashed = rr.crashed || rr.rc < 0 || sandbox::jail_crash_rc(rr.rc) || static_cast<unsigned>(rr.rc) >= 0xC0000000u ||
                    rr.err.find("Aborted") != std::string::npos;
     nlohmann::json err = nlohmann::json(nullptr);
     if (!ok) {

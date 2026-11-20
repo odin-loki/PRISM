@@ -1,0 +1,4 @@
+function	lock	action	kind
+# e1000e (ich8lan.c): the NVM mutex is a file-scope static, taken by the acquire half and released by the release half
+e1000_acquire_nvm_ich8lan	global:nvm_mutex	acquires
+e1000_release_nvm_ich8lan	global:nvm_mutex	releases

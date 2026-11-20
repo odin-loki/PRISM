@@ -27,6 +27,13 @@
 
 namespace prism::pir::pirmem {
 
+namespace {
+thread_local unsigned g_max_int_bits = 64;
+}  // namespace
+unsigned max_int_bits() { return g_max_int_bits; }
+IntWidthScope::IntWidthScope(unsigned w) : saved(g_max_int_bits) { g_max_int_bits = w; }
+IntWidthScope::~IntWidthScope() { g_max_int_bits = saved; }
+
 using prism::i128;
 using prism::i128_add;
 using prism::i128_from_i64;
@@ -203,7 +210,9 @@ MemTr::MemTr(TrApi& t, const ir::Module& m) : t_(t), lay_(m) {}
 
 unsigned MemTr::value_width(const ir::Type& t, std::string_view what) const {
     if (t.kind == ir::Type::Ptr) {
-        if (t.text != "ptr") throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
+        // --pir-addrspace (kernel mode): a segment pointer is a pointer value (mapped where it is used: translate_seg.inc)
+        const bool seg = t.text == "ptr addrspace" && t_.options().addrspace && !t_.options().kernel_api.empty();
+        if (t.text != "ptr" && !seg) throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
         return ptr_w();
     }
     if (t.kind == ir::Type::Float) {
@@ -212,7 +221,7 @@ unsigned MemTr::value_width(const ir::Type& t, std::string_view what) const {
         throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text + " (floating-point format not modelled)"};
     }
     if (t.kind != ir::Type::Int) throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
-    if (t.bits == 0 || t.bits > 64)
+    if (t.bits == 0 || t.bits > max_int_bits())
         throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text + " (wider than 64 bits)"};
     return t.bits;
 }
@@ -496,6 +505,11 @@ uint64_t contract_elem_bytes_deep(const Layout& lay, const ir::Module& m, const 
     return 1;
 }
 
+// A mutable global the function reads or writes (kept by name for the verdict: stage_mem.cpp).
+static void note_mutable_global(Function& f, const std::string& name) {
+    f.mutable_globals = true;
+    if (std::ranges::find(f.mutable_global_names, name) == f.mutable_global_names.end()) f.mutable_global_names.push_back(name);
+}
 
 void MemTr::preassign_globals(const ir::Function& f) {
     for (auto& name : entry_globals(t_.module(), lay_, f, t_.options().globals_initial)) {
@@ -509,16 +523,18 @@ void MemTr::emit_entry_globals() {
     for (auto& name : pending_) {
         auto e = *entry_global(t_.module(), lay_, name, t_.options().globals_initial);
         mark_memory();
-        if (!e.g->is_const) t_.fn().mutable_globals = true;
+        if (!e.g->is_const) note_mutable_global(t_.fn(), name);
+        const uint64_t pad = e.init == 2 ? list_pad(*e.g, name) : 0;
         Stmt s;
         s.kind = Stmt::Alloc;
-        s.dst = globals_[name].var;
-        s.args = {c64(e.size)};
+        s.dst = pad ? t_.newvar("@" + name + ".padded", ptr_w()) : globals_[name].var;
+        s.args = {c64(e.size + pad)};
         s.mkind = e.kind;
         s.init = e.init;
         s.align = e.align;
         s.msg = "@" + name;
         t_.push(-1, s);
+        if (pad) ptr_add(-1, Arg::v(s.dst, ptr_w()), c64(pad), globals_[name].var);
         Arg p = globals_[name];
         for (auto& st : e.stores) {  // as emit_init
             Stmt w;
@@ -526,6 +542,7 @@ void MemTr::emit_entry_globals() {
             w.args = {st.off ? ptr_add(-1, p, c64(st.off)) : p, Arg::c(st.w, st.bits), Arg::c(1, 1)};
             t_.push(-1, w);
         }
+        if (e.init == 2) global_harness(p, *e.g, name);
     }
     pending_.clear();
 }
@@ -608,7 +625,7 @@ Arg MemTr::global(const std::string& name) {
     if (stream) init = 1;
     else if (g->external) init = 2;
     else if (g->is_const || t_.options().globals_initial) init = 1;
-    if (!g->is_const) t_.fn().mutable_globals = true;
+    if (!g->is_const) note_mutable_global(t_.fn(), name);
     // Large tables with many non-zero entries: arbitrary initialised bytes (an
     // over-approximation, never a wrong proof). The zero fill itself is one
     // memory entry whatever the size, so a large all-zero (or mostly zero)
@@ -616,17 +633,20 @@ Arg MemTr::global(const std::string& name) {
     bool big = init == 1 && size > 4096 && !g->init.empty() &&
                init_stores(g->ty, g->init[0].v, kMaxInitStores + 1) > kMaxInitStores;
     if (big) init = 2;
+    const uint64_t pad = init == 2 && !stream ? list_pad(*g, name) : 0;
     Stmt s;
     s.kind = Stmt::Alloc;
-    s.dst = t_.newvar("@" + name, ptr_w());
-    s.args = {c64(size)};
+    s.dst = t_.newvar("@" + name + (pad ? ".padded" : ""), ptr_w());
+    s.args = {c64(size + pad)};
     s.mkind = g->is_const ? MemKind::Const : MemKind::Static;
     s.init = init;
     s.align = std::max(g->align, lay_.align(g->ty));
     s.msg = "@" + name;
     t_.push(-1, s);
     Arg p = Arg::v(s.dst, ptr_w());
+    if (pad) p = ptr_add(-1, p, c64(pad), t_.newvar("@" + name, ptr_w()));
     globals_[name] = p;
+    if (init == 2 && !stream) global_harness(p, *g, name);
     if (stream) {
         // stdin/stdout/stderr point to valid FILE objects
         auto f = alloc(-1, c64(216), MemKind::File, 2, name, 0);
@@ -638,6 +658,39 @@ Arg MemTr::global(const std::string& name) {
         emit_init(p, 0, g->ty, g->init[0].v, name);
     }
     return p;
+}
+
+// --pir-global-harness (kernel mode): a pointer global the unit's init / probe code sets (an MMIO base, a bus handle, a
+// driver's singleton) is a valid object at entry instead of arbitrary bytes (NULL included). Only a scalar `ptr`
+// global, not const, with arbitrary entry contents (never in the initial-values recheck); the pointee is
+// kGlobalHarnessBytes arbitrary initialised bytes. One named assumption per global.
+void MemTr::global_harness(Arg p, const ir::Global& g, const std::string& name) {
+    const auto& o = t_.options();
+    if (!o.global_harness || o.kernel_api.empty() || o.globals_initial || g.is_const) return;
+    if (g.ty.kind == ir::Type::Struct && g.ty.text == "%struct.list_head" && o.global_harness_deep) {
+        t_.list_head_harness(p, name);  // --pir-global-harness-deep: a static LIST_HEAD (translate.cpp)
+        return;
+    }
+    if (g.ty.kind != ir::Type::Ptr) return;
+    constexpr uint64_t kGlobalHarnessBytes = uint64_t{1} << 20;
+    auto obj = alloc(-1, c64(kGlobalHarnessBytes), MemKind::Extern, 2, "@" + name + " (global harness)", 0);
+    Stmt st;
+    st.kind = Stmt::Store;
+    st.args = {p, obj, Arg::c(1, 1)};
+    t_.push(-1, st);
+    const std::string a = "global harness: @" + name + " (a mutable pointer global) points at entry to a valid object of " +
+                          std::to_string(kGlobalHarnessBytes) +
+                          " arbitrary bytes (the unit's init / probe code set it; not checked here)";
+    auto& as = t_.fn().assumptions;
+    if (std::ranges::find(as, a) == as.end()) as.push_back(a);
+    if (o.global_harness_deep) t_.global_harness_nest(obj, name);  // pointer fields of the object (translate.cpp)
+}
+
+uint64_t MemTr::list_pad(const ir::Global& g, const std::string& name) {
+    const auto& o = t_.options();
+    if (!o.global_harness || !o.global_harness_deep || o.kernel_api.empty() || o.globals_initial || g.is_const) return 0;
+    if (g.ty.kind != ir::Type::Struct || g.ty.text != "%struct.list_head") return 0;
+    return t_.list_head_pad(name);
 }
 
 uint64_t MemTr::init_stores(const ir::Type& ty, const ir::Value& v, uint64_t cap) const {
@@ -655,6 +708,7 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
     switch (v.kind) {
         case ir::Value::Int: {
             auto w = value_width(ty, "initializer of");
+            if (w > 64 && v.hi != 0) throw Unenc{"UNENCODED: initializer of " + ty.text + " with bits above 63"};
             if (v.bits != 0) put(offs, Arg::c(w, v.bits));
             return;
         }
@@ -685,6 +739,10 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
             if ((v.ce_op == "inttoptr" || v.ce_op == "bitcast") && !v.elems.empty() &&
                 v.elems[0].v.kind == ir::Value::Int && v.elems[0].v.bits == 0)
                 return;
+            if (t_.options().addr_values && (v.ce_op == "inttoptr" || v.ce_op == "ptrtoint" || v.ce_op == "bitcast")) {
+                put(offs, const_addr(-1, v, 0));
+                return;
+            }
             throw Unenc{"UNENCODED: initializer of @" + gname + " (" + v.ce_op + " constant expression)"};
         case ir::Value::Str:
             for (std::size_t k = 0; k < v.bytes.size(); ++k)
@@ -710,6 +768,47 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
     }
 }
 
+Arg MemTr::const_addr(int b, const ir::Value& ce, int line) {
+    if (ce.elems.empty()) throw Unenc{"UNENCODED: constant " + ce.ce_op};
+    const auto& e = ce.elems[0];
+    auto note = [&](const std::string& s) {
+        auto& as = t_.fn().assumptions;
+        if (std::find(as.begin(), as.end(), s) == as.end()) as.push_back(s);
+    };
+    // the pointer a ptrtoint / bitcast operand denotes
+    auto pointer_of = [&](const ir::Operand& o) -> Arg {
+        switch (o.v.kind) {
+            case ir::Value::Global: return global(o.v.name);
+            case ir::Value::Null: return c64(0);
+            case ir::Value::ConstExpr:
+                if (o.v.ce_op == "getelementptr") return const_gep(b, o.v, line);
+                if (o.v.ce_op == "inttoptr" || o.v.ce_op == "ptrtoint" || o.v.ce_op == "bitcast") return const_addr(b, o.v, line);
+                break;
+            default: break;
+        }
+        throw Unenc{"UNENCODED: constant " + ce.ce_op + " of " + o.v.text};
+    };
+    if (ce.ce_op == "inttoptr") {
+        if (e.v.kind == ir::Value::Int) {
+            if (e.v.bits == 0) return c64(0);
+            note("addr-values: the integer constant " + std::to_string(e.v.bits) +
+                 " used as a pointer (inttoptr) is a value that points to no object (its dereference is reported; an ERR_PTR-style marker "
+                 "compares only by value)");
+            return c64(e.v.bits);
+        }
+        if (e.v.kind == ir::Value::ConstExpr && e.v.ce_op == "ptrtoint") return const_addr(b, e.v, line);  // round trip
+        throw Unenc{"UNENCODED: constant inttoptr of " + e.v.text};
+    }
+    if (ce.ce_op == "ptrtoint") {
+        if (ce.ce_ty.kind != ir::Type::Int || ce.ce_ty.bits != ptr_w()) throw Unenc{"UNENCODED: ptrtoint (address values are not modelled)"};
+        note("addr-values: a constant ptrtoint is the packed (object, offset) representation of the pointer; the absolute address of an "
+             "object is not modelled (pointer differences are checked, alignment of an address is not known)");
+        return pointer_of(e);
+    }
+    if (ce.ce_op == "bitcast" && ce.ce_ty.kind == ir::Type::Ptr && e.ty.kind == ir::Type::Ptr) return pointer_of(e);
+    throw Unenc{"UNENCODED: constant expression " + ce.ce_op};
+}
+
 Arg MemTr::const_gep(int b, const ir::Value& ce, int line) {
     (void)line;
     if (ce.elems.empty()) throw Unenc{"UNENCODED: constant getelementptr"};
@@ -718,6 +817,9 @@ Arg MemTr::const_gep(int b, const ir::Value& ce, int line) {
     if (bo.v.kind == ir::Value::Global) base = global(bo.v.name);
     else if (bo.v.kind == ir::Value::Null) base = c64(0);
     else if (bo.v.kind == ir::Value::ConstExpr && bo.v.ce_op == "getelementptr") base = const_gep(b, bo.v, line);
+    else if (t_.options().addr_values && bo.v.kind == ir::Value::ConstExpr &&
+             (bo.v.ce_op == "inttoptr" || bo.v.ce_op == "bitcast"))
+        base = const_addr(b, bo.v, line);
     else throw Unenc{"UNENCODED: constant getelementptr on " + bo.v.text};
     i128 total(0);
     const ir::Type* t = &ce.ce_ty;
@@ -743,8 +845,20 @@ Arg MemTr::const_gep(int b, const ir::Value& ce, int line) {
     }
     if (total == i128(0)) return base;
     const i128 lim = i128_from_i64(max_obj_size());
-    if (total > lim || total < i128_neg(lim))
+    if (total > lim || total < i128_neg(lim)) {
+        // --pir-addr-values: an absolute address (inttoptr of a constant, or null) plus a constant beyond the
+        // object-size range is another absolute address, a constant that points to no object: every access through
+        // it is a violation, and one that rests on the address model is NEEDS-HARNESS (stage_mem.cpp)
+        if (t_.options().addr_values && base.is_const) {
+            const std::string s = "addr-values: a constant address plus a constant offset beyond any object is an absolute "
+                                  "address that points to no object (its value is not modelled)";
+            auto& as = t_.fn().assumptions;
+            if (std::find(as.begin(), as.end(), s) == as.end()) as.push_back(s);
+            const auto off = static_cast<uint64_t>(i128_to_i64(total));  // two's complement: wraps like the address
+            return Arg::c(ptr_w(), base.bits + off);
+        }
         throw Unenc{"UNENCODED: constant pointer offset out of range"};
+    }
     mark_memory();
     return ptr_add(b, base, c64(static_cast<uint64_t>(i128_to_i64(total))));
 }
@@ -1064,7 +1178,7 @@ void MemTr::memset_(int b, Arg dst, Arg byte, Arg len, int line) {
     t_.push(b, s);
 }
 
-Arg MemTr::alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst) {
+Arg MemTr::alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst, unsigned align) {
     (void)line;
     mark_memory();
     Arg n = to_pw(b, size, false, "oob", "MEM-OOB-READ", "length", line);
@@ -1076,9 +1190,14 @@ Arg MemTr::alloc(int b, Arg size, MemKind k, int init, const std::string& what, 
     s.args = {n};
     s.mkind = k;
     s.init = init;
-    s.align = 16;
+    s.align = align;
     s.msg = what;
     t_.push(b, s);
+    // an object assumed into existence (Function::invented_objects): Extern, not a harness or contract object of the
+    // root's parameters, not a byte-copy temporary (lifetime start, havocked input bytes) whose pointer never escapes
+    if (k == MemKind::Extern && !what.ends_with("(auto harness)") && !what.ends_with("(contract)") &&
+        what != "indeterminate bytes (lifetime start)" && what != "input bytes")
+        t_.fn().invented_objects = true;
     return Arg::v(s.dst, ptr_w());
 }
 
@@ -1164,6 +1283,74 @@ void MemTr::stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int 
              "returns a pointer to its own stack object (dangling after the return)", line);
 }
 
+void MemTr::obligation_object(int b, Arg p, uint64_t bytes, uint64_t member_off, unsigned align, bool check_init,
+                              const std::vector<Arg>& own, const std::string& what, int line) {
+    mark_memory();
+    const char* C = "HARNESS-OBLIGATION";
+    Arg kind = t_.assign(b, Op::ObjKind, 8, {p}, "kind");
+    Arg live = t_.assign(b, Op::ObjLive, 1, {p}, "live");
+    Arg size = t_.assign(b, Op::ObjSize, ptr_w(), {p}, "size");
+    Arg oal = t_.assign(b, Op::ObjAlign, ptr_w(), {p}, "oal");
+    Arg f = off(b, p);
+    t_.check(b, p2(b, Op::Eq, kind, Arg::c(8, 0)), "ob-null", C, what + " is null or does not point to an object", line);
+    // ob-origin: the harness object of the callee is fresh, distinct from every global and from every object PRISM
+    // assumes into existence (global harness, `current`, field-invariant objects, unknown-call results). A real argument
+    // honours that only if it is a local, a heap allocation, or (by the caller's own discharge, which checks the same
+    // rule one level up) one of the caller's harness objects. Anything else (Static, Const, Extern not in `own`, File)
+    // is a violation: conservative about aliasing.
+    {
+        auto K = [&](MemKind m) { return Arg::c(8, static_cast<uint64_t>(m)); };
+        Arg ok = bor(b, p2(b, Op::Eq, kind, K(MemKind::Stack)),
+                     bor(b, p2(b, Op::Eq, kind, K(MemKind::Heap)),
+                         bor(b, p2(b, Op::Eq, kind, K(MemKind::New)), p2(b, Op::Eq, kind, K(MemKind::NewArr)))));
+        Arg po = obj(b, p);
+        for (const auto& o : own) ok = bor(b, ok, p2(b, Op::Eq, po, obj(b, o)));
+        t_.check(b, band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)), p2(b, Op::Eq, ok, Arg::c(1, 0))), "ob-origin", C,
+                 what + " points to an object that is not a local, a heap allocation or one of the caller's own harness "
+                        "objects (a global, or an object PRISM assumed); the callee's proof took its objects to be "
+                        "distinct from every such object",
+                 line);
+    }
+    t_.check(b, band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)), p2(b, Op::Eq, live, Arg::c(1, 0))), "ob-dead", C,
+             what + " points to a freed object or one whose lifetime ended", line);
+    t_.check(b, p2(b, Op::Ne, f, c64(member_off)), "ob-offset", C,
+             what + (member_off ? " is not at byte " + std::to_string(member_off) + " of its object (container_of)"
+                                : std::string(" does not point to the start of its object")),
+             line);
+    t_.check(b, p2(b, Op::Ult, size, c64(bytes)), "ob-size", C,
+             what + " points to an object smaller than " + std::to_string(bytes) + " bytes", line);
+    t_.check(b, p2(b, Op::Ult, oal, c64(align)), "ob-align", C,
+             what + " points to an object aligned to less than " + std::to_string(align) + " bytes", line);
+    t_.check(b, p2(b, Op::Eq, kind, Arg::c(8, static_cast<uint64_t>(MemKind::Const))), "ob-const", C,
+             what + " points to a read-only object", line);
+    if (!check_init) return;
+    // every byte of the object initialised: loads of the object's own words, only their shadow masks are looked at
+    uint64_t pos = 0;
+    while (pos < bytes) {
+        const uint64_t left = bytes - pos;
+        const unsigned n = left >= 8 ? 8 : left >= 4 ? 4 : left >= 2 ? 2 : 1;
+        const int64_t delta = static_cast<int64_t>(pos) - static_cast<int64_t>(member_off);
+        Arg at = p;
+        if (delta != 0) {
+            int dst = t_.newvar("_obat" + std::to_string(t_.fn().vars.size()), ptr_w());
+            gep(b, dst, p, ir::parse_type("i8"), {Arg::c(64, static_cast<uint64_t>(delta))}, true, line);
+            at = Arg::v(dst, ptr_w());
+        }
+        const auto ty = ir::parse_type("i" + std::to_string(n * 8));
+        int v = t_.newvar("_obv" + std::to_string(t_.fn().vars.size()), n * 8);
+        int mask = load(b, v, ty, at, 1, line, false);
+        t_.check(b, p2(b, Op::Ne, Arg::v(mask, n), Arg::c(n, 0)), "ob-init", C,
+                 what + " points to an object with uninitialised bytes (at byte " + std::to_string(pos) + ")", line);
+        pos += n;
+    }
+}
+
+void MemTr::obligation_distinct(int b, Arg p, Arg q, const std::string& what, int line) {
+    t_.check(b, p2(b, Op::Eq, obj(b, p), obj(b, q)), "ob-distinct", "HARNESS-OBLIGATION",
+             what + ": two pointer arguments (or nested objects) point into the same object; the harness assumes distinct objects",
+             line);
+}
+
 Arg MemTr::obj_size_remaining(int b, Arg ptr) {
     mark_memory();
     Arg size = t_.assign(b, Op::ObjSize, ptr_w(), {ptr}, "size");
@@ -1175,6 +1362,29 @@ Arg MemTr::obj_size_remaining(int b, Arg ptr) {
 void MemTr::read_range(int b, Arg ptr, Arg len, int line) {
     Arg n = to_pw(b, len, false, "oob", "MEM-OOB-READ", "length", line);
     access_checks(b, ptr, n, false, 1, line, p2(b, Op::Ne, n, c64(0)));
+}
+
+void MemTr::contract_valid(int b, Arg p, Arg n, bool write, const std::string& what, int line) {
+    mark_memory();
+    Arg guard = p2(b, Op::Ne, n, c64(0));
+    auto G = [&](Arg c) { return band(b, guard, c); };
+    Arg o = obj(b, p);
+    Arg f = off(b, p);
+    Arg kind = t_.assign(b, Op::ObjKind, 8, {p}, "kind");
+    Arg live = t_.assign(b, Op::ObjLive, 1, {p}, "live");
+    Arg size = t_.assign(b, Op::ObjSize, ptr_w(), {p}, "size");
+    const char* C = "FUNC-CONTRACT";
+    t_.check(b, G(p2(b, Op::Eq, o, c64(0))), "callee-null", C, what + ": the pointer is null", line);
+    t_.check(b, G(band(b, p2(b, Op::Ne, o, c64(0)), p2(b, Op::Eq, kind, Arg::c(8, 0)))), "callee-wild", C,
+             what + ": the pointer does not point to any object", line);
+    t_.check(b, G(band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)), p2(b, Op::Eq, live, Arg::c(1, 0)))), "callee-uaf", C,
+             what + ": the object is freed or out of its lifetime", line);
+    Arg end = t_.assign(b, Op::Add, ptr_w(), {f, n}, "end");
+    Arg oob = bor(b, p2(b, Op::Ugt, end, size), p2(b, Op::UAddOvf, f, n));
+    t_.check(b, G(band(b, live, oob)), "callee-oob", C, what + ": the object is smaller than the required range", line);
+    if (write)
+        t_.check(b, G(band(b, live, p2(b, Op::Eq, kind, Arg::c(8, static_cast<uint64_t>(MemKind::Const))))), "callee-const",
+                 C, what + ": the object is read-only but the contract requires it writable", line);
 }
 
 void MemTr::write_havoc(int b, Arg ptr, Arg len, int line) {
@@ -1214,6 +1424,35 @@ void MemTr::stack_restore(int b, Arg token) {
     s.kind = Stmt::StackRestore;
     s.args = {token};
     t_.push(b, s);
+}
+
+// Every object's contents become arbitrary (an asm with a "memory" clobber: it may
+// write any memory; translate_kernel.inc). Stmt::MemHavoc: no violation, and the
+// object metadata (sizes, liveness, kinds) is unchanged.
+void MemTr::havoc_all(int b) {
+    mark_memory();
+    Stmt s;
+    s.kind = Stmt::MemHavoc;
+    t_.push(b, s);
+}
+
+// The object `ptr` points into, from `ptr` to its end, is written with arbitrary
+// bytes (an unspecified callee or an asm with a memory effect: kernel mode,
+// translate_kernel.inc). Never a violation: a pointer to no object, a freed
+// object, a read-only object (kind Const) or a FILE leaves memory unchanged
+// (length 0), so passing a string literal or NULL to an unspecified call is not
+// reported as a write.
+void MemTr::havoc_object_tail(int b, Arg ptr, int line) {
+    mark_memory();
+    Arg kind = t_.assign(b, Op::ObjKind, 8, {ptr}, "kind");
+    Arg live = t_.assign(b, Op::ObjLive, 1, {ptr}, "live");
+    Arg rem = obj_size_remaining(b, ptr);
+    Arg writable = band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)),
+                        band(b, p2(b, Op::Ne, kind, Arg::c(8, static_cast<uint64_t>(MemKind::Const))),
+                             p2(b, Op::Ne, kind, Arg::c(8, static_cast<uint64_t>(MemKind::File)))));
+    Arg guard = band(b, live, writable);
+    Arg n = t_.assign(b, Op::Select, ptr_w(), {guard, rem, c64(0)}, "tail");
+    write_havoc(b, ptr, n, line);
 }
 
 }  // namespace prism::pir::pirmem

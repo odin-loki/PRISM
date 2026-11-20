@@ -25,13 +25,19 @@
 #include "prism/clock.hpp"
 #include "prism/settings.hpp"
 #include "prism/membudget.hpp"
+#include "prism/exec.hpp"
 #include "prism/pir.hpp"
 
 #include "fp.hpp"
 #include "memory.hpp"
 #include "idioms/idioms.hpp"
+#ifdef PRISM_HAS_CUDA
+#include "prism/cuda_inv.hpp"
+#endif
 
 #include <cstdlib>
+#include <cctype>
+#include <stdexcept>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -48,6 +54,10 @@
 #include <sstream>
 #include <string_view>
 #include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <fstream>
+#include <mutex>
 #include <unordered_map>
 
 #ifdef PRISM_HAS_Z3
@@ -282,6 +292,9 @@ struct WriteInst {
     // copies and checked pointer arithmetic (each stays in the object of the
     // next; loop-cut footprints, houdini.inc)
     std::vector<int> chain;
+    // a whole-memory write (Stmt::MemHavoc): obj is nullopt and const objects
+    // may change too
+    bool all_mem = false;
 };
 
 // Write footprint of the k-induction loop (docs/PIR.md "k-induction with
@@ -292,6 +305,7 @@ struct WriteInst {
 // "initialised before or arbitrary"; otherwise it is arbitrary.
 struct Footprint {
     bool all = false;
+    bool all_mem = false;  // all, and const objects too (a loop with Stmt::MemHavoc)
     std::set<uint64_t> objs;
     bool keep_init = true;
     // loop-cut mode only: the objects these pointer variables (defined
@@ -301,6 +315,21 @@ struct Footprint {
 };
 
 struct Encoding {
+    // Freeing the encoding is no reason for the memory watchdog's hard stop
+    // (membudget::teardown_begin): ~Encoding starts the teardown, and this
+    // first member, destroyed after every other one, ends it.
+    struct TeardownEnd {
+        bool on = false;  // set by ~Encoding (not when the constructor threw)
+        ~TeardownEnd() {
+            if (on) membudget::teardown_end();
+        }
+    } teardown_end_;
+    ~Encoding() {
+        membudget::teardown_begin();
+        teardown_end_.on = true;
+    }
+    Encoding(const Encoding&) = delete;
+    Encoding& operator=(const Encoding&) = delete;
     z3::context& c;
     const Function& fn;
     const CfgInfo& g;
@@ -375,6 +404,7 @@ struct Encoding {
                 for (auto& s : b.stmts)
                     if ((s.kind == Stmt::Load || s.kind == Stmt::Store) && s.tag) tags = true;
             mem.emplace(c, eo.memory, tags, assumptions);
+            if (eo.memory == MemEncoding::Bv && eo.havoc_uf) mem->set_havoc_uf(true);
         }
     }
 
@@ -420,6 +450,10 @@ struct Encoding {
                 M().set(r, p, arg(1), arg(2));
                 break;
             }
+            case Stmt::MemHavoc:
+                writes.push_back(WriteInst{nodes.at(static_cast<std::size_t>(id)).block, std::nullopt, false, {}, true});
+                M().havoc_all(r);
+                break;
             case Stmt::StackSave: m.insert_or_assign(s.dst, M().stack_save()); break;
             case Stmt::StackRestore: M().stack_restore(r, arg(0)); break;
             default: break;
@@ -492,6 +526,9 @@ struct Encoding {
     }
 
     z3::expr bv(uint64_t v, unsigned w) { return c.bv_val(static_cast<uint64_t>(v & wmask(w)), w); }
+    // INT_MIN and -1 at any width (the 64-bit constants of bv() only reach 64 bits; --pir-wide-int has 65..128)
+    z3::expr smin_bv(unsigned n) { return z3::shl(c.bv_val(1, n), c.bv_val(n - 1, n)); }
+    z3::expr ones_bv(unsigned n) { return ~c.bv_val(0, n); }
     z3::expr b2bv(const z3::expr& b) { return z3::ite(b, c.bv_val(1, 1), c.bv_val(0, 1)); }
     z3::expr is1(const z3::expr& e) { return e == c.bv_val(1, 1); }
 
@@ -542,6 +579,7 @@ struct Encoding {
             // 2.1 -> 3.8 GB here in one second (budget 3000 MB).
             if (membudget::over_budget_sampled(64))
                 throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached while unrolling");
+            mem::encode_budget_check("unrolling");
             int id = q.front();
             q.pop_front();
             auto nb = nodes.at(static_cast<std::size_t>(id));  // a copy: node_id grows nodes
@@ -595,14 +633,16 @@ struct Encoding {
         for (int id : order) {
             static const bool tr_on = prism::settings::mem_trace().is_set();
             const uint64_t r0 = tr_on ? membudget::rss_mb() : 0;
+            mem::encode_budget_check("encoding the unrolled program");
             encode_node(id, out_edges.at(static_cast<std::size_t>(id)));
             if (tr_on && membudget::rss_mb() > r0 + 100)
                 std::fprintf(stderr, "[memtrace] node %d of %zu +%llu MB\n", id, order.size(),
                              static_cast<unsigned long long>(membudget::rss_mb() - r0));
         }
         if (prism::settings::mem_trace().is_set())
-            std::fprintf(stderr, "[memtrace] build done nodes=%zu rss=%llu\n", nodes.size(),
-                         static_cast<unsigned long long>(membudget::rss_mb()));
+            std::fprintf(stderr, "[memtrace] build done nodes=%zu rss=%llu side=%zu %s\n", nodes.size(),
+                         static_cast<unsigned long long>(membudget::rss_mb()), assumptions.size(),
+                         mem ? mem->stats_line().c_str() : "");
     }
 
     // A use outside the loop of its definition. LLVM's LCSSA form never has
@@ -743,7 +783,7 @@ struct Encoding {
             case Op::UMulOvf: return b2bv(!z3::bvmul_no_overflow(a.at(0), a.at(1), false));
             case Op::SDivOvf: {
                 unsigned n = aw(0);
-                return b2bv(a.at(0) == bv(uint64_t{1} << (n - 1), n) && a.at(1) == bv(wmask(n), n));
+                return b2bv(a.at(0) == smin_bv(n) && a.at(1) == ones_bv(n));
             }
             case Op::ShiftOob: return b2bv(z3::uge(a.at(1), bv(aw(0), aw(1))));
             case Op::ShlSOvf: {
@@ -775,7 +815,7 @@ struct Encoding {
             }
             case Op::InexactS: {
                 unsigned n = aw(0);
-                auto ovf = a.at(0) == bv(uint64_t{1} << (n - 1), n) && a.at(1) == bv(wmask(n), n);
+                auto ovf = a.at(0) == smin_bv(n) && a.at(1) == ones_bv(n);
                 return b2bv(a.at(1) != bv(0, n) && !ovf && z3::srem(a.at(0), a.at(1)) != bv(0, n));
             }
             case Op::ObjSize: return M().size(a.at(0));
@@ -958,7 +998,7 @@ struct Encoding {
             // the memory the loop may have written since the prefix: arbitrary
             std::vector<uint64_t> ids(step_fp.objs.begin(), step_fp.objs.end());
             step_havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, step_fp.all,
-                                               step_fp.keep_init);
+                                               step_fp.keep_init, step_fp.all_mem);
         }
         std::vector<std::pair<int, z3::expr>> phi_vals;
         for (auto& p : bl.phis) {
@@ -1004,7 +1044,8 @@ struct Encoding {
             const auto& fpL = loop_fp.at(static_cast<std::size_t>(cut_L));
             if (mem && !fpL.empty()) {
                 std::vector<uint64_t> ids(fpL.objs.begin(), fpL.objs.end());
-                CL.havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, fpL.all, fpL.keep_init);
+                CL.havocked = mem->havoc_objects(reach.at(static_cast<std::size_t>(id)), ids, fpL.all, fpL.keep_init,
+                                                 fpL.all_mem);
                 if (!fpL.all) {
                     std::vector<z3::expr> ptrs;
                     for (int bv : fpL.base_vars) ptrs.push_back(lookup(Arg::v(bv, ptr_w()), id));
@@ -1228,6 +1269,7 @@ bool footprint_covers(const Footprint& fp, const std::vector<WriteInst>& writes,
     for (auto& w : writes) {
         if (!body.at(static_cast<std::size_t>(w.block))) continue;
         if (fp.keep_init && !w.inits) return false;
+        if (w.all_mem && !fp.all_mem) return false;
         if (fp.all) continue;
         if (!w.obj || !fp.objs.count(*w.obj)) return false;
     }
@@ -1240,6 +1282,7 @@ Footprint footprint_of(const std::vector<WriteInst>& writes, const std::vector<c
     for (auto& w : writes) {
         if (!body.at(static_cast<std::size_t>(w.block))) continue;
         if (!w.inits) fp.keep_init = false;
+        if (w.all_mem) fp.all_mem = true;
         if (w.obj) fp.objs.insert(*w.obj);
         else fp.all = true;
     }
@@ -1555,6 +1598,15 @@ bool checker_ran_out(const solver::SolveResult& r) {
            r.note.find("ran out of memory") != std::string::npos || r.note.find("was killed (SIGKILL") != std::string::npos;
 }
 
+// PRISM_PIR_CHC, or the build's default (-DPRISM_PIR_CHC_DEFAULT=data: a
+// test build that gates the CHC round with every suite; unset in releases)
+static const char* chc_env() {
+    const char* e = std::getenv("PRISM_PIR_CHC");
+#ifdef PRISM_PIR_CHC_DEFAULT
+    if (!e) e = PRISM_PIR_CHC_DEFAULT;
+#endif
+    return e;
+}
 #include "houdini.inc"
 
 }  // namespace
@@ -2169,6 +2221,20 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     }
     auto done = [&](Verdict& r) -> Verdict {
         add_metrics(r, meter, rc);
+        // PRISM_PIR_CHC_DIFF=1 (the over-approximation test, docs/PIR.md
+        // "Loop proofs by CHC"): a FAILED function's CHC system must not be
+        // solved "safe" by Spacer. Diagnostics only; never changes the verdict.
+        const bool chc_diff = [] {
+            const char* d = std::getenv("PRISM_PIR_CHC_DIFF");
+            return d && std::string(d) == "1";
+        }();
+        if (chc_diff && r.status == std::string(laws::FAILED)) {
+            try {
+                r.extra["chc_differential"] = chc_differential_of(fn, opt.encode, std::max(1.0, opt.timeout_s));
+            } catch (...) {
+                r.extra["chc_differential"] = "error";
+            }
+        }
         return r;
     };
     if (opt.certified || opt.unwind <= kFirstUnwind + 1) {
@@ -2381,10 +2447,48 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     }
     race.stop(ks);
     race.stop(hs);
+    // A counterexample of the CHC system (chc.inc) is not a verdict: it is
+    // replayed by the bounded encoding at deeper unwinds, and only that
+    // encoding's own FAILED is reported. A single loop is replayed by the
+    // deepening below; several loops here (doubling up to the deepening
+    // limit while the budget lasts).
+    const bool chc_cex = full.extra.count("chc_cex") != 0;
+    if (chc_cex && !deepen && next == "houdini" && full.status == std::string(laws::BOUNDED)) {
+        const CheckOptions dopt = own_clock(opt.function_budget ? opt.function_budget->left() : 0);
+        for (int u = opt.unwind * 2; u <= std::max(deepen_max, opt.unwind * 2); u *= 2) {
+            if (dopt.function_budget && dopt.function_budget->left() < opt.timeout_s) {
+                full.extra["chc_replay"] = "stopped before unwind " + std::to_string(u) + " (function budget)";
+                break;
+            }
+            if (rcd.units_total > 0 && rcd.units_left() < rcd.cx.units(opt.timeout_s)) break;
+            if (z3_exhausted()) break;
+            CheckOptions d = dopt;
+            d.unwind = u;
+            Verdict dv = check_function_at(fn, d, rcd);
+            if (dv.status == std::string(laws::FAILED)) {
+                meter.merge(md);
+                dv.extra["unwind_requested"] = std::to_string(opt.unwind);
+                dv.extra["unwind_deepened_to"] = std::to_string(u);
+                dv.extra["chc"] = full.extra["chc"];
+                dv.extra["chc_replay"] = "FAILED at unwind " + std::to_string(u) + " (the bounded encoding's own counterexample)";
+                return done(dv);
+            }
+            if (dv.status != std::string(laws::BOUNDED)) {
+                full.extra["chc_replay"] = "stopped at unwind " + std::to_string(u) + " (" + dv.status + ")";
+                break;
+            }
+            full.extra["chc_replay"] = "BOUNDED up to unwind " + std::to_string(u) + " (counterexample not reproduced)";
+        }
+        meter.merge(md);
+    }
     if (deepen) {
         race.join(ds);
         meter.merge(md);
-        if (deep) return done(*deep);
+        if (deep) {
+            if (chc_cex && deep->status == std::string(laws::FAILED))
+                deep->extra["chc_replay"] = "FAILED by the deepening (the bounded encoding's own counterexample)";
+            return done(*deep);
+        }
         if (!deep_bounded.empty()) full.extra["unwind_deepened_to"] = deep_bounded.back() + " (BOUNDED)";
     }
     return done(full);
@@ -2398,6 +2502,13 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
     // pointers): an ILP32 proof is the solver's, never PROVED-CERTIFIED.
     CheckOptions opt_ilp = opt_in;
     if (fn.ptr.w != 64) opt_ilp.certified = false;
+    // Havoc reads as functions (docs/PIR.md): $PRISM_PIR_HAVOC_UF overrides
+    // the option; certified mode needs QF_BV, so it keeps the pairwise
+    // constraints. Every encoding of this function (Houdini's and the
+    // k-induction step's too) uses the same choice.
+    if (const char* hu = prism::settings::cstr(prism::settings::pir_havoc_uf()); hu && *hu)
+        opt_ilp.encode.havoc_uf = std::string(hu) != "0";
+    if (opt_ilp.certified) opt_ilp.encode.havoc_uf = false;
     const CheckOptions& opt = opt_ilp;
     const EncodeOptions& eo = opt.encode;
     Verdict v;
@@ -2480,6 +2591,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         if (g.loops.empty()) return false;
         if (loops_allocate()) {
             r.extra["invariants_note"] = "not attempted (allocation or free in a loop)";
+            r.extra["loop_alloc"] = loop_alloc_summary(fn, g);
             return false;
         }
         // Every VC is answered (the verdict is BOUNDED): a spent function
@@ -2525,7 +2637,12 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         }
         const prism::clock::Stopwatch th;
         Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s, hl);
-        auto h = hd.run();
+        // PRISM_PIR_CHC=only: the CHC round alone, without the template search (measurements, tests)
+        const bool chc_only = [] {
+            const char* ce = chc_env();
+            return ce && std::string(ce) == "only";
+        }();
+        auto h = chc_only ? HoudiniOut{} : hd.run();
         rc.units_spent += h.units;
         if (rc.meter) {
             rc.meter->add(cxl::Phase::Houdini, h.units, false);
@@ -2555,6 +2672,63 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         if (h.concrete_runs > 0)
             r.extra["houdini_concrete"] = std::to_string(h.concrete_dropped) + " of " + std::to_string(h.candidates) +
                                           " candidate(s) falsified by " + std::to_string(h.concrete_runs) + " concrete run(s)";
+        // Loop proofs by CHC (chc.inc, docs/PIR.md "Loop proofs by CHC
+        // (Spacer)"): PRISM_PIR_CHC=1|data asks Spacer after the template
+        // search. Its invariant becomes candidates that Houdini's own base,
+        // step and final queries re-check; only that proof counts. A
+        // counterexample of the CHC system is not a verdict (check_function
+        // replays it with the bounded encoding).
+        if (!h.proved && !(rc.stop && rc.stop->load())) {
+            const int chc_mode = [] {  // read per function (doctests set it)
+                const char* ce = chc_env();
+                const std::string s = ce ? ce : "";
+                return s.empty() || s == "0" ? 0 : s == "data" ? 2 : 1;  // 1, only: Spacer
+            }();
+            // outside candidates (PRISM_PIR_LOOP_CANDIDATES) without PRISM_PIR_CHC: mode 4, Houdini over them alone
+            const int chc_mode_eff = chc_mode > 0 ? chc_mode
+                                     : !houdini_data::ext_candidates_for(fn.name).empty() ? 4 : 0;
+            if (chc_mode_eff > 0) {
+                if (budget_out()) {
+                    r.extra["chc"] = fn_budget_note(r);
+                } else {
+                    double hard2 = fn_budget ? std::max(0.0, fn_budget->left()) : -1;
+                    HoudiniLimits hl2 = hl;
+                    if (rc.cx.on()) {
+                        hl2.hard_wall_s = hard2;
+                        hard2 = rc.units_total > 0 ? static_cast<double>(rc.units_left()) / rc.cx.u : -1;
+                    }
+                    const prism::clock::Stopwatch tc;
+                    Houdini hc(fn, g, eo, timeout_s, !rc.cx.on() && hard2 >= 0 ? hard2 : -1, HoudiniEnv{}, hard2, hl2);
+                    auto h2 = hc.run_chc(chc_mode_eff);
+                    rc.units_spent += h2.units;
+                    if (rc.meter) {
+                        rc.meter->add(cxl::Phase::Houdini, h2.units, false);
+                        rc.meter->queries[static_cast<std::size_t>(cxl::Phase::Houdini)] += static_cast<std::uint64_t>(h2.queries);
+                    }
+                    char cb[32];
+                    std::snprintf(cb, sizeof cb, "%.2f", tc.elapsed_s());
+                    r.extra["chc_seconds"] = cb;  // the whole CHC round: Spacer, data candidates, re-check
+                    r.extra["chc"] = h2.chc.empty() ? "not asked: " + h2.why : h2.chc;
+                    if (h2.chc_s >= 0) {
+                        std::snprintf(cb, sizeof cb, "%.2f", h2.chc_s);
+                        r.extra["chc_spacer_seconds"] = cb;
+                    }
+                    if (!h2.data.empty()) r.extra["chc_data"] = h2.data;
+                    if (!h2.ext.empty()) r.extra["loop_candidates"] = h2.ext;
+                    if (h2.data_bounds_ms >= 0) {
+                        std::snprintf(cb, sizeof cb, "%.3f", h2.data_bounds_ms);
+                        r.extra["chc_data_bounds_ms"] = cb;
+                    }
+                    if (h2.data_cpu_ms >= 0) {
+                        std::snprintf(cb, sizeof cb, "%.3f", h2.data_cpu_ms);
+                        r.extra["chc_data_cpu_ms"] = cb;
+                    }
+                    if (h2.chc_cex) r.extra["chc_cex"] = "true";
+                    if (h2.proved) h = std::move(h2);
+                    else r.extra["chc_note"] = "no proof: " + h2.why;
+                }
+            }
+        }
         if (!h.proved) {
             r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
             if (budget_out())
@@ -2588,6 +2762,15 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         r.extra["k_induction"] = "closed-invariants";
         r.extra["pir_invariants"] = inv.dump();
         r.extra["invariant_checker"] = "z3: Houdini over PIR templates + loop-cut induction (base and step)";
+        if (!h.engine.empty()) {
+            r.message = "every loop cut by " + std::to_string(n) + " inductive invariant(s) proposed by " + h.engine +
+                        " (CHC) and re-checked by Houdini (base, step and final query in PRISM's own solver); no "
+                        "property violated in the cut program; not a bounded-only result";
+            r.extra["invariant_checker"] =
+                "z3: Houdini base/step/final queries over the loop-cut encoding; invariant proposed by " + h.engine;
+            r.extra["invariant_engine"] = h.engine;
+            r.extra["invariant_size"] = std::to_string(h.inv_size);
+        }
         r.extra["invariant_footprint"] = h.footprint;
         r.extra["unwind_closed"] = "true";
         export_invariants(fn, g, h, r);
@@ -2596,6 +2779,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
                 "not certified: loop invariants are checked by Z3 alone; PROVED-UNBOUNDED is not certified";
         return true;
     };
+    std::atomic<bool> enc_fired{false};  // the encoder's budget timer interrupted Z3
     try {
         if (rc.mode == RunCtl::Mode::RefineH) {
             try_invariants(v);
@@ -2678,6 +2862,39 @@ const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
         Encoding e(c, fn, g, unwind, eo);
         {
             prism::membudget::Phase phase_b("encode: Encoding::build");
+            // The function budget holds while encoding too (memory.hpp). Not
+            // for the k-induction and Houdini strategies: they say themselves
+            // that a spent budget left them "not attempted", and the race
+            // merges that note, not a TIMEOUT, into the verdict.
+            const bool enc_guard = rc.mode != RunCtl::Mode::RefineK && rc.mode != RunCtl::Mode::RefineH;
+            mem::EncodeBudgetScope enc_budget(enc_guard ? fn_budget.get() : nullptr, fn_budget_n);
+            // One Z3 simplify of a long read-over-write chain can itself run
+            // for minutes between two guard checks: once the budget is spent
+            // the context is interrupted (the "canceled" exception is mapped
+            // to the budget TIMEOUT below).
+            struct EncTimer {
+                std::mutex mu;
+                std::condition_variable cv;
+                bool done = false;
+                std::thread t;
+                ~EncTimer() {
+                    {
+                        std::lock_guard<std::mutex> g(mu);
+                        done = true;
+                    }
+                    cv.notify_all();
+                    if (t.joinable()) t.join();
+                }
+            } enc_timer;
+            if (fn_budget && enc_guard)
+                enc_timer.t = std::thread([&c, &enc_timer, &enc_fired, b = fn_budget] {
+                    std::unique_lock<std::mutex> lk(enc_timer.mu);
+                    const auto left = std::chrono::duration<double>(std::max(0.0, b->left()));
+                    if (!enc_timer.cv.wait_for(lk, left, [&] { return enc_timer.done; })) {
+                        enc_fired.store(true);
+                        Z3_interrupt(c);
+                    }
+                });
             e.build();
         }
         if (rc.meter) {
@@ -2687,6 +2904,7 @@ const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
         }
         if (fn.uses_memory) {
             v.extra["memory"] = eo.memory == MemEncoding::Array ? "array" : "bv";
+            if (eo.memory == MemEncoding::Bv) v.extra["havoc_reads"] = eo.havoc_uf ? "functions" : "ackermann";
             v.extra["objects"] = std::to_string(e.mem->objects());
         }
         v.extra["instances"] = std::to_string(e.nodes.size());
@@ -3324,13 +3542,30 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
     } catch (const mem::EncodeError& f) {
         v.status = f.status;
         v.message = f.msg;
+        // the function budget ran out while encoding (EncodeBudgetScope)
+        if (fn_budget && f.status == std::string(laws::TIMEOUT)) v.extra["function_budget_s"] = fn_budget_n;
         return v;
     } catch (const z3::exception& ex) {
         const std::string m = ex.msg();
+        // the encoder's budget timer interrupted Z3 (EncTimer above)
+        if (enc_fired.load() && fn_budget && m.find("cancel") != std::string::npos) {
+            v.status = std::string(laws::TIMEOUT);
+            v.message = "pir function budget of " + fn_budget_n +
+                        " s spent while encoding (Z3 interrupted) (PRISM_FUNCTION_BUDGET)";
+            v.extra["function_budget_s"] = fn_budget_n;
+            return v;
+        }
         // memory_max_size (cap_z3_memory_once): no proof, and not a crash
         const bool soft = m.find("soft memory cap") != std::string::npos;
         const bool oom = soft || m.find("out of memory") != std::string::npos || m.find("max. memory") != std::string::npos;
         if (oom && !soft) g_z3_oom.store(true);  // past Z3's own limit: no more Z3 in this process
+        // which guard stopped it (the message below is built after the
+        // context is freed, so its RSS is not the peak): docs/PIR.md "Memory budget"
+        if (oom) v.extra["memory_stop"] = m + " (peak RSS " + std::to_string(membudget::peak_rss_mb()) + " MB)";
+        if (prism::settings::mem_trace().is_set())
+            std::fprintf(stderr, "[memtrace] stop: %s (rss now %llu, peak %llu)\n", m.c_str(),
+                         static_cast<unsigned long long>(membudget::rss_mb()),
+                         static_cast<unsigned long long>(membudget::peak_rss_mb()));
         v.status = std::string(oom ? laws::UNKNOWN : laws::ERROR);
         v.message = oom ? (soft ? membudget::over_message("while encoding or solving")
                                 : std::string("Z3 hard memory limit reached; no proof"))
@@ -3350,6 +3585,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
 std::vector<Vc> pir_vcs(const Function& fn, int unwind) {
     EncodeOptions eo;
     eo.memory = MemEncoding::Bv;  // QF_BV: the certified back end cannot take arrays
+    eo.havoc_uf = false;          // nor uninterpreted functions
     return pir_vcs(fn, unwind, eo);
 }
 

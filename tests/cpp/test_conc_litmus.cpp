@@ -1,0 +1,111 @@
+// Litmus suite for the conc stage's memory model (docs/KERNEL_MEMORY_MODEL.md).
+// Every tests/conc/litmus/*.c names its expected verdict on its first line:
+//   // EXPECT: FAILED   the forbidden-outcome assertion is reachable (outcome allowed)
+//   // EXPECT: BOUNDED  no violation within the bound (outcome forbidden)
+//   // EXPECT: NEEDS-HARNESS <assumption>  the BOUNDED claim would depend on a named
+//   //                     assumption the model does not discharge (docs/KERNEL_MEMORY_MODEL.md section 4)
+// The expected outcomes and their sources are cited in each file's header.
+
+#include <doctest/doctest.h>
+
+#include "prism/conc.hpp"
+#include "prism/config.hpp"
+#include "prism/laws.hpp"
+#include "prism/pir.hpp"
+#include "prism/pir/frontend.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+namespace {
+
+std::filesystem::path litmus_dir() {
+    return std::filesystem::path(PRISM_SOURCE_DIR) / "tests" / "conc" / "litmus";
+}
+
+bool have_frontend() {
+    prism::Config cfg;
+    return prism::pir::frontend_usable(cfg) && prism::pir::z3_available();
+}
+
+std::string expected_of(const std::filesystem::path& p) {
+    std::ifstream in(p);
+    std::string line;
+    std::getline(in, line);
+    const std::string tag = "// EXPECT: ";
+    if (line.compare(0, tag.size(), tag) != 0) return "";
+    std::string v = line.substr(tag.size());
+    std::string r;
+    for (char c : v) {
+        if (!std::isupper(static_cast<unsigned char>(c)) && c != '-') break;
+        r += c;
+    }
+    return r;
+}
+
+// The assumption named after NEEDS-HARNESS on the EXPECT line ("" if none).
+std::string assumption_of(const std::filesystem::path& p) {
+    std::ifstream in(p);
+    std::string line;
+    std::getline(in, line);
+    const auto at = line.find("NEEDS-HARNESS ");
+    if (at == std::string::npos) return "";
+    std::string r;
+    for (std::size_t i = at + std::string("NEEDS-HARNESS ").size(); i < line.size(); ++i) {
+        const char c = line[i];
+        if (!(std::islower(static_cast<unsigned char>(c)) || c == '-')) break;
+        r += c;
+    }
+    return r;
+}
+
+}  // namespace
+
+TEST_CASE("conc litmus: every test names a verdict and a source") {
+    std::vector<std::filesystem::path> files;
+    for (auto& e : std::filesystem::directory_iterator(litmus_dir()))
+        if (e.path().extension() == ".c") files.push_back(e.path());
+    std::sort(files.begin(), files.end());
+    REQUIRE(files.size() >= 10);
+    for (auto& f : files) {
+        const auto v = expected_of(f);
+        CAPTURE(f.string());
+        CHECK((v == "FAILED" || v == "BOUNDED" || v == "NEEDS-HARNESS"));
+    }
+}
+
+TEST_CASE("conc litmus: each result matches the published expected outcome") {
+    if (!have_frontend()) return;
+    std::vector<std::filesystem::path> files;
+    for (auto& e : std::filesystem::directory_iterator(litmus_dir()))
+        if (e.path().extension() == ".c") files.push_back(e.path());
+    std::sort(files.begin(), files.end());
+    for (auto& f : files) {
+        const auto want = expected_of(f);
+        CAPTURE(f.string());
+        prism::Config cfg;
+        cfg.timeout = 60;
+        auto all = prism::conc::check_file(f, cfg, prism::conc::Options{});
+        auto it = all.find("main");
+        REQUIRE_MESSAGE(it != all.end(), f.string());
+        const auto& r = it->second;
+        CAPTURE(r.message);
+        if (want == "FAILED") CHECK(r.status == prism::laws::FAILED);
+        if (want == "BOUNDED") CHECK(r.status == prism::laws::BOUNDED);
+        if (want == "NEEDS-HARNESS") {
+            // the verdict is withheld, and it names the assumption it would have depended on
+            // (no named assumption: the call is refused by the PIR translation, an UNENCODED reason)
+            const auto a = assumption_of(f);
+            CHECK(r.status == prism::laws::NEEDS_HARNESS);
+            if (a.empty())
+                CHECK(r.message.starts_with("UNENCODED:"));
+            else
+                CHECK(r.message.find("assumption " + a) != std::string::npos);
+        }
+        CHECK(r.status != prism::laws::PROVED);
+    }
+}

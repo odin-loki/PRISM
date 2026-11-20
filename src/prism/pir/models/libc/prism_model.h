@@ -47,6 +47,10 @@ void __prism_free(void *p, int kind);
 void __prism_free_check(void *p, int kind);
 void __prism_check(int ok, const char *cls, const char *msg);
 void __prism_assume(int cond);
+/* Kernel API specs (models/kernel/): the named assumption this use of the spec
+ * introduces; listed in the verdict's assumptions (a proof is PROVED-ASSUMING).
+ * The text must be a string literal. */
+void __prism_assumption(const char *text);
 /* A path this model does not follow: reachable => NEEDS-HARNESS, never FAILED or PROVED. */
 void __prism_incomplete(const char *msg);
 /* this execution saw an allocation fail: a later abort() is out-of-memory
@@ -66,6 +70,11 @@ void __prism_contract(const char *id);
 int __VERIFIER_nondet_int(void);
 long __VERIFIER_nondet_long(void);
 unsigned long __VERIFIER_nondet_ulong(void);
+unsigned int __VERIFIER_nondet_uint(void);
+unsigned short __VERIFIER_nondet_ushort(void);
+unsigned char __VERIFIER_nondet_uchar(void);
+unsigned long long __VERIFIER_nondet_ulonglong(void);
+size_t strlen(const char *s);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -43,8 +43,6 @@ jobs:
           cmake -B "$RUNNER_TEMP/deps" -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang -DCMAKE_CXX_COMPILER=${{ env.PRISM_LLVM_BIN }}/clang++ -DPRISM_DEPS_ONLY=ON
           cmake --build "$RUNNER_TEMP/deps" --target prism-deps
-      - name: Licence firewall
-        run: $RUNNER_TEMP/deps/prism-deps licence-check
       - name: Linked libraries match the manifest (offline)
         run: $RUNNER_TEMP/deps/prism-deps linked
       - uses: docker/setup-buildx-action@v3

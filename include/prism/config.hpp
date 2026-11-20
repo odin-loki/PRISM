@@ -34,7 +34,6 @@ struct Config {
     std::optional<std::vector<std::string>> stages;
     std::vector<std::string> skip;
     bool resume = false;
-    bool gui = false;
     // Explicit adapter binaries (--tool NAME=PATH). Searched before ~/.prism/tools and PATH.
     std::map<std::string, std::filesystem::path> tools;
     // Law 9: running code from the scanned tree (compiled harnesses, sanitizer
@@ -55,6 +54,32 @@ struct Config {
     // harness draft (ai::draft_harness) when no requires clause gives them.
     // Opt-in: without it unguarded pointer parameters stay NEEDS-HARNESS (Law 6).
     bool pir_drafts = false;
+    // --pir-harness: pir binds a pointer parameter that no requires clause or
+    // draft covers to an object built from the IR types (docs/PIR.md
+    // "Automatic pointer harness"); every choice is a named assumption, so the
+    // best verdict is PROVED-ASSUMING. Opt-in (Law 6).
+    bool pir_harness = false;
+    bool pir_discharge = false;     // --pir-discharge: assume-guarantee, harness obligations checked at every call site (docs/HARNESS_GENERATOR.md)
+    // Call-site discharge over the call graph (docs/HARNESS_GENERATOR.md "Whole-build call-site discharge"), with --pir-discharge:
+    //  --pir-discharge-closure: also discharge the harnesses of the callers whose context a call site rests on, up the
+    //    unit's call graph; a callee whose call sites all rest on unconditional contexts is PROVED (grounded)
+    //  --pir-discharge-out FILE: append the unit's call graph, harness plans, call-site checks and candidates (JSONL,
+    //    prism-pir-discharge/1) for prism-qa callsite-discharge; implies the closure, and checks the call sites of
+    //    external functions too (their verdict is decided over the whole build, not here)
+    //  --pir-obligations FILE: harness plans of functions defined in other units (records "plan" of
+    //    --pir-discharge-out): checked at this unit's call sites of them (needs --pir-discharge-out)
+    bool pir_discharge_closure = false;
+    std::filesystem::path pir_discharge_out;
+    std::filesystem::path pir_obligations;
+    bool pir_container_of = false;  // --pir-container-of: a parameter used at a negative constant offset gets its containing object
+    bool pir_vacuity = false;       // --pir-vacuity: a harnessed function's exit must be reachable under its assumptions
+    bool pir_input_hash = false;    // --pir-input-hash: write each function's input key, check nothing (docs/PIR.md "Input key")
+    bool pir_header_fns = false;    // --pir-header-fns: header functions PRISM_PIR_ONLY names are checked in this unit (stub units; docs/PIR.md "Header functions")
+    int pir_harness_depth = 2;                 // --pir-harness-depth N: nested pointer levels
+    unsigned long long pir_harness_elems = 16;  // --pir-harness-elems N: default array-like pointee length
+    unsigned long long pir_harness_bytes = 64;  // --pir-harness-bytes N: size when the pointee type is unknown
+    // --jsonl FILE: the pir stage appends one JSON line per function (docs/PIR.md "Machine-readable output")
+    std::filesystem::path jsonl;
     // --fp-checks: pir also reports IEEE floating-point exceptions (division
     // by zero, invalid operation, overflow) that Annex F defines. Opt-in.
     bool fp_checks = false;
@@ -65,6 +90,58 @@ struct Config {
     // Solver query cache (--solver-cache DIR); empty = the solver library's
     // default ($XDG_CACHE_HOME/prism/solver). prism/config.py solver_cache.
     std::filesystem::path solver_cache;
+    // --compile-commands FILE: the pir stage compiles each unit with the flags
+    // of its entry in this compile_commands.json (GNU C dialect, kernel
+    // defines, include path, ABI flags; docs/PIR.md "Units with their own
+    // flags"). Empty = the scan root's database for -I/-D only, as before.
+    std::filesystem::path compile_commands;
+    // --kernel-api linux|freebsd: the pir stage links the kernel API specs of
+    // that kernel (src/prism/pir/models/kernel, docs/KERNEL_MODELS.md) and
+    // models inline asm, asm goto, atomics and barriers as named assumptions.
+    // "" = off (default). --assume-unknown-calls: a call without a spec havocs
+    // its result and the objects its pointer arguments point to, recorded as an
+    // assumption (opt-in, never on by default).
+    std::string pir_kernel_api;
+    bool pir_assume_unknown_calls = false;
+    // --ops-table FILE: indirect calls through a field of a known ops table are checked
+    // against that field's targets (docs/PIR.md). Empty = off (default).
+    std::filesystem::path ops_table;
+    // Harness phase 2 (docs/HARNESS_PHASE2.md), all opt-in, each use a named assumption:
+    //  --callee-contracts FILE: assume-guarantee stubs for callees without a body (TSV, requires checked at the call site)
+    //  --pir-ops-auto: ops tables derived from the unit's own function-pointer stores and initialisers; a harness
+    //    function-pointer field is bound to one of its targets
+    //  --pir-addr-values: ptrtoint / inttoptr constant expressions and integer-address initialisers
+    //  --pir-harness-deep: harness depth 4 and 64 objects per parameter (unless set explicitly)
+    std::filesystem::path callee_contracts;
+    std::filesystem::path pir_field_invariants;  // --pir-field-invariants FILE: struct field value invariants for the auto harness
+    std::filesystem::path pir_callback_models;   // --pir-callback-models FILE: driver environment models (docs/DRIVER_ENV_MODELS.md)
+    bool pir_ops_auto = false;
+    bool pir_addr_values = false;
+    bool pir_harness_deep = false;
+    bool pir_build_semantics = false;   // --pir-build-semantics: take the unit's -fwrapv / -fno-strict-overflow (signed + - * << wrap)
+    bool pir_kernel_stops = false;      // --pir-kernel-stops: BUG() / panic() end the path (named), not a FUNC-CONTRACT finding
+    bool pir_kernel_current = false;    // --pir-kernel-current: current / curthread point to a valid object (named)
+    bool pir_global_harness = false;    // --pir-global-harness: mutable pointer globals point to a valid object at entry (named)
+    bool pir_lock_wrappers = false;     // --pir-lock-wrappers: acquire-only / release-only roots are lock wrappers (named)
+    bool pir_builtin_contracts = false;  // --pir-builtin-contracts: contracts for llvm.read_register / prefetch / objectsize (needs --kernel-api)
+    bool pir_lock_scopes = false;       // --pir-lock-scopes: guard() scopes, per-lock caller-held releases, constant branches in the lock passes
+    bool pir_bpf_helpers = false;       // --pir-bpf-helpers: BPF helper arguments typed ARG_PTR_TO_* are valid objects (named)
+    bool pir_global_harness_deep = false;  // --pir-global-harness-deep: nested pointer fields and list heads of harnessed globals (named)
+    bool pir_length_pairing = false;    // --pir-length-pairing: (pointer, count) pairs the IR shows size harness objects (named)
+    bool pir_icall_havoc = false;       // --pir-icall-havoc: unresolved indirect calls are a havoc of all memory (named)
+    bool pir_variadic = false;          // --pir-variadic: variadic functions and va_list (arbitrary variadic arguments, named)
+    bool pir_recursion = false;         // --pir-recursion: a recursive call is the callee's own verdict, assumed by induction (named)
+    bool pir_kernel_sprintf = false;    // --pir-kernel-sprintf: Linux sprintf with a literal format: output length bound incl. %p extensions
+    bool pir_addrspace = false;         // --pir-addrspace: kernel address-space pointers (per-CPU %gs, __user) as ordinary pointers (named)
+    bool pir_wide_int = false;          // --pir-wide-int: i65..i128 values as 128-bit bit-vectors
+    bool pir_declared_types = false;    // --pir-declared-types: harness pointees without type evidence take their declared type (-g, named)
+    bool pir_priv_areas = false;        // --pir-priv-areas: a private area past the struct end is sized (allocation or its struct, named)
+    bool pir_index_field_bounds = false;  // --pir-index-field-bounds: a field indexing an in-object array [N x T] is in [0, N-1] (named)
+    bool pir_heap_freed = false;        // --pir-heap-freed: a harness object the function passes to kfree/free is a heap allocation (named)
+    std::filesystem::path pir_param_preconditions;  // --pir-param-preconditions FILE: per-parameter preconditions (named, minimised)
+    // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
+    // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.
+    std::string pir_lock_contracts;
     // SV-COMP / BMC: "LP64" (default) or "ILP32" (32-bit long, size_t, pointers in bmc).
     std::string data_model{"LP64"};
 

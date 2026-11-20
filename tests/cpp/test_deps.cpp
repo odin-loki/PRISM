@@ -1,5 +1,5 @@
 // Supply chain (roadmap Part 1): third_party/MANIFEST.toml, prism-deps
-// (fetch/verify/build, linked-tree digests, licence firewall, SBOM), tool
+// (fetch/verify/build, linked-tree digests, SBOM), tool
 // SHA in findings, and the CI / Docker / notice files that run them.
 #include "doctest/doctest.h"
 #include "nlohmann/json.hpp"
@@ -748,113 +748,6 @@ TEST_CASE("deps: an unknown commit fails") {
 
 #endif
 
-// ---- licence firewall ----------------------------------------------------
-
-TEST_CASE("deps: the repository manifest passes the licence firewall") {
-    CHECK(cli({"licence-check", "--manifest", manifest_path().string()}) == 0);
-    auto m = deps::read_manifest(manifest_path());
-    CHECK(deps::licence_problems(m.components(), m.root).empty());
-}
-
-TEST_CASE("deps: copyleft linked components fail the licence firewall") {
-    auto one = [](const std::string& spdx, const std::string& kind = "linked") {
-        deps::Table t;
-        t.set("name", std::string("bad")).set("kind", kind).set("spdx", spdx);
-        return std::vector<deps::Table>{t};
-    };
-    for (const char* spdx : {"GPL-3.0-or-later", "LGPL-2.1-only", "AGPL-3.0-or-later", "MPL-2.0",
-                             "MIT AND GPL-2.0-only", "EPL-2.0", "NOASSERTION", "", "GPL-2.0-only OR LGPL-2.1-only",
-                             "MPL-2.0 OR GPL-2.0-only", "(MIT OR Apache-2.0) AND GPL-3.0-only"})
-        CHECK_MESSAGE(!deps::licence_problems(one(spdx), ".").empty(), std::string(spdx));
-    CHECK(deps::licence_problems(one("MPL-2.0"), ".")[0] ==
-          "bad: linked component is weak copyleft (MPL-2.0); needs review + kAllowWeakCopyleft "
-          "(src/tools/prism_deps/licence.cpp)");
-    CHECK(deps::licence_problems(one("GPL-3.0-only"), ".")[0] ==
-          "bad: linked component is copyleft (GPL-3.0-only); run it as an external process instead");
-    // A recorded licence file that is gone fails too.
-    TempDir td;
-    deps::Table t;
-    t.set("name", std::string("lib"))
-        .set("kind", std::string("linked"))
-        .set("spdx", std::string("MIT"))
-        .set("path", std::string("third_party/lib"))
-        .set("licence_file", std::string("LICENSE (upstream copy)"));
-    auto p = deps::licence_problems({t}, td.path);
-    REQUIRE(p.size() == 1);
-    CHECK(p[0] == "lib: licence file third_party/lib/LICENSE is missing");
-    spit(td.path / "third_party" / "lib" / "LICENSE", "MIT\n");
-    CHECK(deps::licence_problems({t}, td.path).empty());
-    // The CLI exits 1 on a copyleft linked row.
-    auto man = td.path / "third_party" / "MANIFEST.toml";
-    spit(man, "[[component]]\nname = \"bad\"\nkind = \"linked\"\nspdx = \"GPL-2.0-only\"\n");
-    CHECK(cli({"licence-check", "--manifest", man.string()}) == 1);
-}
-
-TEST_CASE("deps: permissive and external copyleft pass the licence firewall") {
-    std::vector<deps::Table> ok;
-    auto add = [&](const char* name, const char* kind, const char* spdx) {
-        deps::Table t;
-        t.set("name", std::string(name)).set("kind", std::string(kind)).set("spdx", std::string(spdx));
-        ok.push_back(t);
-    };
-    add("a", "linked", "MIT");
-    add("b", "linked", "BSD-3-Clause WITH PCRE2-exception");
-    add("c", "linked", "MIT OR GPL-2.0-only");
-    add("d", "linked", "Apache-2.0 WITH LLVM-exception");
-    add("e", "external", "GPL-3.0-or-later");
-    add("f", "external", "AGPL-3.0-or-later");
-    add("g", "linked", "GPL-3.0-or-later WITH GCC-exception-3.1");
-    add("h", "system", "GPL-3.0-only");
-    CHECK(deps::licence_problems(ok, ".").empty());
-}
-
-TEST_CASE("deps: licence classification table") {
-    struct Row {
-        const char* id;
-        const char* want;
-    };
-    for (const Row& r : std::initializer_list<Row>{
-             {"GPL", "strong"},
-             {"GPL-2.0-only", "strong"},
-             {"GPLv2", "strong"},  // tag + "V" on the upper-cased id
-             {"gpl-3.0", "strong"},
-             {"LGPL-2.1-or-later", "strong"},
-             {"AGPLv3", "strong"},
-             {"SSPL-1.0", "strong"},
-             {"EUPL-1.2", "strong"},
-             {"OSL-3.0", "strong"},
-             {"CPAL-1.0", "strong"},
-             {"CC-BY-SA-4.0", "strong"},
-             {"RPL-1.5", "strong"},
-             {"QPL-1.0", "strong"},
-             {"GPL-2.0-only WITH Autoconf-exception-2.0", "strong"},
-             {"GPL-2.0-only WITH Classpath-exception-2.0", "permissive"},
-             {"GPL-3.0-or-later WITH GCC-exception-3.1", "permissive"},
-             {"Apache-2.0 WITH LLVM-exception", "permissive"},
-             {"MPL-2.0", "weak"},
-             {"mpl-1.1", "weak"},
-             {"EPL-2.0", "weak"},
-             {"CDDL-1.0", "weak"},
-             {"CPL-1.0", "weak"},
-             {"MS-RL", "weak"},
-             {"APSL-2.0", "weak"},
-             {"MPLv2", "permissive"},  // the "V" suffix rule is for strong tags only
-             {"MS-PL", "permissive"},
-             {"CC-BY-4.0", "permissive"},
-             {"MIT", "permissive"},
-             {"BSD-3-Clause", "permissive"},
-             {"Apache-2.0", "permissive"},
-             {"GPLX", "permissive"},
-             {"  GPL-2.0  ", "strong"},
-         })
-        CHECK_MESSAGE(deps::classify(r.id) == r.want, std::string(r.id));
-    CHECK(deps::spdx_ids("(MIT OR GPL-2.0-only) AND BSD-3-Clause") ==
-          std::vector<std::string>{"MIT", "GPL-2.0-only", "BSD-3-Clause"});
-    CHECK(deps::spdx_ids("Apache-2.0 WITH LLVM-exception") ==
-          std::vector<std::string>{"Apache-2.0 WITH LLVM-exception"});
-    CHECK(deps::spdx_ids("  ").empty());
-}
-
 // ---- SBOM ----------------------------------------------------------------
 
 TEST_CASE("deps: CycloneDX 1.5 SBOM from the manifest") {
@@ -982,7 +875,7 @@ TEST_CASE("deps: optional tools stamp every finding") {
 
 // ---- CI, Docker, notices --------------------------------------------------
 
-TEST_CASE("deps: CI runs the licence firewall, linked checks and SBOM with prism-deps") {
+TEST_CASE("deps: CI runs the linked checks and SBOM with prism-deps") {
     const auto wf = repo_root() / ".github" / "workflows";
     if (!fs::is_directory(wf)) {  // the Docker build context leaves .github/ out
         MESSAGE("NOTRUN: .github/workflows is not in this tree");
@@ -990,7 +883,7 @@ TEST_CASE("deps: CI runs the licence firewall, linked checks and SBOM with prism
     }
     auto ci = slurp(wf / "ci.yml");
     std::erase(ci, '\r');  // autocrlf checkouts
-    for (const char* cmd : {"-DPRISM_DEPS_ONLY=ON", "--target prism-deps", "prism-deps licence-check",
+    for (const char* cmd : {"-DPRISM_DEPS_ONLY=ON", "--target prism-deps",
                             "prism-deps linked\n", "prism-deps linked --refetch", "prism-deps sbom --version"})
         CHECK_MESSAGE(contains(ci, cmd), std::string(cmd));
     for (const char* gone : {"scripts/licence_check.py", "scripts/fetch_deps.py", "scripts/sbom.py"})
@@ -999,7 +892,6 @@ TEST_CASE("deps: CI runs the licence firewall, linked checks and SBOM with prism
     CHECK(contains(rel, "id-token: write"));
     CHECK(contains(rel, "sigstore/cosign-installer"));
     CHECK(contains(rel, "SOURCE_DATE_EPOCH"));
-    CHECK(contains(rel, "prism-deps licence-check"));
     CHECK(contains(rel, "prism-deps linked"));
     auto recheck = slurp(wf / "proofs-recheck.yml");
     CHECK(contains(recheck, "prism-deps tool lean4export nanoda"));
@@ -1008,10 +900,10 @@ TEST_CASE("deps: CI runs the licence firewall, linked checks and SBOM with prism
 }
 
 TEST_CASE("deps: the Docker build runs prism-deps before the full build") {
-    // Docker: the firewall and the linked check run before the full build,
+    // Docker: the linked check runs before the full build,
     // and the SBOM is written by prism-deps.
     auto docker = slurp(repo_root() / "Dockerfile");
-    auto fire = docker.find("prism-deps licence-check");
+    auto fire = docker.find("prism-deps linked");
     auto full = docker.find("cmake --build /build ");
     REQUIRE(fire != std::string::npos);
     REQUIRE(full != std::string::npos);

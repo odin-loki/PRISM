@@ -25,7 +25,11 @@ std::string unit_vcs_json(const fs::path& src, const Config& cfg, const fs::path
     std::string err;
     std::vector<FoldedUb> folded;
     std::vector<std::pair<int, int>> sshl;
-    auto ir = lower_to_ir(fe, src, std::max(10.0, cfg.timeout), err, &folded, &sshl);
+    int cxx_std = 17;
+    std::string cc_note;
+    const auto inc = unit_compile_flags(cfg, src, &cxx_std, &cc_note);
+    if (!cc_note.empty()) j["front_end_flags"] = cc_note;
+    auto ir = lower_to_ir(fe, src, std::max(10.0, cfg.timeout), err, &folded, &sshl, nullptr, inc, cxx_std);
     if (!ir) {
         j["error"] = err;
         return j.dump(1);
@@ -93,6 +97,16 @@ std::string solve_smt2_json(const std::string& smt2, const Config& cfg, bool z3_
              {"bucket", r.bucket},
              {"wall_s", r.wall_s},
              {"note", r.note}};
+        if (r.cube.ran) {
+            const auto& s = r.cube;
+            j["cube"] = {{"engine", s.engine}, {"threads", s.threads}, {"leaves", s.leaves},
+                         {"closed_solver", s.closed_solver}, {"closed_core", s.closed_core}, {"open", s.open},
+                         {"splits", s.splits}, {"max_depth", s.max_depth}, {"solver_calls", s.solver_calls},
+                         {"cover_checked", s.cover_checked}, {"blast_s", s.blast_s}, {"load_s", s.load_s},
+                         {"split_s", s.split_s}, {"conquer_s", s.conquer_s}, {"cover_s", s.cover_s},
+                         {"gpu", s.gpu}, {"gpu_s", s.gpu_s}, {"gpu_calls", s.gpu_calls}, {"wall_s", s.wall_s},
+                         {"cnf_vars", s.cnf_vars}, {"cnf_clauses", s.cnf_clauses}};
+        }
     } catch (const z3::exception& ex) {
         j = {{"kind", "error"}, {"note", std::string("z3: ") + ex.msg()}};
     }

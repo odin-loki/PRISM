@@ -1818,6 +1818,8 @@ struct Enc {
                     case Stmt::StackRestore:
                         [[fallthrough]];
                     case Stmt::Revive:
+                        [[fallthrough]];
+                    case Stmt::MemHavoc:
                         break;  // visible ops are handled separately; SSA memory is not encoded here
                 }
             }

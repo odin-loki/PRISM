@@ -1,0 +1,6 @@
+function	lock	action	kind
+# e1000e-style acquire/release pair on a file-scope mutex
+nvm_acquire_ok	global:nvm_mutex	acquires
+nvm_release_ok	global:nvm_mutex	releases
+wrong_contract_bad	global:nvm_mutex	acquires
+spin_entry_sleep_bad	global:gl	releases	spin

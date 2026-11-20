@@ -177,6 +177,27 @@ void refuse_weak_order(Result& r, const std::string& name, bool keep_races = fal
     r.message = weak_order_message(name);
 }
 
+// A BOUNDED verdict that depends on a named assumption about the memory model
+// (Program::assumptions, docs/KERNEL_MEMORY_MODEL.md section 4) is not a plain
+// claim: it is withheld as NEEDS-HARNESS with an UNENCODED reason that names the
+// assumptions (also in extra["assumptions"]). FAILED is unchanged: a found run
+// is a real run of the model.
+void refuse_assumptions(Result& r, const std::vector<std::string>& assumptions,
+                        const std::vector<std::string>& extern_calls) {
+    if (r.status != laws::BOUNDED || assumptions.empty()) return;
+    std::string names;
+    for (const auto& a : assumptions) names += (names.empty() ? std::string() : std::string(", ")) + a;
+    std::string calls;
+    for (const auto& c : extern_calls) calls += (calls.empty() ? std::string() : std::string(", ")) + c;
+    r.status = std::string(laws::NEEDS_HARNESS);
+    r.violations.clear();
+    r.extra["assumptions"] = names;
+    if (!calls.empty()) r.extra["extern_calls"] = calls;
+    r.message = "UNENCODED: assumption " + names +
+                " (the conc model differs from the LKMM or does not cover the call here; "
+                "no BOUNDED claim without it: docs/KERNEL_MEMORY_MODEL.md section 4)";
+}
+
 std::string rel_of(const fs::path& p, const fs::path& root) {
     std::error_code ec;
     if (fs::is_directory(root, ec)) {
@@ -253,6 +274,7 @@ std::vector<Harnessed> analyse_ir(const std::string& ir, const Options& opt) {
             h.res = check(*b.prog, opt);
             h.views = b.prog->views;
             if (!b.prog->weak_order.empty()) refuse_weak_order(h.res, b.prog->weak_order, true);
+            refuse_assumptions(h.res, b.prog->assumptions, b.prog->extern_calls);
         }
         out.push_back(std::move(h));
     }

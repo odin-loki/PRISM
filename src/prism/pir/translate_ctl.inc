@@ -698,7 +698,7 @@ void Tr::region(Frame& fr, const std::string& start) {
         if (it == by.end() || tail.count(fr.prefix + nme)) continue;
         translate_block(fr, *it->second);
         for (auto& in : it->second->insts) {
-            if (in.op == "br" || in.op == "switch")
+            if (in.op == "br" || in.op == "switch" || in.op == "callbr")
                 for (auto& t : in.targets) work.push_back(t);
             if (in.op == "switch")
                 for (auto& [c, t] : in.cases) work.push_back(t);
@@ -835,16 +835,63 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
         }
         return cands;
     };
-    auto cands = collect(vcall);
-    bool real = std::any_of(cands.begin(), cands.end(), [&](const std::string& n) { return m.find(n) != nullptr; });
-    if (vcall && !real) {
-        vcall = false;
-        cands = collect(false);
+    // --ops-table (docs/PIR.md "Indirect calls through ops tables"): the pointer is
+    // load (getelementptr %struct.T, base, 0, K), i.e. field K of struct T; a table
+    // field of that struct type and index names its targets.
+    const OpsField* ops_field = nullptr;
+    if (!opt.ops_table.empty()) {
+        if (const auto* ld = def(*in.callee_op); ld && ld->op == "load" && !ld->ops.empty()) {
+            if (const auto* gep = def(ld->ops[0]);
+                gep && gep->op == "getelementptr" && gep->ops.size() == 3 &&
+                gep->ops[1].v.kind == ir::Value::Int && gep->ops[1].v.bits == 0 &&
+                gep->ops[2].v.kind == ir::Value::Int) {
+                const int idx = static_cast<int>(gep->ops[2].v.bits);
+                for (const auto& f : opt.ops_table) {
+                    if (f.struct_type == gep->ety.text && f.index == idx) {
+                        ops_field = &f;
+                        break;
+                    }
+                }
+            }
+        }
     }
-    constexpr std::size_t kMaxTargets = 16;
-    if (cands.size() > kMaxTargets)
-        throw Unenc{"UNENCODED: indirect call with " + std::to_string(cands.size()) + " possible targets (> " +
-                    std::to_string(kMaxTargets) + ")"};
+    std::vector<std::string> cands;
+    if (ops_field) {
+        if (ops_field->targets.size() > opt.ops_max_targets)
+            throw Unenc{"UNENCODED: indirect call through " + ops_field->struct_type + "." + ops_field->field +
+                        ": too many indirect targets (" + std::to_string(ops_field->targets.size()) + " > " +
+                        std::to_string(opt.ops_max_targets) + ")"};
+        for (const auto& t : ops_field->targets) {
+            if (m.find(t) != nullptr ||
+                std::find(m.declarations.begin(), m.declarations.end(), t) != m.declarations.end())
+                cands.push_back(t);
+        }
+        vcall = false;
+    } else {
+        cands = collect(vcall);
+        bool real = std::any_of(cands.begin(), cands.end(),
+                                [&](const std::string& n) { return m.find(n) != nullptr; });
+        if (vcall && !real) {
+            vcall = false;
+            cands = collect(false);
+        }
+        constexpr std::size_t kMaxTargets = 16;
+        if (cands.size() > kMaxTargets) {
+            const bool scalar_ret = in.ty.kind == ir::Type::Void || in.ty.kind == ir::Type::Ptr || in.ty.kind == ir::Type::Int;
+            if (opt.icall_havoc && !opt.kernel_api.empty() && scalar_ret && !fr.pairs.count(in.result)) {
+                for (auto& o : in.ops) (void)operand(fr, o, cur, line);  // arguments evaluated (undef / poison uses checked)
+                out.uses_memory = true;
+                int d = in.result.empty() ? -1 : result_var(fr, in);
+                Arg r = icall_havoc(cur, in, d >= 0 ? out.vars[static_cast<std::size_t>(d)].width : 0, line,
+                                    "indirect call with " + std::to_string(cands.size()) + " possible targets (> " +
+                                        std::to_string(kMaxTargets) + ", not inlined)");
+                if (d >= 0) emit_assign(cur, d, Op::Copy, {r});
+                return;
+            }
+            throw Unenc{"UNENCODED: indirect call with " + std::to_string(cands.size()) + " possible targets (> " +
+                        std::to_string(kMaxTargets) + ")"};
+        }
+    }
     out.uses_memory = true;  // function addresses are pointers of the memory model
     int dst = in.result.empty() ? -1 : result_var(fr, in);
     unsigned w = dst >= 0 ? out.vars[static_cast<std::size_t>(dst)].width : 0;
@@ -889,12 +936,32 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
         }
         cur = no;
     }
-    soft_stop(cur, "indirect call to a target outside the " + std::to_string(cands.size()) +
-                       (vcall ? " virtual functions of the module's vtables" : " address-taken functions") +
-                       " (havoc fallback)",
-              line);
+    if (ops_field)
+        soft_stop(cur, "indirect call through ops-table field " + ops_field->struct_type + "." + ops_field->field +
+                           " (role " + ops_field->role + ") to a target outside its " +
+                           std::to_string(cands.size()) + " in-unit targets (havoc fallback)",
+                  line);
+    else if (opt.icall_havoc && !opt.kernel_api.empty() && !vcall && !fr.pairs.count(in.result)) {
+        // --pir-icall-havoc: a target outside the address-taken set (a pointer another unit stored) is a havoc
+        Arg r = icall_havoc(cur, in, w, line,
+                            "indirect call to a target outside the " + std::to_string(cands.size()) + " address-taken functions");
+        Term j;
+        j.kind = Term::Jmp;
+        j.t = join;
+        if (dst >= 0) {
+            int rv = newvar(tmpname("icall"), w);
+            emit_assign(cur, rv, Op::Copy, {r});
+            add_phi(join, dst, cur, Arg::v(rv, w));
+        }
+        out.blocks[static_cast<std::size_t>(cur)].term = j;
+        any = true;
+    } else
+        soft_stop(cur, "indirect call to a target outside the " + std::to_string(cands.size()) +
+                           (vcall ? " virtual functions of the module's vtables" : " address-taken functions") +
+                           " (havoc fallback)",
+                  line);
     cur = join;
-    if (!any) noreturn = true;
+    if (!any && !ops_field) noreturn = true;
 }
 
 // ---- inline assembly ----------------------------------------------------------------
@@ -902,8 +969,16 @@ void Tr::indirect_call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, boo
 void Tr::asm_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     (void)fr;
     auto it = opt.asm_contracts.find(line);
-    if (it == opt.asm_contracts.end())
-        throw Unenc{"UNENCODED: inline assembly (state its effect with `// prism: asm ensures <cond>` on the line above)"};
+    if (it == opt.asm_contracts.end()) {
+        // a stated contract wins; otherwise --kernel-api: conservative havoc (translate_kernel.inc)
+        if (!opt.kernel_api.empty()) {
+            if (asm_mmio(fr, in, cur, line)) return;   // --pir-global-harness-deep: readl / writel (translate_kernel.inc)
+            if (asm_exact(fr, in, cur, line)) return;  // exact instruction semantics (translate_asm.inc)
+            asm_havoc(fr, in, cur, line);
+            return;
+        }
+        throw Unenc{"UNENCODED: inline assembly (state its effect with `// prism: asm ensures <cond>` on the line above, or use --kernel-api for a conservative havoc model)"};
+    }
     for (auto& o : in.ops)
         if (o.ty.kind == ir::Type::Ptr)
             throw Unenc{"UNENCODED: inline assembly with memory operands (contract at line " + std::to_string(line) + ")"};

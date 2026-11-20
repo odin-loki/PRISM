@@ -1,6 +1,6 @@
 # C++ programming standard (PRISM engine)
 
-**Owner intent (2026-10-24):** PRISM’s own C++ (`src/prism/`, `src/gui/`,
+**Owner intent (2026-10-24):** PRISM’s own C++ (`src/prism/`,
 `src/tools/`, `include/prism/`, `tests/cpp/`) should be **memory-safe ISO C++23**
 — the strictest practical rules for **safety** and **performance**. This document
 records that goal and what is **not** enforced yet.

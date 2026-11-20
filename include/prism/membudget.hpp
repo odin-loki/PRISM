@@ -70,6 +70,11 @@ PRISM_API std::string phases();
 // just above Z3's current size, so the stuck call fails with out-of-memory and
 // the remaining functions are re-checked in fresh, killable processes.
 PRISM_API void set_stuck_hook(std::function<void()> hook);
+// Between these, a thread is freeing an encoding (pir's Encoding destructor):
+// the stuck hook is not called (freeing only gives memory back, but deleting
+// millions of Z3 terms can keep the RSS over the trip point for seconds).
+PRISM_API void teardown_begin();
+PRISM_API void teardown_end();
 PRISM_API void release_free_memory();
 // The message of a per-function UNKNOWN.
 PRISM_API std::string over_message(const char* where);

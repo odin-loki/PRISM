@@ -2,7 +2,7 @@
 
 Roadmap 6.2 ("fuzzing PRISM's own input handling"). PRISM reads files it does
 not control: the sources it checks, and the `report.json`, `stages.jsonl`,
-`functions.json` and `MANIFEST.toml` files that `--resume`, the GUI and the
+`functions.json` and `MANIFEST.toml` files that `--resume` and the
 tool lookup read back. None of them may crash PRISM, hang it or corrupt its
 memory. This file records the harnesses, the campaigns run so far and every
 finding with a reproducer. **Findings are reported here, not fixed**: fixing
@@ -117,8 +117,8 @@ also fuzzed on their own (`PRISM_FUZZ_TARGET`).
   (`models.py:126`); `{"stages":[{"findings":[null]}]}` (`models.py:154`).
 - **Reached from (historical Python engine, deleted):** `PATH --resume` when
   `stages.jsonl` was absent (`report.json` fallback): exited 1 with a traceback
-  on `{"stages":"x"}`. The GUI had the same bug when opening a report. Today use
-  `./build/prism PATH --resume` or `./build/prism_gui` — both handle these
+  on `{"stages":"x"}`. Today use
+  `./build/prism PATH --resume`, which handles these
   reproducers (see C++ note below).
 - The C++ `RunReport::load` and journal readers handle every F2 and F3
   reproducer (each was run through `prism_fuzz_self` with the `report`
@@ -150,7 +150,7 @@ also fuzzed on their own (`PRISM_FUZZ_TARGET`).
 ## Not covered yet
 
 - AFL++ as an external fuzzer (roadmap 6.2 names it): not run here.
-- The polyglot parsers, the SARIF writer, the GUI and the `prove`
+- The polyglot parsers, the SARIF writer and the `prove`
   subcommand's Lean output parser are not fuzzed.
 - The harnesses are not run in CI; the campaigns above are the only
   evidence.

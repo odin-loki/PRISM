@@ -20,10 +20,13 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <iosfwd>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -55,6 +58,7 @@ struct Value {
     Kind kind = Other;
     std::string name;          // Local/Global name without sigil
     uint64_t bits = 0;         // Int: two's complement bits (masked by user)
+    uint64_t hi = 0;           // Int of a type wider than 64 bits: bits 127..64 (two's complement, sign-extended)
     bool negative = false;     // Int literal was written negative
     std::string text;          // as written (constant expressions etc.)
     std::string bytes;         // Str: decoded bytes
@@ -98,6 +102,12 @@ struct Inst {
     std::vector<std::pair<std::string, Operand>> clauses;  // landingpad: ("catch"|"filter", typeinfo)
     bool is_asm = false;       // call asm "..."
     std::string asm_text;
+    std::string asm_constraints;  // the asm's constraint string ("=r,r,~{memory}")
+    bool asm_sideeffect = false;  // `asm sideeffect` (volatile)
+    // Lowered by the parser into plain instructions (atomics, fences, asm
+    // goto): kernel_note names what was assumed; without --kernel-api the
+    // translator refuses the instruction as before.
+    std::string kernel_note;
 };
 
 struct Block {
@@ -121,6 +131,7 @@ struct Function {
     std::string parse_error;   // non-empty: body not parsed
     bool is_declaration = false;
     bool is_model = false;     // linked from the library models (link_models)
+    bool variadic = false;     // defined with `...` (models only: extra call arguments are evaluated and dropped)
 };
 
 struct DILoc {
@@ -134,6 +145,26 @@ struct DISub {
     int line = 0;
     std::string file;          // DIFile filename
     bool artificial = false;
+};
+
+// A debug-information type node (DIBasicType / DIDerivedType / DICompositeType), kept so that --pir-declared-types
+// can read a parameter's declared pointee type (full -g only; -gline-tables-only emits none of these).
+struct DIType {
+    std::string kind;          // "basic" | "derived" | "composite"
+    std::string tag;           // "DW_TAG_pointer_type", "DW_TAG_structure_type", "DW_TAG_member", ...
+    std::string name;
+    uint64_t size_bits = 0;
+    uint64_t offset_bits = 0;  // DW_TAG_member: offset in its struct
+    std::string base;          // baseType ref ("" = void)
+    std::string elements;      // composite: members tuple ref
+    bool fwd = false;          // DIFlagFwdDecl (incomplete type: no size)
+};
+// A DILocalVariable that is a parameter (arg: N >= 1).
+struct DIParamVar {
+    std::string name;
+    int arg = 0;
+    std::string scope;         // the DISubprogram ref
+    std::string type;
 };
 
 struct Global {
@@ -156,11 +187,18 @@ struct Module {
     std::map<std::string, DILoc> locs;          // "!13" -> line/col
     std::map<std::string, DISub> subprograms;   // "!10" -> source name/line/file
     std::map<std::string, DILoc> loop_starts;   // "!15" (llvm.loop) -> the loop's start location
+    std::map<std::string, std::string> md_strings;  // "!12" -> "rsp": one-string tuples !{!"rsp"} (named registers)
+    std::map<std::string, DIType> ditypes;          // "!40" -> debug type node (full -g only)
+    std::map<std::string, std::vector<std::string>> md_tuples;  // "!41" -> {"!42", "null", ...} (ref-only tuples)
+    std::vector<DIParamVar> diparams;               // parameter DILocalVariables (full -g only)
     const Function* find(std::string_view name) const;
     const Global* find_global(std::string_view name) const;
 };
 
 PRISM_API Module parse_module(std::string_view text);
+// kernel mode (--kernel-api): also models the atomic and barrier forms; parse_module leaves
+// them unparsed, so the conc stage reads their raw text as before
+PRISM_API Module parse_module_kernel(std::string_view text);
 PRISM_API Type parse_type(std::string_view text);
 
 }  // namespace ir
@@ -288,7 +326,13 @@ struct Stmt {
     //   Revive       args [ptr]            a stack object's lifetime starts again
     //                (llvm.lifetime.start; other objects: no effect; its bytes
     //                are set separately, checks are separate)
-    enum Kind { Assign, Check, Assume, Alloc, Free, Load, Store, MemCpy, MemSet, StackSave, StackRestore, Revive };
+    //   MemHavoc     no args: every object's bytes get arbitrary values and
+    //                tags, and an initialised byte stays initialised (initialised
+    //                before or arbitrary); sizes, liveness, kinds and alignment
+    //                are unchanged (inline asm with a "memory" clobber)
+    enum Kind {
+        Assign, Check, Assume, Alloc, Free, Load, Store, MemCpy, MemSet, StackSave, StackRestore, Revive, MemHavoc
+    };
     Kind kind = Assign;
     int dst = -1;              // Assign
     Op op = Op::Copy;
@@ -349,9 +393,15 @@ struct Function {
     bool uses_memory = false;  // has memory statements (k-induction is not attempted)
     PtrModel ptr = kLP64;      // from the module's datalayout (translate)
     bool mutable_globals = false;  // reads/writes a mutable global (translation validation partial)
+    std::vector<std::string> mutable_global_names;  // which ones (no @; each once, in order of first use)
     bool returns_ptr = false;
     std::vector<std::string> ptr_params;   // pointer parameters bound to contract objects
     std::vector<std::string> assumptions;  // PROVED becomes PROVED-ASSUMING when non-empty
+    // an object PRISM assumes into existence (Extern, not one of the root's automatic-harness objects: an unknown or
+    // indirect call's pointer result, an asm output, the global harness, `current`, a field-invariant object, a model's
+    // external object): the model makes it distinct from every other object. The call-site discharge states that as an
+    // assumption (docs/HARNESS_GENERATOR.md "Whole-build call-site discharge"); nothing else reads it.
+    bool invented_objects = false;
     std::vector<std::string> throws;       // library throw calls whose paths end (not modelled)
     std::vector<std::string> libm;         // libm functions whose results are unconstrained
     // Source start (line, column) of the function's own loops (clang's
@@ -375,6 +425,11 @@ struct FoldedUb {              // clang constant-folded UB (diagnostic at line:c
     std::string msg;
 };
 
+// A folded diagnostic that is not undefined behaviour in a -fwrapv / -fno-strict-overflow build (--pir-build-semantics):
+// clang's -Winteger-overflow (signed + - * of constants), -Wshift-sign-overflow, -Wshift-negative-value and
+// -Wshift-overflow (signed << results). Shift-amount and division diagnostics stay UB.
+PRISM_API bool wraps_under_fwrapv(const FoldedUb& f);
+
 // A pointer-parameter precondition (Law 6): `// requires: \valid(p+(0..n-1))`
 // (or ACSL `/*@ requires ... */`) or a drafted harness gives the size of the
 // object p points to; p is then bound to a fresh object and a proof is
@@ -387,19 +442,203 @@ struct PtrContract {
     unsigned elem_bytes = 0;   // 0: from the IR (first load/store/GEP through p)
     bool read_only = false;    // \valid_read
     int64_t count_min = INT64_MIN, count_max = INT64_MAX;  // range assumed for count_param (drafted harness)
+    bool count_unsigned = false;  // count_param read as unsigned (zero-extended): --pir-length-pairing with an unsigned or != bound
     std::string text;          // the clause as written
     std::string source;        // "requires" | "harness"
 };
 
+// Automatic pointer harness (--pir-harness, src/prism/pir/harness.cpp): a
+// pointer parameter without a `requires` clause (or draft) is bound to an
+// object built from the IR types, every choice a named assumption.
+struct AutoHarness {
+    bool on = false;
+    int depth = 2;                 // nested pointer levels below the parameter's own object
+    uint64_t elems = 16;           // default element count of an array-like pointee
+    uint64_t unknown_bytes = 64;   // default size when the pointee type is not determined
+    int max_objects = 32;          // objects per pointer parameter
+    // --pir-length-pairing: a pointer the IR indexes under a bound by an integer parameter (or, for a pointer field,
+    // an integer field of the same object) points to that many elements (named assumption, harness.hpp LengthPair)
+    bool length_pairing = false;
+    // --pir-declared-types: a pointee without type evidence in the IR (and a nested pointer field) gets the type
+    // and size of its declaration from the unit's debug information (full -g), a named assumption
+    bool declared_types = false;
+    bool priv_areas = false;       // --pir-priv-areas: netdev_priv-style private areas past the struct end (named)
+    bool index_field_bounds = false;  // --pir-index-field-bounds: an array-index field is in [0, N-1] (named)
+    bool heap_freed = false;       // --pir-heap-freed: an object the function frees is a heap allocation (named)
+};
+
+// --pir-param-preconditions FILE (docs/PIR.md "Parameter preconditions"): one precondition of one parameter of one
+// function. TSV, 6 columns: function, parameter (name, or 0-based index), condition, scope, status, source.
+// condition: "valid N" (a pointer parameter points to the start of a valid object of at least N bytes), "type S"
+// (... of struct S: "struct foo", "%struct.foo" or "foo"), "nonnull" (implied by the automatic harness: recorded,
+// adds nothing), "range A B" (an integer parameter, signed, A <= v <= B). scope: "*" or a substring of the unit's
+// path. Each row used is a named assumption ("param-precondition: ..."), minimised to the rows the proof needs.
+struct ParamPrecondition {
+    std::string function;      // IR name
+    std::string param;         // name or 0-based index
+    std::string kind;          // valid | type | nonnull | range
+    int64_t a = 0, b = 0;
+    std::string type_name;     // kind type: "%struct.foo"
+    std::string condition;     // as written
+    std::string scope, status, source;
+};
+PRISM_API std::vector<ParamPrecondition> load_param_preconditions(const std::filesystem::path& file, std::string& error);
+// The named assumption of a row used: "param-precondition: FUNCTION(PARAM) CONDITION (--pir-param-preconditions; ...)";
+// param_precondition_key is its prefix up to and including " (" (how the minimiser finds a row's use).
+PRISM_API std::string param_precondition_text(const ParamPrecondition& r);
+PRISM_API std::string param_precondition_key(const ParamPrecondition& r);
+
+// --ops-table FILE (docs/PIR.md "Indirect calls through ops tables"): one field of a
+// known ops table. struct_type is the IR spelling of the struct ("%struct.NAME"); index
+// is the field's position: the 5th column of the file, else its 0-based position among
+// the distinct fields the file lists for that struct.
+struct OpsField {
+    std::string struct_type;
+    std::string field;
+    int index = 0;
+    std::vector<std::string> targets;
+    std::string role;
+};
+// --pir-field-invariants FILE: one value invariant of a struct field, applied to every automatic-harness object of
+// that struct type (a named assumption per row used). TSV: struct ("%struct.NAME"), byte offset, width (bytes),
+// kind, a, b, status, source. Kinds: "valid" (a pointer field points to a fresh object of `a` bytes, arbitrary
+// contents), "nonnull" (a pointer field is not NULL), "range" (an integer field, signed, a <= v <= b).
+// An optional 9th column scopes the row: "fn:GLOB" (the analysed function's name), "unit:GLOB" (the compile unit's
+// path) or "module:GLOB" (the unit's path as well, for a directory such as "*/drivers/net/ethernet/intel/*");
+// empty = every function (global). A row applies only where its scope matches (field_invariant_applies), and the
+// assumption names the scope. '*' and '?' are the glob characters; '*' also matches '/'.
+struct FieldInvariant {
+    std::string struct_type;
+    uint64_t offset = 0;
+    unsigned width = 0;
+    std::string kind;
+    int64_t a = 0, b = 0;
+    std::string status, source;
+    std::string scope;
+};
+PRISM_API bool field_invariant_applies(const FieldInvariant& fi, const std::string& function, const std::string& unit_path);
+// --pir-callback-models FILE (docs/DRIVER_ENV_MODELS.md): driver environment models. One row is one precondition the
+// kernel core guarantees for one parameter of one kind of driver callback (adapted from the Klever / LDV environment model
+// specifications, Apache-2.0, attribution in the file). TSV, 10 columns:
+//   interface  container  field_off  callback  param  kind  a  b  status  source
+// container: "%struct.T" (the callback is a function address stored at byte `field_off` of a T, in a constant initialiser
+// or by a store in the unit) or "call:FN" (the callback is argument `field_off` (0-based) of a direct call of @FN in the
+// unit: request_irq, timer_setup, INIT_WORK ...). Kinds (each use is a named assumption, nothing is checked here):
+//   range a b         the integer parameter is in [a, b] (signed)
+//   id-entry a        the parameter points to an element 0 .. n-2 of the array the container instance's field at byte
+//                     `a` points to (the driver's own constant id table, last entry the terminator); needs exactly one
+//                     instance of the container in the unit naming the callback, and that table in the unit
+//   trailing-alloc a b  the parameter's object (of struct type b, "%struct.net_device") has the private area its allocator
+//                     appends: a = "fn:arg,fn:arg" (alloc_netdev_mqs:0 ...); the size is the constant argument of the unit's
+//                     calls of those functions, applied only when all of them agree
+//   buffer a          the pointer parameter points to the start of a fresh buffer of `a` bytes, arbitrary contents
+//                     (sysfs show / store get a PAGE_SIZE buffer)
+//   drvdata a b       probe-first ordering: container/field_off name the driver's probe; a function the unit registers at
+//                     another field of that container, in a dev_pm_ops or as a device attribute reads driver_data (byte `a`
+//                     of the device struct `b`, "%struct.device") that the probe set. When the probe's own body stores into
+//                     it (directly or through setters: platform_set_drvdata -> dev_set_drvdata ...) only results of one
+//                     constant-size allocation (devm_kzalloc, kzalloc ...), the harness object of that field is exactly
+//                     that allocation. param "*": every pointer parameter whose harness object holds a `b`
+// field_off "*": every field of the container (with trailing-alloc the struct type check selects the parameters).
+// source: where the precondition comes from ("Klever spec drivers/pci/pci event spec.json", or a kernel document).
+struct CallbackModel {
+    std::string interface_, container, callback, kind, a, b, status, source;
+    uint64_t field_off = 0;
+    int param = 0;
+};
+// The models of one function (resolved against its unit): what translate() applies to parameter `param`.
+struct CallbackBinding {
+    int param = 0;
+    std::string kind;          // range | id-entry | trailing-alloc | buffer | drvdata (param -1: any pointer parameter)
+    int64_t lo = 0, hi = 0;    // range
+    std::string global;        // id-entry: the id table global
+    uint64_t elem_bytes = 0, count = 0;  // id-entry: element size, number of selectable entries (n - 1)
+    uint64_t extra_bytes = 0;  // trailing-alloc: private area; buffer: buffer size
+    std::string struct_type;   // trailing-alloc: the object's struct type; drvdata: the device struct
+    uint64_t field_off = 0;    // drvdata: byte offset of driver_data in the device struct
+    std::string alloc_type;    // drvdata: the struct the probe accesses its allocation as ("" when none)
+    std::string text;          // the named assumption
+};
+// Reads a --pir-callback-models file. On failure returns {} and sets error.
+PRISM_API std::vector<CallbackModel> load_callback_models(const std::filesystem::path& file, std::string& error);
+// The models that apply to `f`: the (container, offset) sites the unit registers `f` at, matched against the rows.
+// `skipped` (optional) gets one line per matching row that could not be applied and why.
+PRISM_API std::vector<CallbackBinding> resolve_callback_bindings(const ir::Module& m, const ir::Function& f,
+                                                                 const std::vector<CallbackModel>& models,
+                                                                 std::vector<std::string>* skipped = nullptr);
+// One lock contract of --lock-contracts (TSV, docs/KERNEL_CONCURRENCY.md section 14), for
+// unmodified code: the analysed (root) function acquires, releases or requires a lock.
+struct LockContract {
+    std::string function;  // IR name of the analysed function
+    std::string lock;      // "global:NAME" (a module global's address) or "arg:N" (0-based parameter)
+    std::string action;    // "acquires" (returns with it held) | "releases" (held on entry) | "requires-held" (both)
+    bool spin = false;     // kind "spin": a spinlock (atomic depth), otherwise a mutex
+};
+// Parses the TSV: function TAB lock TAB action [TAB kind]; '#' lines, blanks and a "function" header are skipped.
+// On a bad line *error gets "line N: reason" and the result is empty.
+PRISM_API std::vector<LockContract> parse_lock_contracts(std::string_view tsv, std::string* error = nullptr);
+// One object of an automatic harness as a call-site obligation (--pir-discharge):
+// the caller must pass a pointer to byte `member_off` of a live object of at least
+// `bytes` bytes aligned to 16 whose bytes are initialised, and the listed pointer
+// fields must hold pointers that satisfy the child obligation.
+struct ObligationNode {
+    std::string name;
+    uint64_t bytes = 0;
+    uint64_t member_off = 0;  // container_of: the pointer points this far into the object
+    unsigned align = 16;      // the object's alignment the callee's accesses need (the harness gives 16)
+    bool check_init = true;   // the bytes are checked initialised (objects over the cap keep that as an assumption)
+    std::vector<std::pair<uint64_t, std::shared_ptr<ObligationNode>>> nested;
+};
+// callee (IR name) -> per parameter index the obligation (nullptr: none)
+using CallObligations = std::map<std::string, std::vector<std::shared_ptr<ObligationNode>>>;
+
+// One contract of --callee-contracts for a callee without a body (docs/HARNESS_PHASE2.md). TSV, 7 columns:
+//   function  signature  requires  assigns  ensures  status  source
+// signature: `name:type,...->type` with type ptr, bool, u8/u16/u32/u64, s8/s16/s32/s64 (parameter names; ACSL style
+// clauses refer to them). Clauses are separated by `;`. requires: boolean expressions over the parameters, and
+// `\valid_bytes(p, n)` / `\valid_read_bytes(p, n)`. assigns: `\nothing`, `\anything`, `\bytes(p, n)`; empty = the pointer
+// arguments' objects are havocked (as --assume-unknown-calls, named). ensures: boolean expressions over `\result` and the
+// parameters, `\false` (the call does not return), and for a pointer result `\valid_bytes(\result, n)` (a fresh object),
+// optionally `\result == \null || \valid_bytes(\result, n)`. status: UNVALIDATED, REVIEWED or VALIDATED, always shown.
+struct CalleeContract {
+    std::string function;
+    std::string signature;
+    std::string requires_;
+    std::string assigns;
+    std::string ensures;
+    std::string status;
+    std::string source;
+};
+PRISM_API std::map<std::string, CalleeContract> load_callee_contracts(const std::filesystem::path& file, std::string& error);
+
 struct TranslateOptions {
+    // --pir-discharge: a translation that keeps only the obligations of these
+    // callees at their direct call sites (every other check is dropped).
+    CallObligations obligations;
+    // obligation callees whose call ends the path after its checks (the caller reaches the call at most once on any
+    // execution, so nothing after it is an obligation; the callee is then neither inlined nor havocked)
+    std::set<std::string> obligation_stop;
+    bool container_of = false;     // --pir-container-of
     // C++ before C++20 (CWG 1457): a located signed `<<` is UB when the base
     // is negative or the result does not fit the unsigned type; C: past the sign bit.
     bool shl_cxx = false;
     std::vector<std::pair<int, int>> signed_shl;  // (line, col) of C signed `<<`
     std::vector<FoldedUb> folded;                 // @__prism.folded(i32 k) -> folded[k]
     int inline_depth = 4;
+    // Frames of PRISM's own library models (kernel specs, libc models: ir::Function::is_model) do not count toward
+    // inline_depth: a model is inlined exactly like any callee, so this only adds encoding, never an assumption. They
+    // have their own bound: the whole inline stack may hold at most inline_depth + model_inline_depth frames, and a call
+    // past either bound is still UNENCODED (NEEDS-HARNESS). 0 restores the old rule (models count like user code).
+    // PRISM_PIR_MODEL_INLINE_DEPTH sets it (stage_mem.cpp).
+    int model_inline_depth = 16;
+    // A callee whose whole call tree has at most this many IR instructions is inlined past inline_depth (exactly, no
+    // assumption), within the same total cap; 0 = off. PRISM_PIR_SMALL_INLINE sets it (stage_mem.cpp).
+    int small_inline_insts = 64;
     // pointer parameters of the function being translated
     std::vector<PtrContract> contracts;
+    // --lock-contracts: lock contracts of the root function (translate_lock.inc lock_table)
+    std::vector<LockContract> lock_contracts;
+    AutoHarness auto_harness;
     // Mutable globals start at their initializer (program entry, `main`).
     // Otherwise their contents are arbitrary initialised bytes.
     bool globals_initial = false;
@@ -409,7 +648,91 @@ struct TranslateOptions {
     bool fp_checks = false;
     // `// prism: asm ensures <cond>` contracts: source line of the asm -> cond
     std::map<int, std::string> asm_contracts;
+    // --kernel-api linux|freebsd (docs/KERNEL_MODELS.md): kernel API specs are
+    // linked, and inline asm, asm goto, atomics and barriers are modelled
+    // conservatively, each use a named assumption. "" = off (the default).
+    std::string kernel_api;
+    // --assume-unknown-calls: a call without a spec havocs its result and the
+    // objects its pointer arguments point to, recorded as an assumption.
+    // Opt-in, never on by default (docs/KERNEL_MODELS.md "Policy").
+    bool assume_unknown_calls = false;
+    // --ops-table FILE: the fields of known ops tables (empty = off). An indirect call
+    // through one of them is checked against each of its targets; a field with more
+    // than ops_max_targets targets stays UNENCODED ("too many indirect targets").
+    std::vector<OpsField> ops_table;
+    std::size_t ops_max_targets = 8;
+    // --pir-icall-havoc (kernel mode): an indirect call with more than 16 candidate targets, or to a target outside the
+    // unit's address-taken functions, is a havoc of all memory with an arbitrary result (named), not UNENCODED
+    bool icall_havoc = false;
+    // --pir-variadic: variadic functions are translated, va_start gives arbitrary variadic arguments (translate_va.inc, named)
+    bool variadic = false;
+    // --pir-recursion: a recursive call of a function on the inlining stack is that function's own verdict for the call's
+    // arguments (induction on the recursion depth); its effects are a havoc of all memory and an arbitrary result (named)
+    bool recursion = false;
+    // --pir-kernel-sprintf (Linux kernel mode): sprintf with a literal format writes at most the format's bound, %p extensions included
+    bool kernel_sprintf = false;
+    // --pir-addrspace (kernel mode): loads and stores through ptr addrspace(N) are ordinary pointer accesses (named)
+    bool addrspace = false;
+    // --pir-wide-int: integers of 65..512 bits are bit-vectors of their width (otherwise UNENCODED)
+    bool wide_int = false;
+    // --pir-field-invariants: field value invariants applied to automatic-harness objects
+    std::vector<FieldInvariant> field_invariants;
+    // --pir-callback-models: the loaded rows; translate() resolves the ones that apply to the analysed function
+    std::shared_ptr<const std::vector<CallbackModel>> callback_models;
+    // --pir-param-preconditions: the rows whose scope matches this unit (all functions)
+    std::vector<ParamPrecondition> param_preconditions;
+    // --callee-contracts FILE (docs/HARNESS_PHASE2.md): assume-guarantee stubs for callees that have no body
+    // (IR name -> contract). A callee with a body, or a kernel spec, is never replaced by one.
+    std::map<std::string, CalleeContract> callee_contracts;
+    // --pir-ops-auto: ops_table also holds the entries derived from the unit's own stores and initialisers
+    // (OpsField::role "unit-derived"); a function-pointer field of an automatic harness is bound to one of its targets.
+    bool ops_auto = false;
+    // --pir-addr-values: ptrtoint / inttoptr constant expressions and integer-address initialisers are modelled
+    bool addr_values = false;
+    // --pir-builtin-contracts (kernel mode): contracts for @llvm.read_register / @llvm.prefetch / @llvm.objectsize
+    bool builtin_contracts = false;
+    // --pir-build-semantics with a unit built with -fwrapv / -fno-strict-overflow (lowered with -fwrapv, so clang emits no
+    // nsw): signed `<<` into / past the sign bit or of a negative value wraps, and clang's folded signed-overflow and
+    // signed-shift diagnostics are not UB. Shift amounts, division and memory are checked as before.
+    bool wrapv = false;
+    // --pir-kernel-stops (kernel mode): Linux BUG() and panic / vpanic / kassert_panic end the path (named assumption)
+    bool kernel_stops = false;
+    // --pir-kernel-current (kernel mode): the running thread's object is valid: Linux `current` (a %gs read of
+    // current_task / const_current_task / pcpu_hot) and FreeBSD `curthread` (the %gs:0 pointer read of __curthread)
+    bool kernel_current = false;
+    // --pir-global-harness (kernel mode): mutable pointer globals point to a valid object at entry (named, per global)
+    bool global_harness = false;
+    // --pir-lock-wrappers (kernel mode): a root that only acquires (only releases) locks on every path is a lock
+    // wrapper: LOCK-HELD-ON-RETURN (LOCK-UNHELD-UNLOCK) is not checked for it, as a named assumption
+    bool lock_wrappers = false;
+    // --pir-lock-scopes (kernel mode): a lock the root releases and never acquires anywhere in its call tree is held
+    // by its caller on entry (named, per lock); one it acquires and never releases anywhere is returned held (named)
+    bool lock_scopes = false;
+    // --pir-bpf-helpers (Linux kernel mode): a BPF helper (the .func of a bpf_func_proto in the unit) gets, for each
+    // argument the proto types ARG_PTR_TO_* without PTR_MAYBE_NULL, a valid object (named: the BPF verifier)
+    bool bpf_helpers = false;
+    // --pir-global-harness-deep (with --pir-global-harness): pointer fields of a harnessed global's object that the
+    // function loads and uses get their own objects (auto-harness planner), and a list_head global is a valid
+    // circular list (named, per global)
+    bool global_harness_deep = false;
 };
+
+// Ops-table entries derived from the module itself (--pir-ops-auto): every `store ptr @f, getelementptr %struct.T, p, 0, K`
+// and every function address in a constant initialiser of struct type T at field K makes @f a target of (T, K). The set is
+// what THIS unit assigns: a field another unit assigns is not in it (a call through it then ends in the "target outside"
+// stop, never in a silent proof). `role` is "unit-derived"; fields with more than max_targets targets are left out.
+PRISM_API std::vector<OpsField> derive_ops_table(const ir::Module& m, std::size_t max_targets = 8);
+// Adds the entries of `derived` for fields the explicit table does not list.
+PRISM_API void merge_ops_tables(std::vector<OpsField>& explicit_table, const std::vector<OpsField>& derived);
+
+// Reads a --pir-field-invariants file (format at FieldInvariant). On failure returns {} and sets error.
+PRISM_API std::vector<FieldInvariant> load_field_invariants(const std::filesystem::path& file, std::string& error);
+// PRISM_PIR_MINE_FIELDS: one JSON line per store to a struct field the module makes (field_mine.cpp): struct, offset,
+// width, kind (alloc / global / const / null / other), value or size. Input of OS-Proving tools/prism_clusters/mine_fields.py.
+PRISM_API void mine_field_stores(const ir::Module& m, const std::string& unit, std::ostream& out);
+
+// Reads an --ops-table file (format in docs/PIR.md). On failure returns {} and sets error.
+PRISM_API std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error);
 
 // LP64 unless the module's datalayout has 32-bit pointers (ILP32).
 PRISM_API PtrModel ptr_model_of(const ir::Module& m);
@@ -421,6 +744,16 @@ PRISM_API std::string to_text(const Function& fn);
 PRISM_API void export_lean_pair(const std::filesystem::path& out_root, const std::string& unit,
                                 const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
                                 const Translation& t);
+// Whether the function's translation is inside the Lean-proved LLVM fragment
+// (the same test export_lean_pair applies: no `L unsupported <why>`), without
+// writing any file. `reason` is the unsupported text, or why there is no
+// translation at all. No change to the proofs: this only reports the export's verdict.
+struct LeanCoverage {
+    bool supported = false;
+    std::string reason;
+};
+PRISM_API LeanCoverage lean_coverage(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
+                                     const Translation& t);
 PRISM_API std::string sha256_hex(std::string_view data);
 
 // ---------------------------------------------------------------------------
@@ -490,6 +823,14 @@ enum class MemEncoding { Array, Bv };
 
 struct EncodeOptions {
     MemEncoding memory = MemEncoding::Bv;  // QF_BV; Array is the unbounded alternative (slower on ranged copies)
+    // Bv: the arbitrary contents of a havoc entry (arbitrary initial bytes,
+    // a havocked object, an asm memory clobber) as one uninterpreted function
+    // of the address, instead of a fresh constant per read plus one pairwise
+    // constraint per earlier read (quadratic; docs/PIR.md "Havoc reads as
+    // functions"). Exact. The VCs are QF_UFBV, so check_function turns it off
+    // in certified mode and pir_vcs never uses it. $PRISM_PIR_HAVOC_UF=0/1
+    // overrides it in check_function.
+    bool havoc_uf = true;
 };
 
 PRISM_API bool z3_available();
@@ -634,6 +975,9 @@ struct Frontend {
     // pir stage): searched before libstdc++ when non-empty (docs/PIR.md
     // "C++ library models"). Empty: the platform library only.
     std::filesystem::path cxx_models;
+    // --pir-declared-types: lower with -g (full debug information: the declared types of parameters and struct
+    // members) instead of -gline-tables-only. Metadata only: the instructions are the same.
+    bool full_debug = false;
 };
 PRISM_API Frontend find_frontend(const Config& cfg);
 
@@ -646,7 +990,15 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
                                                  std::vector<std::pair<int, int>>* signed_shl = nullptr,
                                                  std::string* cxx_models = nullptr,
                                                  const std::vector<std::string>& include_flags = {},
-                                                 int cxx_std = 17);
+                                                 int cxx_std = 17,
+                                                 std::vector<std::pair<std::string, FoldedUb>>* folded_other = nullptr);
+// The flags of `unit` from cfg.compile_commands (--compile-commands), as the
+// pir stage takes them (docs/PIR.md "Units with their own flags"): empty when
+// the option is unset or the file has no entry (`note` then says so). `note`
+// names the entry and the flags deliberately not taken; `cxx_std` is raised
+// to the entry's -std=c++NN year when there is one.
+PRISM_API std::vector<std::string> unit_compile_flags(const Config& cfg, const std::filesystem::path& unit,
+                                                      int* cxx_std = nullptr, std::string* note = nullptr);
 // cxx_std: the C++ standard the unit is built with (its compile_commands.json
 // -std=, else 17, the default of the compilers PRISM runs). Below 20 a signed
 // left shift whose result does not fit is UB (C++11..17, CWG 1457), so the
@@ -682,13 +1034,18 @@ PRISM_API bool build_cxx_std_module(const std::filesystem::path& clangxx, const 
 
 struct ModelLibrary {
     std::vector<ir::Module> units;  // lowered model files
+    std::vector<std::string> unit_names;  // file name of each unit (kernel specs: linux_*.cpp, freebsd_*.cpp)
     std::string error;              // non-empty: the models could not be built
 };
 // Lower the embedded models with the same clang/opt pipeline (once per run).
 PRISM_API ModelLibrary build_models(const Frontend& fe, double timeout_s);
 // Link into m every model function m declares but does not define
 // (transitively, with the globals they use). Returns the linked names.
-PRISM_API std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib);
+// kernel_api "linux" / "freebsd" also links the kernel API specs of that kernel
+// (models/kernel/linux_*.cpp, freebsd_*.cpp, docs/KERNEL_MODELS.md); they take
+// precedence over the libc models of the same name. "" links the libc models only.
+PRISM_API std::vector<std::string> link_models(ir::Module& m, const ModelLibrary& lib,
+                                               const std::string& kernel_api = "");
 
 // ---------------------------------------------------------------------------
 // Pointer-parameter contracts (Law 6, docs/PIR.md "Pointer parameters")
@@ -702,6 +1059,75 @@ PRISM_API std::vector<std::string> link_models(ir::Module& m, const ModelLibrary
 PRISM_API std::vector<PtrContract> parse_contracts(const std::vector<std::string>& source_lines, int fn_line,
                                                    const ir::Function& f,
                                                    std::vector<std::string>* unparsed = nullptr);
+
+// --lock-contracts FILE: read and parse (throws std::runtime_error on a missing file or a bad line)
+PRISM_API std::vector<LockContract> read_lock_contracts(const std::string& path);
+
+// Lock-order inversions (LOCK-ORDER-INVERSION, docs/KERNEL_CONCURRENCY.md section 14): a module pass
+// over the unit's IR (src/prism/pir/lock_order.cpp). A class pair taken in both orders is one entry.
+struct LockOrderInversion {
+    std::string function;       // the function whose path takes `second` before `first`
+    std::string other;          // the function whose path takes `first` before `second`
+    std::string first, second;  // lock classes (module global names), first < second
+};
+// A cycle of three or more lock classes: classes[i] is taken before classes[i+1] (cyclically), in functions[i].
+struct LockOrderCycle {
+    std::vector<std::string> classes;    // rotated so that the smallest class comes first
+    std::vector<std::string> functions;  // witness of each edge; functions.back() closes the cycle
+};
+// LOCK-CTX-MISMATCH (lockdep inconsistent {IN-HARDIRQ-W} -> {HARDIRQ-ON-W}): a spinlock class taken in an
+// interrupt handler's context (hardirq: the handler and its callees to depth 3) and also taken without
+// interrupt disabling in another function.
+struct LockCtxMismatch {
+    std::string function;    // the process-context function that takes the class without irq disabling
+    std::string handler;     // the interrupt handler whose context takes the same class
+    std::string lock_class;  // module global name
+};
+// A sleeping primitive reached in hardirq context (SLEEP-IN-ATOMIC, interrupt handler).
+struct HardirqSleep {
+    std::string function;  // the function whose body (or a callee's) calls the sleeping primitive
+    std::string handler;   // the interrupt handler it is reached from
+    std::string callee;    // the sleeping primitive
+};
+// What the lock-order pass saw of one unit (not findings): lock call sites and how many resolved to a class.
+// acquire_sites/release_sites: calls to a lock primitive (or a contract row) in defined functions. *_reached: seen by
+// the exploration; *_resolved: given a class (global, struct field, or a parameter class from a caller) in at least one
+// exploration. static_kind: acquire sites by what the lock operand is ("global", "field", "param", "unresolved:...").
+struct LockCoverage {
+    long functions = 0, acquire_sites = 0, release_sites = 0, table_sites = 0;
+    long acquire_reached = 0, acquire_resolved = 0, release_reached = 0, release_resolved = 0;
+    long geps = 0, field_geps = 0, pairs = 0, steps = 0;
+    bool step_limit_hit = false;
+    std::map<std::string, long> static_kind;
+    std::map<std::string, long> unmodelled_lock_calls;  // calls to undefined lock-like functions the pass does not model
+    std::set<std::string> global_classes, field_classes;
+};
+struct LockOrderReport {
+    LockCoverage coverage;
+    std::vector<LockOrderInversion> inversions;
+    std::vector<LockOrderCycle> cycles;
+    std::vector<LockCtxMismatch> ctx_mismatches;
+    std::vector<HardirqSleep> hardirq_sleeps;
+};
+// The lock-order and interrupt-context pass over the unit (docs/KERNEL_CONCURRENCY.md sections 14 and 15).
+PRISM_API LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockContract>& contracts,
+                                            bool scopes = false);
+// --pir-lock-scopes: the locks a root's call tree acquires and releases through PRISM's lock models, by lock class (a
+// global's name, followed through zero-offset getelementptrs, spinlock_check-style helpers and guard() slots): bit 0
+// acquired, bit 1 released, bit 2 a spin acquire, bit 3 a spin release. unknown_*: some acquire (release) has a lock
+// that is not a classified global, or the walk could not see it, so no lock may be called release-only (acquire-only).
+struct LockSites {
+    std::map<std::string, int> by_class;
+    bool unknown_acquire = false;
+    bool unknown_release = false;
+    // RCU read-side nesting and preempt / bh count changes through the models: bit 0 an increment, bit 1 a decrement,
+    // bit 2 a change whose sign is not known (or not seen)
+    int rcu = 0;
+    int preempt = 0;
+};
+PRISM_API LockSites lock_sites(const ir::Module& m, const ir::Function& root);
+PRISM_API std::vector<LockOrderInversion> lock_order_inversions(const ir::Module& m,
+                                                                const std::vector<LockContract>& contracts);
 
 // The pir stage: one finding per defined function of every C/C++ unit.
 PRISM_API std::vector<Finding> run_pir(const std::vector<std::filesystem::path>& sources,

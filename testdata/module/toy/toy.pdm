@@ -1,0 +1,59 @@
+# A toy device for the fixtures of docs/DEVICE_MODEL.md (not a real device).
+#
+#   CTRL     @0x00 RW   bit0 = start (the device becomes busy), bit1 = enable
+#   STATUS   @0x04 RO   bit0 = busy; bits 8..9 = channel in use, never 3 (the model's constraint)
+#   INTSTAT  @0x08 W1C  bit0 = done; write 1 to clear
+#   INTEN    @0x0c RW   bit0 = done interrupt enable
+#   DATA     @0x10 WO   write only while not busy (a protocol rule)
+#
+# After `start` the device finishes at some later time (event done): busy clears, INTSTAT.0 is set.
+model toy {
+  doc "toy device for fixtures";
+  source "written for the PRISM fixtures; no real device";
+  validation unvalidated "fixture only";
+  window 0x100;
+
+  state busy : u32 = 0;
+  state chan : u32 = 0;
+
+  register CTRL @0x00 : u32 RW mask 3 {
+    write {
+      CTRL = value;
+      if ((value & 1) != 0) {
+        busy = 1;
+        havoc chan where chan <= 2;
+      }
+    }
+  }
+
+  # The status word is a function of device state; the channel field is nondeterministic within 0..2.
+  register STATUS @0x04 : u32 RO {
+    read in ((result & 0xfffffcfe) == busy) && (((result >> 8) & 3) <= 2);
+  }
+
+  register INTSTAT @0x08 : u32 W1C reset 0 mask 1;
+
+  register INTEN @0x0c : u32 RW reset 0 mask 1;
+
+  register DATA @0x10 : u32 WO {
+    write {
+      require busy == 0 : "DATA written while the device is busy";
+      DATA = value;
+    }
+  }
+
+  event done {
+    if (busy != 0) {
+      busy = 0;
+      INTSTAT = 1;
+    }
+  }
+
+  irq line = INTSTAT & INTEN;
+
+  policy unmapped_read violation;
+  policy unmapped_write violation;
+  policy wo_read violation;
+  policy ro_write violation;
+  policy width strict;
+}

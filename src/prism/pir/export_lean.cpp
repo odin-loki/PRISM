@@ -381,6 +381,11 @@ std::optional<std::pair<std::string, std::string>> afail_kind(const ir::Module& 
     const std::string& n = in.callee;
     if (n == "llvm.trap" || n == "llvm.debugtrap" || n == "llvm.ubsantrap")
         return std::pair<std::string, std::string>{"trap", "CXX-UNREACHABLE"};
+    // translate.cpp Tr::call: a call of an SV-COMP error sink (no operands) is the violation at the
+    // call site whatever the unit's definition of the sink does (it is not inlined, a defined
+    // reach_error included): the same noreturn check an undefined sink gets below.
+    if ((n == "__VERIFIER_error" || n == "reach_error") && in.ops.empty())
+        return std::pair<std::string, std::string>{"reach_error", "FUNC-CONTRACT"};
     if (m.find(n)) return std::nullopt;
     if (n == "__assert_fail" || n == "__assert_rtn" || n == "_assert" || n == "__assert" || n == "__assert2" ||
         n == "_wassert")
@@ -735,7 +740,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         for (auto& k : opt.contracts)
             if (k.param == p.name) c = &k;
         if (!own && !c) {
-            harness << "L ptrparam %" << name(p.name) << "\n";
+            if (opt.auto_harness.on)
+                throw Unsupported{"automatic pointer harness (struct object and nested pointer objects are not in the Lean model)"};
+            harness <<"L ptrparam %" << name(p.name) << "\n";
             continue;
         }
         if (bt || sret != std::string::npos) {
@@ -868,6 +875,9 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
         bool xalloc = false;  // a user throw's __cxa_allocate_exception was written (L xalloc)
         for (auto& in : bl.insts) {
             if (!in.parsed) throw Unsupported{in.op};
+            // kernel mode (docs/KERNEL_MODELS.md): atomics and barriers lowered by the parser are
+            // assumptions outside the Lean-proved fragment
+            if (!in.kernel_note.empty()) throw Unsupported{"kernel-mode model: " + in.kernel_note};
             const std::string& op = in.op;
             if (op == "getelementptr") {  // its flags are checked by gep_line
                 try {
@@ -1092,6 +1102,11 @@ void llvm_side(std::ostream& o, const ir::Module& m, const ir::Function& f, cons
                 // Tr::call: check(1, prop, cls), then the rest of the block is dead (noreturn);
                 // an unconditional br still makes its target reachable (normal_blocks)
                 auto [prop, cls] = *afail_kind(m, in);
+                // translate.cpp Tr::call: abort() inside SV-COMP's assume_abort_if_not ends the path as an
+                // assumption (assume(false)), not as a crash check. The proved fragment has no
+                // assume-and-stop, so it is outside the fragment, never compared as a check.
+                if (prop == "abort" && f.name == "assume_abort_if_not")
+                    throw Unsupported{"abort() in assume_abort_if_not is an assumption (assume-and-stop)"};
                 auto& t = bl.insts.back();
                 b << "L afail " << prop << " " << cls;
                 if (t.op == "br") b << " br " << name(t.targets[0]);
@@ -1264,13 +1279,10 @@ void pir_side(std::ostream& o, const Function& fn) {
     }
 }
 
-}  // namespace
-
-void export_lean_pair(const std::filesystem::path& out_root, const std::string& unit, const ir::Module& m,
-                      const ir::Function& f, const TranslateOptions& opt, const Translation& t) {
-    const char* env = prism::settings::cstr(prism::settings::pir_lean_export());
-    if (!env || !*env) return;
-    std::filesystem::path dir = std::string(env) == "1" ? out_root / "pir-lean" : std::filesystem::path(env);
+// The text of one (LLVM fragment, PIR) pair; `unsupported` (when given) is set
+// to the reason when the function is outside the Lean-proved LLVM fragment.
+std::string pair_text(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt, const Translation& t,
+                      std::string* unsupported) {
     std::ostringstream o;
     o << "func " << (plain_name(f.name) ? f.name : std::string("?")) << "\n";
     try {
@@ -1351,6 +1363,7 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
         std::string why = u.why;
         std::replace(why.begin(), why.end(), '\n', ' ');
         o << "L unsupported " << why << "\n";
+        if (unsupported) *unsupported = why;
     }
     if (t.fn) {
         o << "status ok\n";
@@ -1361,11 +1374,44 @@ void export_lean_pair(const std::filesystem::path& out_root, const std::string& 
         o << "status unencoded " << why << "\n";
     }
     o << "end\n";
+    return o.str();
+}
+
+}  // namespace
+
+void export_lean_pair(const std::filesystem::path& out_root, const std::string& unit, const ir::Module& m,
+                      const ir::Function& f, const TranslateOptions& opt, const Translation& t) {
+    const char* env = prism::settings::cstr(prism::settings::pir_lean_export());
+    if (!env || !*env) return;
+    std::filesystem::path dir = std::string(env) == "1" ? out_root / "pir-lean" : std::filesystem::path(env);
+    const std::string text = pair_text(m, f, opt, t, nullptr);
     static std::mutex mu;
     std::lock_guard<std::mutex> lock(mu);
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    std::ofstream(dir / (unit + ".pirl"), std::ios::app) << o.str();
+    std::ofstream(dir / (unit + ".pirl"), std::ios::app) << text;
+}
+
+LeanCoverage lean_coverage(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt,
+                           const Translation& t) {
+    LeanCoverage c;
+    if (!t.fn) {
+        c.reason = "not translated to PIR (" + t.reason + ")";
+        return c;
+    }
+    if (t.fn->ptr.w != 64) {
+        c.reason = "ILP32 task (the Lean model is LP64 only)";
+        return c;
+    }
+    std::string why;
+    try {
+        (void)pair_text(m, f, opt, t, &why);
+    } catch (const std::exception& e) {
+        why = std::string("export failed: ") + e.what();
+    }
+    c.supported = why.empty();
+    c.reason = why;
+    return c;
 }
 
 }  // namespace prism::pir

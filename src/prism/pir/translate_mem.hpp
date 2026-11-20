@@ -35,6 +35,13 @@ public:
     // address of function @name: a constant pointer to a non-dereferenceable
     // object with id in [fn_obj_base(), max_objects()) (translate_ctl.inc)
     virtual Arg fn_addr(const std::string& name) = 0;
+    // --pir-global-harness-deep (translate.cpp): nested objects of a harnessed pointer global's object `obj`, and the
+    // entry state of a list_head global at `p`. Both run in the prologue; the default does nothing.
+    virtual void global_harness_nest(Arg obj, const std::string& name) { (void)obj; (void)name; }
+    virtual void list_head_harness(Arg p, const std::string& name) { (void)p; (void)name; }
+    // bytes placed before a list_head global in its object (the entry's offset of its list member), so that
+    // container_of(&head) of the loop's end test is representable; 0 = none
+    virtual uint64_t list_head_pad(const std::string& name) { (void)name; return 0; }
 };
 
 // Target data layout (x86-64 defaults, overridden by the module's
@@ -114,6 +121,17 @@ bool reaches_alloc_failed(const ir::Module& m, const ir::Function& f);
 // caught-exceptions stack in the prologue (export_lean: `L glob %__prism.caught`)
 bool reaches_caught_slot(const ir::Module& m, const ir::Function& f);
 
+// --pir-wide-int: the widest integer type the translator accepts in a function body (64; 128 with the option).
+// Function parameters and results stay at most 64 bits. Set for one translation by IntWidthScope.
+unsigned max_int_bits();
+struct IntWidthScope {
+    unsigned saved;
+    explicit IntWidthScope(unsigned w);
+    ~IntWidthScope();
+    IntWidthScope(const IntWidthScope&) = delete;
+    IntWidthScope& operator=(const IntWidthScope&) = delete;
+};
+
 class MemTr {
 public:
     MemTr(TrApi& t, const ir::Module& m);
@@ -127,7 +145,15 @@ public:
     // allocation and initialisation (emit_entry_globals) when block 0 starts.
     void preassign_globals(const ir::Function& f);
     void emit_entry_globals();
+    // --pir-global-harness: a mutable pointer global with arbitrary entry contents points to a valid object
+    void global_harness(Arg p, const ir::Global& g, const std::string& name);
+    // --pir-global-harness-deep: the pad before a mutable struct list_head global (0 when not one)
+    uint64_t list_pad(const ir::Global& g, const std::string& name);
     Arg const_gep(int b, const ir::Value& ce, int line);  // constant getelementptr expression
+    // --pir-addr-values: constant ptrtoint / inttoptr / bitcast expressions. A pointer is carried as its packed
+    // representation, so ptrtoint is that value and `inttoptr (ptrtoint x)` is x; `inttoptr (C)` with C != 0 is the
+    // constant C (no object: a dereference is reported) and is a named assumption.
+    Arg const_addr(int b, const ir::Value& ce, int line);
 
     // alloca: dst gets a fresh stack object. count: element count (dynamic
     // allocas / VLAs), count_src: the value before its zext/sext (VLA size
@@ -146,6 +172,12 @@ public:
     // the base is the last field of a struct (flexible-array idiom: exempt).
     void gep(int b, int dst, Arg base, const ir::Type& ety, const std::vector<Arg>& idx, bool inbounds, int line,
              int use = 3, bool base_last_field = false);
+    // Kernel mode: bytes from ptr to the end of its object become arbitrary (no violation:
+    // not for null, freed, read-only or FILE objects).
+    void havoc_object_tail(int b, Arg ptr, int line);
+    // Kernel mode: every object's contents become arbitrary (Stmt::MemHavoc; inline
+    // asm with a "memory" clobber). Sizes, liveness and kinds are unchanged.
+    void havoc_all(int b);
     void icmp(int b, int dst, const std::string& pred, Arg x, Arg y, int line);
     // Integer comparison of two ptrtoint values (std::less<T*>): exact within
     // one object (offset order) and for ==/!=; the order of addresses of two
@@ -157,15 +189,28 @@ public:
     void memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line, bool self_ok = false);
     void memset_(int b, Arg dst, Arg byte, Arg len, int line);
     // heap / new / FILE: returns the pointer (never null here; the models decide failure)
-    Arg alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst = -1);
+    // align: the object's alignment (the automatic harness gives a harness object its type's own, at least 16)
+    Arg alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst = -1, unsigned align = 16);
     void dealloc(int b, Arg ptr, MemKind expected, const std::string& what, int line, bool kill = true);
     void end_lifetime(int b, Arg ptr);  // stack object of an inlined callee at its return
     // llvm.lifetime.start: a stack object's lifetime starts (again), its
     // `size` bytes (nullopt: to the end of the object) become uninitialised
     void lifetime_start(int b, Arg ptr, std::optional<uint64_t> size, int line);
     void stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int line);
+    // --pir-discharge (class HARNESS-OBLIGATION): `p` points `member_off` bytes into a live, writable, 16-aligned object
+    // of at least `bytes` bytes, whose bytes are initialised when `check_init`; `distinct`: two pointers are to different objects.
+    // `own`: the caller's own automatic-harness objects (its parameters' roots and nested objects). The object must be
+    // one of them, a local or a heap allocation (ob-origin): never a global or an object PRISM assumed (global harness,
+    // `current`, a field invariant's object, an unknown call's result), which the callee's proof took to be distinct
+    // from its harness objects.
+    void obligation_object(int b, Arg p, uint64_t bytes, uint64_t member_off, unsigned align, bool check_init,
+                           const std::vector<Arg>& own, const std::string& what, int line);
+    void obligation_distinct(int b, Arg p, Arg q, const std::string& what, int line);
     Arg obj_size_remaining(int b, Arg ptr);  // size - offset (0 when out of range)
     void read_range(int b, Arg ptr, Arg len, int line);  // range access checks (read)
+    // --callee-contracts requires: `p` points into a live object with at least `n` bytes from p (n = 0: nothing is
+    // required); writable when `write`. Class FUNC-CONTRACT, the message starts with `what` (docs/HARNESS_PHASE2.md).
+    void contract_valid(int b, Arg p, Arg n, bool write, const std::string& what, int line);
     void write_havoc(int b, Arg ptr, Arg len, int line);  // range written with arbitrary bytes
     Arg fresh_cstr(int b, MemKind k, int line);
     Arg stack_save(int b);
@@ -220,5 +265,14 @@ PRISM_API FormatPlan plan_format(const std::string& callee, const std::optional<
                                  const std::vector<ir::Type>& args,
                                  const std::vector<std::optional<uint64_t>>& consts = {});
 PRISM_API bool is_format_function(const std::string& callee);
+// Linux kernel sprintf with a literal format (libc_format.cpp, --pir-kernel-sprintf): upper bound on the characters written
+// (without the NUL) apart from the %s arguments without a precision, whose string lengths the caller adds.
+struct KernelFormatPlan {
+    std::string unencoded;               // non-empty: "UNENCODED: ..." (no bound)
+    uint64_t max_len = 0;
+    std::vector<std::size_t> str_args;   // call-argument indices of %s conversions without a precision
+    std::size_t nargs = 0;               // call arguments the format consumes (first_arg + conversions)
+};
+PRISM_API KernelFormatPlan plan_kernel_format(const std::string& fmt, std::size_t first_arg);
 
 }  // namespace prism::pir::pirmem

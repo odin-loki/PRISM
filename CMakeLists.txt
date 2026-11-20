@@ -22,11 +22,11 @@ if(NOT CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 23.1.4)
   message(WARNING "PRISM pins clang 23.1.4 (scripts/fetch_llvm.py); building with ${CMAKE_CXX_COMPILER_VERSION}")
 endif()
 if(WIN32)
-  add_compile_definitions(NOMINMAX)
+  # _USE_MATH_DEFINES: FORGE headers (inference/diffusion.hpp) use M_PI, which MSVC UCRT only declares with it.
+  add_compile_definitions(NOMINMAX _USE_MATH_DEFINES)
 endif()
 
 option(PRISM_CUDA "Build CUDA mutation kernels" ON)
-option(PRISM_QT "Build native Qt GUI" ON)
 option(PRISM_Z3 "Build in-tree Z3 (the PIR solver)" ON)
 option(PRISM_TESTS "Build C++ unit tests" ON)
 # Windows CI: portable doctest TUs only (no unistd-heavy integration tests).
@@ -66,7 +66,7 @@ set(PRISM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 # Never file(GLOB) third_party/.
 
 # --- prism-deps: supply-chain tool (roadmap Part 1) ---
-# Licence firewall, linked-tree digests, pinned tool fetcher and SBOM writer
+# Linked-tree digests, pinned tool fetcher and SBOM writer
 # for third_party/MANIFEST.toml. Standard library only: it links no
 # third_party/ code, so CI and the Docker build compile and run it to verify
 # third_party/ before anything from there is built. -DPRISM_DEPS_ONLY=ON
@@ -77,7 +77,6 @@ add_library(prism_deps_lib STATIC
   src/prism/log.cpp  # prism::log on FORGE's logger, shared by prism-deps and (through this lib) prism_core
   src/tools/prism_deps/cli.cpp
   src/tools/prism_deps/fetch.cpp
-  src/tools/prism_deps/licence.cpp
   src/tools/prism_deps/manifest.cpp
   src/tools/prism_deps/sbom.cpp
   src/tools/prism_deps/sha.cpp
@@ -225,14 +224,17 @@ set(PRISM_SRC
   src/prism/hash.cpp
   src/prism/havoc.cpp
   src/prism/interval.cpp
-  src/prism/gui_model.cpp
   src/prism/journal.cpp
   src/prism/laws.cpp
   src/prism/forge_services.cpp
   src/prism/membudget.cpp
   src/prism/models.cpp
+  src/prism/module/check.cpp
+  src/prism/module/devmodel.cpp
+  src/prism/module/spec.cpp
   src/prism/pipeline.cpp
   src/prism/pir/bench.cpp
+  src/prism/pir/callee_contract.cpp
   src/prism/pir/contracts.cpp
   src/prism/pir/encode.cpp
   src/prism/pir/export_lean.cpp
@@ -242,17 +244,26 @@ set(PRISM_SRC
   src/prism/pir/idioms/idioms.cpp
   src/prism/pir/folded_diag.cpp
   src/prism/pir/frontend.cpp
+  src/prism/pir/harness.cpp
+  src/prism/pir/field_mine.cpp
+  src/prism/pir/callback_models.cpp
+  src/prism/pir/discharge.cpp
+  src/prism/pir/jsonl.cpp
   src/prism/pir/ir_parser.cpp
   src/prism/pir/libc_format.cpp
   src/prism/pir/libc_models.cpp
   src/prism/pir/lower_ctl.cpp
+  src/prism/pir/lock_order.cpp
   src/prism/pir/memory.cpp
+  src/prism/pir/ops_auto.cpp
   src/prism/pir/pir.cpp
   src/prism/pir/stage.cpp
   src/prism/pir/stage_mem.cpp
   src/prism/pir/translate.cpp
   src/prism/pir/translate_fp.cpp
   src/prism/pir/translate_mem.cpp
+  src/prism/pir/models/asm/x86_64_asm.cpp
+  src/prism/pir/models/asm/x86_64_parse.cpp
   src/prism/cli.cpp
   src/prism/polyglot.cpp
   src/prism/toml_syntax.cpp
@@ -294,6 +305,7 @@ set(PRISM_SRC
   # Solver library (roadmap 3.1-3.3): portfolio, query cache, certified mode, SLS.
   src/prism/solver/certstore.cpp
   src/prism/solver/cnf.cpp
+  src/prism/solver/cube.cpp
   src/prism/solver/gbdt.cpp
   src/prism/solver/leanbb.cpp
   src/prism/solver/portfolio.cpp
@@ -311,6 +323,31 @@ set(PRISM_PIR_MODELS
   src/prism/pir/models/libc/stdlib.cpp
   src/prism/pir/models/libc/stdio.cpp
   src/prism/pir/models/libc/fmtdouble.cpp
+  # kernel API specs (docs/KERNEL_MODELS.md): linked only with --kernel-api linux|freebsd
+  src/prism/pir/models/kernel/kernel_model.h
+  src/prism/pir/models/kernel/linux_alloc.cpp
+  src/prism/pir/models/kernel/linux_lock.cpp
+  src/prism/pir/models/kernel/linux_uaccess.cpp
+  src/prism/pir/models/kernel/linux_mmio.cpp
+  src/prism/pir/models/kernel/linux_misc.cpp
+  src/prism/pir/models/kernel/linux_driverdata.cpp
+  src/prism/pir/models/kernel/linux_netlink.cpp
+  src/prism/pir/models/kernel/linux_waitqueue.cpp
+  src/prism/pir/models/kernel/linux_completion.cpp
+  src/prism/pir/models/kernel/freebsd_w1_user.cpp
+  src/prism/pir/models/kernel/freebsd_w1_word.cpp
+  src/prism/pir/models/kernel/freebsd_w1_more.cpp
+  src/prism/pir/models/kernel/linux_w1_sync.cpp
+  src/prism/pir/models/kernel/linux_w1_net.cpp
+  src/prism/pir/models/kernel/freebsd_alloc.cpp
+  src/prism/pir/models/kernel/freebsd_lock.cpp
+  src/prism/pir/models/kernel/freebsd_misc.cpp
+  src/prism/pir/models/kernel/linux_w2_a.cpp
+  src/prism/pir/models/kernel/linux_w2_b.cpp
+  src/prism/pir/models/kernel/linux_w2_c.cpp
+  src/prism/pir/models/kernel/linux_w2_d.cpp
+  src/prism/pir/models/kernel/freebsd_w2_a.cpp
+  src/prism/pir/models/kernel/freebsd_w2_b.cpp
   # kernel / data-structure library contracts (docs/CONTRACTS.md), lowered and linked like libc
   src/prism/pir/models/kernel/kernel.cpp
   # C++ library model headers (docs/PIR.md "C++ library models"), embedded as "cxx/<name>"
@@ -408,6 +445,23 @@ string(APPEND _pir_models_txt "  };\n  return k;\n}\n}  // namespace prism::pir\
 file(CONFIGURE OUTPUT "${_pir_models_cpp}" CONTENT "${_pir_models_txt}" @ONLY)
 list(APPEND PRISM_SRC "${_pir_models_cpp}")
 
+# Device-model harness files (docs/DEVICE_MODEL.md): preamble, ghost state,
+# kernel-flavour stubs and the built-in device models, embedded as
+# "device/<name>" and written next to each generated harness unit.
+file(GLOB _device_files "${PRISM_ROOT}/src/prism/pir/models/device/*.h" "${PRISM_ROOT}/src/prism/pir/models/device/*.pdm")
+list(SORT _device_files)
+set(_dev_models_cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/device_models_gen.cpp")
+set(_dev_models_txt "// generated by CMakeLists.txt from src/prism/pir/models/device (do not edit)\n#include \"prism/module.hpp\"\nnamespace prism::module {\nconst std::vector<std::pair<std::string, std::string>>& embedded_device_files() {\n  static const std::vector<std::pair<std::string, std::string>> k{\n")
+foreach(_m ${_device_files})
+  file(READ "${_m}" _mtxt)
+  get_filename_component(_mn "${_m}" NAME)
+  string(APPEND _dev_models_txt "    {\"device/${_mn}\", R\"PRISMDEV(${_mtxt})PRISMDEV\"},\n")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_m}")
+endforeach()
+string(APPEND _dev_models_txt "  };\n  return k;\n}\n}  // namespace prism::module\n")
+file(CONFIGURE OUTPUT "${_dev_models_cpp}" CONTENT "${_dev_models_txt}" @ONLY)
+list(APPEND PRISM_SRC "${_dev_models_cpp}")
+
 add_library(prism_core STATIC ${PRISM_SRC} "${_pins_hdr}")
 target_link_libraries(prism_core PUBLIC prism_forge)
 
@@ -461,10 +515,52 @@ if(PRISM_HAS_Z3)
     "${PRISM_ROOT}/third_party/z3/src/api"
     "${PRISM_ROOT}/third_party/z3/src/api/c++")
   target_compile_definitions(prism_core PUBLIC PRISM_HAS_Z3)
+  # test builds only: the default of PRISM_PIR_CHC when it is unset (docs/PIR.md
+  # "Loop proofs by CHC"), so the merge gate's suites run with the CHC round on
+  set(PRISM_PIR_CHC_DEFAULT "" CACHE STRING "test builds only: default of PRISM_PIR_CHC (empty: off)")
+  if(PRISM_PIR_CHC_DEFAULT)
+    set_property(SOURCE src/prism/pir/encode.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+      "PRISM_PIR_CHC_DEFAULT=\"${PRISM_PIR_CHC_DEFAULT}\"")
+  endif()
   # z3_ballast.cpp reads Z3's allocator (util/memory_manager.h, no C API);
   # only that file sees Z3's internal headers.
   set_source_files_properties(src/prism/solver/z3_ballast.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${PRISM_ROOT}/third_party/z3/src")
+endif()
+
+# Cube-and-conquer (src/prism/solver/cube.cpp) solves cubes with CaDiCaL as a
+# library (incremental assumptions, failed-assumption cores, conflict limits).
+# CaDiCaL is not vendored: the pinned build `prism-deps tool cadical` leaves
+# its source tree with build/libcadical.a under
+# ~/.prism/tools/cadical/<manifest commit>/src. PRISM_CADICAL_DIR overrides.
+# Not found: the cube engine is NOTRUN (the note says so), never silent.
+set(PRISM_CADICAL_DIR "" CACHE PATH "CaDiCaL source tree with src/cadical.hpp and build/libcadical.a")
+# Soundness-gate builds only: 1 = the cube member on when PRISM_CUBE is unset,
+# 2 = the cube engine alone (src/prism/solver/cube.cpp). Never in a release.
+set(PRISM_CUBE_BUILD_DEFAULT "0" CACHE STRING "gate builds: what an unset PRISM_CUBE means (0 off, 1 member, 2 alone)")
+set_property(SOURCE src/prism/solver/cube.cpp APPEND PROPERTY COMPILE_DEFINITIONS PRISM_CUBE_BUILD_DEFAULT=${PRISM_CUBE_BUILD_DEFAULT})
+set(_prism_cadical_dir "${PRISM_CADICAL_DIR}")
+if(NOT _prism_cadical_dir)
+  set(_prism_tools_home "$ENV{PRISM_TOOLS_DIR}")
+  if(NOT _prism_tools_home)
+    set(_prism_tools_home "$ENV{HOME}/.prism/tools")
+  endif()
+  file(READ "${PRISM_ROOT}/third_party/MANIFEST.toml" _prism_manifest)
+  string(REGEX MATCH "name = \"cadical\"[^[]*commit = \"([0-9a-f]+)\"" _m "${_prism_manifest}")
+  if(CMAKE_MATCH_1)
+    set(_prism_cadical_dir "${_prism_tools_home}/cadical/${CMAKE_MATCH_1}/src")
+  endif()
+endif()
+if(_prism_cadical_dir AND EXISTS "${_prism_cadical_dir}/src/cadical.hpp" AND EXISTS "${_prism_cadical_dir}/build/libcadical.a")
+  add_library(prism_cadical STATIC IMPORTED)
+  set_target_properties(prism_cadical PROPERTIES IMPORTED_LOCATION "${_prism_cadical_dir}/build/libcadical.a")
+  set_source_files_properties(src/prism/solver/cube.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${_prism_cadical_dir}/src")
+  target_link_libraries(prism_core PUBLIC prism_cadical)
+  target_compile_definitions(prism_core PRIVATE PRISM_HAS_CADICAL_LIB)
+  message(STATUS "cube-and-conquer: CaDiCaL library ${_prism_cadical_dir}")
+else()
+  message(WARNING "cube-and-conquer: CaDiCaL library not found (${_prism_cadical_dir}); the cube engine is NOTRUN")
 endif()
 
 # Roadmap 2.8: the Clang-AST lints parse in process through libclang's C API.
@@ -584,7 +680,9 @@ set(_prism_qa_sources
   src/tools/qa/llvm_sem_vs_lli.cpp
   src/tools/qa/libc_bounds.cpp
   src/tools/qa/solver_bench.cpp
+  src/tools/qa/census.cpp
   src/tools/qa/idioms_mine.cpp
+  src/tools/qa/callsite.cpp
   src/tools/qa/support/yaml_subset.cpp
   src/tools/qa/support/task.cpp
   src/tools/qa/support/replay.cpp
@@ -616,6 +714,13 @@ if(_prism_warn)
 endif()
 if(UNIX)
   set_target_properties(prism-qa PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+endif()
+
+# prism-module: driver-module check against a device model (docs/DEVICE_MODEL.md)
+add_executable(prism-module src/tools/module/main.cpp)
+target_link_libraries(prism-module PRIVATE prism_core)
+if(_prism_warn)
+  target_compile_options(prism-module PRIVATE ${_prism_warn})
 endif()
 
 # prism_docs_check: documentation checks without the engine or Z3 (fast docs CI).
@@ -674,22 +779,30 @@ if(PRISM_CUDA)
       # nvcc 12 has no C++23; do not inherit CMAKE_CXX_STANDARD 23 (clang++/prism_core).
       set(CMAKE_CUDA_STANDARD 17)
       set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+      # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
+      # Before enable_language: it fills in the compiler's default (CUDA 13:
+      # sm_75, whose code does not load on sm_86: every launch failed with
+      # cudaErrorNoKernelImageForDevice). 86-real: SASS only. With PTX in the
+      # image ("86") a driver older than the toolkit (WSL2: driver CUDA 13.3,
+      # nvcc 13.4) fails every launch with "the provided PTX was compiled with
+      # an unsupported toolchain".
+      if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+        set(CMAKE_CUDA_ARCHITECTURES "86-real" CACHE STRING "nvcc -arch")
+      endif()
       enable_language(CUDA)
       set(_prism_cuda_lang ON)
-      if(NOT CMAKE_CUDA_ARCHITECTURES)
-        # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
-        set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "nvcc -arch" FORCE)
-      endif()
       # probsat.cu: GPU ProbSAT walkers (roadmap 3.3), mirrors src/prism/solver/cnf.cpp.
-      add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu)
+      add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu src/cuda/invdata.cu)
       target_include_directories(prism_cuda PUBLIC "${PRISM_ROOT}/include")
       target_compile_features(prism_cuda PUBLIC cuda_std_17)
+      # probsat.cu defines cuda_probsat_ex, declared under PRISM_HAS_CUDA
+      target_compile_definitions(prism_cuda PRIVATE PRISM_HAS_CUDA)
       set_target_properties(prism_cuda PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
         BUILD_RPATH "$ORIGIN"
         INSTALL_RPATH "$ORIGIN")
-      # prism / prism_tests / prism_gui link prism_core, not prism_native.
+      # prism / prism_tests link prism_core, not prism_native.
       # Leaving the kernel only on prism_native was a silent disable.
       target_link_libraries(prism_core PUBLIC prism_cuda)
       if(TARGET prism_native)
@@ -708,29 +821,6 @@ endif()
 
 target_link_libraries(prism_core PUBLIC prism_forge_inference)
 
-if(PRISM_QT)
-  find_package(Qt6 COMPONENTS Widgets QUIET)
-  if(Qt6Widgets_FOUND AND TARGET Qt6::Widgets)
-    # The window as a library: prism_gui and the offscreen window tests
-    # (prism_gui_tests) link the same code.
-    add_library(prism_gui_window STATIC
-      src/gui/MainWindow.cpp
-      src/gui/MainWindow.hpp
-    )
-    set_target_properties(prism_gui_window PROPERTIES AUTOMOC ON)
-    target_include_directories(prism_gui_window PUBLIC "${PRISM_ROOT}/include" src/gui)
-    target_link_libraries(prism_gui_window PUBLIC Qt6::Widgets prism_core)
-    add_executable(prism_gui src/gui/main.cpp)
-    target_link_libraries(prism_gui PRIVATE prism_gui_window)
-    message(STATUS "Qt6 Widgets found — building prism_gui (no display required to compile)")
-    if(_prism_cuda_lang)
-      set_target_properties(prism_gui PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
-    endif()
-  else()
-    message(WARNING "Qt6 Widgets not found — prism CLI still runs; GUI is NOTRUN until Qt6Widgets is present.")
-  endif()
-endif()
-
 if(PRISM_TESTS)
   # One source list for every platform (WIN32 subset == Linux full: same TUs,
   # checked). Cases that cannot run on a platform are guarded inside the test
@@ -741,6 +831,7 @@ if(PRISM_TESTS)
   # would register the same doctest names twice).
   set(_prism_test_sources
     tests/cpp/test_env_registry.cpp
+    tests/cpp/test_cube.cpp
     tests/cpp/test_log.cpp
     tests/cpp/test_backends.cpp
     tests/cpp/test_library.cpp
@@ -824,10 +915,21 @@ if(PRISM_TESTS)
     tests/cpp/test_lint_corpus.cpp
     tests/cpp/test_lint_status.cpp
     tests/cpp/test_pir_mem.cpp
+    tests/cpp/test_pir_harness.cpp
+    tests/cpp/test_pir_callsite.cpp
+    tests/cpp/test_pir_harness2.cpp
+    tests/cpp/test_pir_input_key.cpp
+    tests/cpp/test_pir_header_fns.cpp
+    tests/cpp/test_pir_length_pairing.cpp
     tests/cpp/test_ai_assist.cpp
     tests/cpp/test_triage_status.cpp
     tests/cpp/test_pbsd.cpp
     tests/cpp/test_pir3.cpp
+    tests/cpp/test_pir_cluster_answers.cpp
+    tests/cpp/test_pir_callback_models.cpp
+    tests/cpp/test_pir_triage_item6.cpp
+    tests/cpp/test_pir_wave2.cpp
+    tests/cpp/test_pir_ptr_patterns.cpp
     tests/cpp/test_pir_refinement.cpp
     tests/cpp/test_cli.cpp
     tests/cpp/test_pipeline.cpp
@@ -835,6 +937,7 @@ if(PRISM_TESTS)
     tests/cpp/test_platform.cpp
     tests/cpp/test_ai9.cpp
     tests/cpp/test_conc.cpp
+    tests/cpp/test_conc_litmus.cpp
     tests/cpp/test_cxx_models.cpp
     tests/cpp/test_cxx_deque.cpp
     tests/cpp/test_cxx_iostream.cpp
@@ -909,7 +1012,6 @@ if(PRISM_TESTS)
     tests/cpp/test_forge_ai.cpp
     tests/cpp/test_afl_notrun.cpp
     tests/cpp/test_libfuzzer_notrun.cpp
-    tests/cpp/test_gui_model.cpp
     tests/cpp/test_repair.cpp
     tests/cpp/test_adapters.cpp
     tests/cpp/test_sanitize.cpp
@@ -925,7 +1027,11 @@ if(PRISM_TESTS)
     # the ASan runtime is on PATH (the clang-cl CI jobs add its DLL dir); the
     # sanitizers_usable() probe otherwise reports NOTRUN.
     tests/cpp/test_qa_conformance.cpp
+    tests/cpp/test_module.cpp
     tests/cpp/test_pir_e2e.cpp
+    tests/cpp/test_pir_kernel.cpp
+    tests/cpp/test_pir_asm.cpp
+    tests/cpp/test_pir_asm_exact.cpp
     tests/cpp/test_pir_incomplete.cpp
     tests/cpp/test_c23_memset_explicit.cpp
     # Repository tooling that used to be scripts (plan-done smoke, generated tables).
@@ -950,7 +1056,7 @@ if(PRISM_TESTS)
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
       tests/cpp/test_pir_budget.cpp tests/cpp/test_pir_parallel.cpp tests/cpp/test_membudget.cpp tests/cpp/test_certified.cpp
-      tests/cpp/test_solver_cert.cpp)
+      tests/cpp/test_solver_cert.cpp tests/cpp/test_pir_chc.cpp)
   endif()
   # PRISM_TESTS_WIN_SUBSET no longer selects sources. On WIN32 it only gates the
   # fake_* stand-in executables and the PRISM_FAKE_* compile definitions the
@@ -958,8 +1064,8 @@ if(PRISM_TESTS)
   if(WIN32 AND NOT PRISM_TESTS_WIN_SUBSET)
     message(WARNING
       "WIN32 prism_tests without -DPRISM_TESTS_WIN_SUBSET=ON: fake_* stand-ins "
-      "are not built, so cases that spawn them (adapters, sanitize, qa, gui "
-      "launcher) cannot find them. Use -DPRISM_TESTS_WIN_SUBSET=ON.")
+      "are not built, so cases that spawn them (adapters, sanitize, qa) "
+      "cannot find them. Use -DPRISM_TESTS_WIN_SUBSET=ON.")
   endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
     add_executable(fake_tool_launcher tests/cpp/fake_tool_launcher.cpp)
@@ -970,8 +1076,6 @@ if(PRISM_TESTS)
     add_executable(fake_cake_lpr tests/cpp/fake_cake_lpr.cpp)
     # Stand-in lrat-check that touches 400 MB (resident-memory cap kill case).
     add_executable(fake_mem_hog tests/cpp/fake_mem_hog.cpp)
-    # Stand-in prism_gui for the `prism --gui` launcher cases (test_gui_model.cpp).
-    add_executable(fake_prism_gui tests/cpp/fake_prism_gui.cpp)
   endif()
   add_executable(prism_tests ${_prism_test_sources})
   target_include_directories(prism_tests PRIVATE
@@ -984,11 +1088,10 @@ if(PRISM_TESTS)
     target_compile_options(prism_tests PRIVATE ${_prism_warn})
   endif()
   if(WIN32 AND PRISM_TESTS_WIN_SUBSET)
-    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism fake_prism_gui fake_cake_lpr fake_mem_hog)
+    add_dependencies(prism_tests fake_tool_launcher fake_cc fake_session_probe fake_prism fake_cake_lpr fake_mem_hog)
     target_compile_definitions(prism_tests PRIVATE
       "PRISM_FAKE_CAKE_LPR=\"$<TARGET_FILE:fake_cake_lpr>\""
       "PRISM_FAKE_MEM_HOG=\"$<TARGET_FILE:fake_mem_hog>\""
-      "PRISM_FAKE_GUI=\"$<TARGET_FILE:fake_prism_gui>\"" 
       "PRISM_FAKE_TOOL_LAUNCHER=\"$<TARGET_FILE:fake_tool_launcher>\""
       "PRISM_FAKE_CC=\"$<TARGET_FILE:fake_cc>\""
       "PRISM_FAKE_SESSION_PROBE=\"$<TARGET_FILE:fake_session_probe>\""
@@ -1015,22 +1118,6 @@ if(PRISM_TESTS)
   endif()
   enable_testing()
   add_test(NAME prism_tests COMMAND prism_tests)
-  # The window itself, offscreen (QT_QPA_PLATFORM=offscreen); PRISM_QT only.
-  if(TARGET prism_gui_window)
-    add_executable(prism_gui_tests tests/cpp/test_gui.cpp)
-    target_include_directories(prism_gui_tests PRIVATE "${PRISM_ROOT}/third_party")
-    target_link_libraries(prism_gui_tests PRIVATE prism_gui_window)
-    # "a real run through the window" finds prism beside prism_gui_tests.
-    add_dependencies(prism_gui_tests prism)
-    if(WIN32)
-      # Stand-in `prism` for the run/done/fail cases (POSIX uses a /bin/sh script).
-      add_executable(fake_gui_prism tests/cpp/fake_gui_prism.cpp)
-      add_dependencies(prism_gui_tests fake_gui_prism)
-      target_compile_definitions(prism_gui_tests PRIVATE
-        "PRISM_FAKE_GUI_PRISM=\"$<TARGET_FILE:fake_gui_prism>\"")
-    endif()
-    add_test(NAME prism_gui_tests COMMAND prism_gui_tests)
-  endif()
 endif()
 
 # --- self-fuzzing (roadmap 6.2): libFuzzer target for PRISM's own parsers ---

@@ -8,7 +8,12 @@
 #include "prism/laws.hpp"
 
 #include <algorithm>
+#include <fstream>
+#include <cstdlib>
 #include <regex>
+#include <sstream>
+#include <stdexcept>
+#include <nlohmann/json.hpp>
 #include <unordered_set>
 
 namespace prism::pir::pirmem {
@@ -114,12 +119,54 @@ std::vector<std::string> static_init_functions(const ir::Module& m) {
 TranslateOptions function_options(const TranslateOptions& base, const ir::Function& irf, UnitInfo& unit, int line,
                                   const Config& cfg, const std::string& source_name) {
     TranslateOptions o = base;
+    // --pir-field-invariants: only the rows whose scope matches this function and unit (FieldInvariant::scope)
+    if (!o.field_invariants.empty()) {
+        std::vector<FieldInvariant> in_scope;
+        const std::string upath = unit.path.generic_string();
+        for (const auto& fi : o.field_invariants)
+            if (field_invariant_applies(fi, irf.name, upath) || (!source_name.empty() && field_invariant_applies(fi, source_name, upath)))
+                in_scope.push_back(fi);
+        o.field_invariants = std::move(in_scope);
+    }
     o.strict_aliasing = cfg.strict_aliasing;
     o.fp_checks = cfg.fp_checks;
+    o.kernel_api = cfg.pir_kernel_api;
+    o.assume_unknown_calls = cfg.pir_assume_unknown_calls;
+    // --lock-contracts (translate_lock.inc lock_table)
+    if (!cfg.pir_lock_contracts.empty()) o.lock_contracts = read_lock_contracts(cfg.pir_lock_contracts);
     o.asm_contracts = asm_contracts(unit.src_lines);
     o.globals_initial = source_name == "main";
+    o.auto_harness.on = cfg.pir_harness;
+    o.container_of = cfg.pir_container_of;
+    o.auto_harness.depth = cfg.pir_harness_deep ? std::max(cfg.pir_harness_depth, 4) : cfg.pir_harness_depth;
+    if (cfg.pir_harness_deep) o.auto_harness.max_objects = 64;
+    o.auto_harness.elems = cfg.pir_harness_elems;
+    o.auto_harness.unknown_bytes = cfg.pir_harness_bytes;
+    o.auto_harness.length_pairing = cfg.pir_length_pairing;
+    o.auto_harness.declared_types = cfg.pir_declared_types;
+    o.auto_harness.priv_areas = cfg.pir_priv_areas;
+    o.auto_harness.index_field_bounds = cfg.pir_index_field_bounds;
+    o.auto_harness.heap_freed = cfg.pir_heap_freed;
     // C++ library code (constructors, accessors) nests deeper than C helpers
     if (unit.cxx) o.inline_depth = std::max(o.inline_depth, 12);
+    // PRISM_PIR_INLINE_DEPTH: raise (or lower) the call-inlining depth; the module harness needs more (docs/DEVICE_MODEL.md)
+    if (const char* e = std::getenv("PRISM_PIR_INLINE_DEPTH")) {
+        char* end = nullptr;
+        const long d = std::strtol(e, &end, 10);
+        if (end != e && d >= 1 && d <= 64) o.inline_depth = static_cast<int>(d);
+    }
+    // PRISM_PIR_MODEL_INLINE_DEPTH: extra depth for library-model frames (TranslateOptions::model_inline_depth)
+    if (const char* e = std::getenv("PRISM_PIR_MODEL_INLINE_DEPTH")) {
+        char* end = nullptr;
+        const long d = std::strtol(e, &end, 10);
+        if (end != e && d >= 0 && d <= 64) o.model_inline_depth = static_cast<int>(d);
+    }
+    // PRISM_PIR_SMALL_INLINE: instruction budget of a call tree inlined past the depth (TranslateOptions::small_inline_insts)
+    if (const char* e = std::getenv("PRISM_PIR_SMALL_INLINE")) {
+        char* end = nullptr;
+        const long d = std::strtol(e, &end, 10);
+        if (end != e && d >= 0 && d <= 4096) o.small_inline_insts = static_cast<int>(d);
+    }
     std::vector<std::string> ptrs;
     for (auto& p : irf.params)
         if (p.ty.kind == ir::Type::Ptr && p.attrs.find("byval(") == std::string::npos &&
@@ -163,6 +210,18 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     return o;
 }
 
+// "g_a, g_b, ..." (at most 8 names, then "and N more"): the mutable globals the function reads or writes
+static std::string mutable_global_list(const Function& fn) {
+    std::string s;
+    std::size_t n = 0;
+    for (const auto& g : fn.mutable_global_names) {
+        if (++n > 8) continue;
+        s += (s.empty() ? "" : ", ") + g;
+    }
+    if (n > 8) s += " and " + std::to_string(n - 8) + " more";
+    return s.empty() ? std::string("unnamed") : s;
+}
+
 void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module& mod, const ir::Function& irf,
                          const TranslateOptions& topt, const Config& cfg, const CheckOptions& copt) {
     // Re-checks share the function's budget, cache and core share; plain
@@ -182,6 +241,194 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
     const auto status_of = [](const Verdict& r) {
         return r.status == laws::TIMEOUT ? r.status + " (" + r.message + ")" : r.status;
     };
+    // --pir-field-invariants: a row is applied to every harness object of its struct, so a proof can carry rows it
+    // does not need. Each row the translation used is dropped in turn and the function checked again; a row whose
+    // removal keeps the verdict is removed for good (the function is re-translated without it, so its assumption and
+    // its assume statements are gone). What remains is the set the proof used; the vacuity check later runs on it.
+    std::vector<FieldInvariant> fi_kept = topt.field_invariants;  // after its minimisation (below)
+    if (!topt.field_invariants.empty() &&
+        (v.status == laws::PROVED || v.status == laws::PROVED_ASSUMING || v.status == laws::PROVED_UNBOUNDED ||
+         v.status == laws::BOUNDED)) {
+        auto row_used = [](const Function& g, const FieldInvariant& r) {
+            const std::string key = "(" + r.struct_type + " at byte " + std::to_string(r.offset) + ")";
+            for (const auto& a : g.assumptions)
+                if (a.starts_with("field-invariant: ") && a.find(key) != std::string::npos) return true;
+            return false;
+        };
+        std::vector<FieldInvariant> kept = topt.field_invariants;
+        std::string dropped;
+        const auto adopt = [&](Function&& g) {
+            auto name = fn.name;
+            auto file = fn.file;
+            auto line = fn.line;
+            fn = std::move(g);
+            fn.name = std::move(name);  // as the stage set them on the first translation
+            fn.file = std::move(file);
+            fn.line = line;
+        };
+        // First one re-check without every used row (the common case: the proof needs none of them), so a spent
+        // budget does not keep rows the proof never needed; then row by row for what is left.
+        {
+            std::vector<FieldInvariant> rest;
+            std::string all;
+            for (const auto& r : kept) {
+                if (row_used(fn, r)) all += (all.empty() ? "" : ", ") + r.struct_type + "@" + std::to_string(r.offset);
+                else rest.push_back(r);
+            }
+            if (!all.empty()) {
+                auto o = topt;
+                o.field_invariants = rest;
+                auto tr = translate(mod, irf, o);
+                if (tr.fn) {
+                    const auto r = recheck(*tr.fn, "without the field invariants " + all);
+                    if (r.status == v.status || (v.status == laws::PROVED_ASSUMING && r.status == laws::PROVED)) {
+                        if (r.status != v.status) v = r;
+                        dropped = all;
+                        kept = std::move(rest);
+                        adopt(std::move(*tr.fn));
+                    }
+                }
+            }
+        }
+        for (std::size_t i = 0; i < kept.size();) {
+            if (!row_used(fn, kept[i])) {
+                ++i;
+                continue;
+            }
+            auto o = topt;
+            o.field_invariants = kept;
+            o.field_invariants.erase(o.field_invariants.begin() + static_cast<std::ptrdiff_t>(i));
+            auto tr = translate(mod, irf, o);
+            if (tr.fn) {
+                const auto r = recheck(*tr.fn, "without field invariant " + kept[i].struct_type + "@" +
+                                                    std::to_string(kept[i].offset));
+                // the same verdict, or PROVED where it was PROVED-ASSUMING (nothing else was assumed)
+                if (r.status == v.status || (v.status == laws::PROVED_ASSUMING && r.status == laws::PROVED)) {
+                    if (r.status != v.status) v = r;
+                    dropped += (dropped.empty() ? "" : ", ") + kept[i].struct_type + "@" + std::to_string(kept[i].offset);
+                    kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(i));
+                    adopt(std::move(*tr.fn));
+                    continue;
+                }
+            }
+            ++i;
+        }
+        if (!dropped.empty()) f.extra["field_invariants_not_needed"] = dropped;
+        fi_kept = kept;
+    }
+    // --pir-param-preconditions: minimised like the field invariants (all used rows dropped at once first, then row by
+    // row); a row whose removal keeps the verdict goes for good, so what remains is the set the proof needs
+    std::vector<ParamPrecondition> pp_kept = topt.param_preconditions;
+    if (!topt.param_preconditions.empty() &&
+        (v.status == laws::PROVED || v.status == laws::PROVED_ASSUMING || v.status == laws::PROVED_UNBOUNDED ||
+         v.status == laws::BOUNDED)) {
+        auto row_used = [](const Function& g, const ParamPrecondition& r) {
+            const std::string key = param_precondition_key(r);
+            for (const auto& a : g.assumptions)
+                if (a.starts_with(key)) return true;
+            return false;
+        };
+        const auto adopt = [&](Function&& g) {
+            auto name = fn.name;
+            auto file = fn.file;
+            auto line = fn.line;
+            fn = std::move(g);
+            fn.name = std::move(name);
+            fn.file = std::move(file);
+            fn.line = line;
+        };
+        const auto label = [](const ParamPrecondition& r) { return r.function + "(" + r.param + ") " + r.condition; };
+        std::vector<ParamPrecondition> kept = topt.param_preconditions;
+        std::string dropped;
+        const auto try_without = [&](const std::vector<ParamPrecondition>& rest, const std::string& what) {
+            auto o = topt;
+            o.param_preconditions = rest;
+            o.field_invariants = fi_kept;  // what the field-invariant minimisation kept
+            auto tr = translate(mod, irf, o);
+            if (!tr.fn) return false;
+            const auto r = recheck(*tr.fn, "without the parameter preconditions " + what);
+            if (r.status == v.status || (v.status == laws::PROVED_ASSUMING && r.status == laws::PROVED)) {
+                if (r.status != v.status) v = r;
+                dropped += (dropped.empty() ? "" : "; ") + what;
+                adopt(std::move(*tr.fn));
+                return true;
+            }
+            return false;
+        };
+        {
+            std::vector<ParamPrecondition> rest;
+            std::string all;
+            for (const auto& r : kept) {
+                if (row_used(fn, r)) all += (all.empty() ? "" : "; ") + label(r);
+                else rest.push_back(r);
+            }
+            if (!all.empty() && try_without(rest, all)) kept = std::move(rest);
+        }
+        for (std::size_t i = 0; i < kept.size();) {
+            if (!row_used(fn, kept[i])) {
+                ++i;
+                continue;
+            }
+            auto rest = kept;
+            rest.erase(rest.begin() + static_cast<std::ptrdiff_t>(i));
+            if (try_without(rest, label(kept[i]))) {
+                kept = std::move(rest);
+                continue;
+            }
+            ++i;
+        }
+        if (!dropped.empty()) f.extra["param_preconditions_not_needed"] = dropped;
+        pp_kept = kept;
+    }
+    // --pir-declared-types: the declared-type lines go through the same minimisation (all at once: the function is
+    // translated again without declared types; when the verdict holds, the proof does not rest on them). The vacuity
+    // check later runs on what remains.
+    // --pir-priv-areas and --pir-index-field-bounds lines likewise, each option in turn.
+    AutoHarness ah_kept = topt.auto_harness;
+    const struct {
+        bool AutoHarness::*flag;
+        const char* prefix;
+        const char* what;
+        const char* key;
+    } kOpts[] = {{&AutoHarness::declared_types, "declared-type: ", "the declared types", "declared_types_not_needed"},
+                 {&AutoHarness::priv_areas, "priv-area: ", "the private areas", "priv_areas_not_needed"},
+                 {&AutoHarness::index_field_bounds, "index-field-bound: ", "the index-field bounds", "index_field_bounds_not_needed"},
+                 {&AutoHarness::declared_types, "container-type-from-cast: ", "the declared types (cast containers)", "declared_types_not_needed"},
+                 {&AutoHarness::heap_freed, "heap-object: ", "the heap objects of freed pointers", "heap_freed_not_needed"}};
+    for (const auto& op : kOpts) {
+    if (ah_kept.*op.flag &&
+        (v.status == laws::PROVED || v.status == laws::PROVED_ASSUMING || v.status == laws::PROVED_UNBOUNDED ||
+         v.status == laws::BOUNDED) &&
+        std::any_of(fn.assumptions.begin(), fn.assumptions.end(),
+                    [&](const std::string& a) { return a.starts_with(op.prefix); })) {
+        auto o = topt;
+        o.auto_harness = ah_kept;
+        o.auto_harness.*op.flag = false;
+        o.field_invariants = fi_kept;
+        o.param_preconditions = pp_kept;
+        auto tr = translate(mod, irf, o);
+        // a translation that sizes more objects from the accesses being checked is not a smaller set of assumptions
+        const auto from_access = [](const Function& g) {
+            return std::count_if(g.assumptions.begin(), g.assumptions.end(),
+                                 [](const std::string& a) { return a.starts_with("harness-size-from-access: "); });
+        };
+        if (tr.fn && from_access(*tr.fn) <= from_access(fn)) {
+            const auto r = recheck(*tr.fn, std::string("without ") + op.what);
+            if (r.status == v.status || (v.status == laws::PROVED_ASSUMING && r.status == laws::PROVED)) {
+                if (r.status != v.status) v = r;
+                auto name = fn.name;
+                auto file = fn.file;
+                auto line = fn.line;
+                fn = std::move(*tr.fn);
+                fn.name = std::move(name);
+                fn.file = std::move(file);
+                fn.line = line;
+                ah_kept.*op.flag = false;
+                f.extra[op.key] = std::string("the verdict holds without ") + op.what;
+            }
+        }
+    }
+    }
     if (fn.uses_memory) {
         f.extra["strict_aliasing"] = cfg.strict_aliasing ? "checked" : "off (--strict-aliasing checks effective types)";
     }
@@ -254,11 +501,27 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
     }
     // Global state: a violation that needs other values of mutable globals
     // than their initializers is a missing precondition, not a defect.
+    // Two runs, both with the function's inputs arbitrary: the violation's own
+    // check (property and source line) with the globals at their initial
+    // values, and, when something else fails there, the whole function.
     if (v.status == laws::FAILED && fn.mutable_globals && !topt.globals_initial) {
         auto o = topt;
         o.globals_initial = true;
         auto tr = translate(mod, irf, o);
         if (tr.fn) {
+            const std::string names = mutable_global_list(fn);
+            const std::string site = v.prop + (v.line > 0 ? "@" + std::to_string(v.line) : std::string());
+            // arbitrary-globals violation -> NEEDS-HARNESS (never a proof: the status only gets weaker)
+            const auto downgrade = [&](const std::string& initial_run, const std::string& why) {
+                f.extra["verdict_before_globals"] = v.status;
+                v.extra["globals"] = "arbitrary: FAILED (" + site + "); initial values: " + initial_run;
+                v.extra["globals_involved"] = names;
+                v.status = std::string(laws::NEEDS_HARNESS);
+                v.message = "violation needs mutable-global values (" + names + "): " + why + " (" + v.message +
+                            "); the global state the function is called in is an unstated precondition";
+                v.cex.clear();
+                v.cex_args.clear();
+            };
             auto v2 = recheck(*tr.fn, "initial globals");
             if (v2.status != laws::FAILED) {
                 // decided (no violation with the initial values), or not
@@ -266,33 +529,111 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
                 // violation is not shown for the state the function starts in
                 const bool decided = v2.status == laws::PROVED || v2.status == laws::PROVED_UNBOUNDED ||
                                      v2.status == laws::BOUNDED;
-                f.extra["verdict_before_globals"] = v.status;
-                v.status = std::string(laws::NEEDS_HARNESS);
-                v.message = decided ? "violation needs values of mutable globals other than their initializers (" +
-                                          v.message +
-                                          "); the global state the function is called in is an unstated precondition"
-                                    : "violation with arbitrary values of mutable globals (" + v.message +
-                                          "); with their initializers not decided (" + status_of(v2) +
-                                          "); the global state the function is called in is an unstated precondition";
-                v.extra["globals"] = "arbitrary: FAILED; initial values: " + status_of(v2);
-                v.cex.clear();
-                v.cex_args.clear();
+                downgrade(status_of(v2), decided ? "it does not occur with the globals' initializers"
+                                                 : "it is not shown with the globals' initializers (not decided)");
                 return;
             }
-            v.extra["globals"] = "FAILED also with the globals' initial values";
+            // Something fails with the initial values too. If it is this very
+            // check, the violation does not need the globals' other values.
+            const bool same_site = v2.prop == v.prop && v2.line == v.line;
+            if (same_site || v.prop.empty()) {
+                v.extra["globals"] = "FAILED also with the globals' initial values";
+            } else {
+                // another check fails with the initial values: is this one's violation still there?
+                Function one = *tr.fn;
+                for (auto& b : one.blocks)
+                    std::erase_if(b.stmts, [&](const Stmt& s) {
+                        return s.kind == Stmt::Check && !(s.prop == v.prop && (v.line <= 0 || s.line == v.line));
+                    });
+                auto v3 = recheck(one, "initial globals, " + site + " only");
+                const bool gone = v3.status == laws::PROVED || v3.status == laws::PROVED_UNBOUNDED ||
+                                  v3.status == laws::BOUNDED;
+                if (gone) {
+                    // the global-dependent violation is gone, but the function has a violation of its own with the
+                    // initial values (inputs arbitrary): that one is the verdict, with both runs recorded
+                    const std::string before = v.prop + ": " + v.cls + " at line " + std::to_string(v.line);
+                    v2.extra["globals"] = "arbitrary: FAILED (" + site + ", needs mutable-global values (" + names +
+                                          ")); initial values: FAILED (" + v2.prop + "@" + std::to_string(v2.line) + "); " +
+                                          site + " only, initial values: " + status_of(v3);
+                    v2.extra["globals_involved"] = names;
+                    f.extra["verdict_before_globals"] = v.status + " (" + before + ")";
+                    v = std::move(v2);
+                } else if (v3.status == laws::FAILED) {
+                    v.extra["globals"] = "FAILED also with the globals' initial values (" + site + " only: FAILED)";
+                } else {
+                    // the check alone is not decided: the violation is not shown for the initial state
+                    downgrade("FAILED (" + v2.prop + "@" + std::to_string(v2.line) + "); " + site + " only: " +
+                                  status_of(v3),
+                              "it is not shown with the globals' initializers (not decided)");
+                    return;
+                }
+            }
         }
     }
     // A violation under a drafted (not user-stated) precondition is not a
     // defect report: the precondition was invented (Law 6).
     bool drafted = false;
-    for (auto& a : fn.assumptions) drafted = drafted || a.find("harness (template draft)") != std::string::npos;
+    for (auto& a : fn.assumptions)
+        drafted = drafted || a.find("harness (template draft)") != std::string::npos || a.find("(auto harness)") != std::string::npos ||
+                  // --pir-callback-models: a pointer bound by a driver environment model is an invented object too (a
+                  // range model only narrows the inputs: a violation under it is one for every input)
+                  (a.starts_with("driver environment model:") && a.find(" is in [") == std::string::npos);
     if (drafted && v.status == laws::FAILED) {
         v.extra["verdict_under_draft"] = v.status + ": " + v.message;
         v.status = std::string(laws::NEEDS_HARNESS);
-        v.message = "pointer parameter: violation only under a drafted harness (" + v.message +
+        v.message = "pointer parameter: violation only under a drafted or automatic harness (" + v.message +
                     "); state the precondition with // requires: (Law 6)";
         v.cex.clear();
         v.cex_args.clear();
+    }
+    // --pir-addr-values: an integer constant used as a pointer points to no object, and the absolute address of an object is not
+    // modelled (a pointer is its packed object/offset value). Kernel code dereferences fixed addresses (MMIO) and adds per-cpu
+    // offsets to bases: a violation in a function that used either model is not a defect report (docs/HARNESS_PHASE2.md
+    // "Address values").
+    if (v.status == laws::FAILED) {
+        bool addr_model = false;
+        for (auto& a : fn.assumptions) addr_model = addr_model || a.starts_with("addr-values:");
+        if (addr_model) {
+            v.extra["verdict_under_addr_model"] = v.status + ": " + v.message;
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "violation only under the address-value model (a constant address is its packed object/offset value, an integer "
+                        "constant used as a pointer points to no object; absolute addresses are not modelled): " + v.message;
+            v.cex.clear();
+            v.cex_args.clear();
+        }
+    }
+    // Law 6 for integers used as pointers: an integer-to-pointer cast of a parameter or another unknown input is an
+    // unconstrained address (translate.cpp int_from_input); a violation in such a function needs a precondition that is
+    // not stated, as for a pointer parameter. A cast of a constant or of a value computed inside stays FAILED.
+    if (v.status == laws::FAILED) {
+        bool i2p = false;
+        for (auto& a : fn.assumptions) i2p = i2p || a.starts_with("int-to-pointer parameter:");
+        if (i2p) {
+            v.extra["verdict_under_int_to_ptr"] = v.status + ": " + v.message;
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "int-to-pointer parameter: violation only under an unconstrained address (" + v.message + ")";
+            v.cex.clear();
+            v.cex_args.clear();
+        }
+    }
+    // --pir-addrspace: the per-CPU area is arbitrary bytes (the CPU's state is the environment, like the arbitrary values of
+    // mutable globals): a violation in a function that read it (an arbitrary pc_cpuid used as an index) is not a defect report
+    if (v.status == laws::FAILED) {
+        bool pcpu = false;
+        for (auto& a : fn.assumptions) pcpu = pcpu || a.starts_with("addrspace:");
+        if (pcpu) {
+            v.extra["verdict_under_pcpu_model"] = v.status + ": " + v.message;
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "violation with arbitrary per-CPU data (--pir-addrspace: the per-CPU area's contents are arbitrary; the CPU "
+                        "state the function runs in is an unstated precondition): " + v.message;
+            v.cex.clear();
+            v.cex_args.clear();
+        }
+    }
+    if (!fn.ptr_params.empty()) {
+        std::string pp;
+        for (auto& p : fn.ptr_params) pp += (pp.empty() ? "" : ",") + p;
+        v.extra["ptr_params"] = pp;
     }
     // A violation where a requires states what the pir stage does not assume
     // (a condition such as r->count <= CAP, or \valid of an object reached
@@ -316,6 +657,7 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         std::string s;
         for (auto& a : fn.assumptions) s += (s.empty() ? "" : "; ") + a;
         v.extra["assumptions"] = s;
+        v.extra["assumptions_json"] = nlohmann::json(fn.assumptions).dump();
         if (v.status == laws::PROVED || v.status == laws::PROVED_UNBOUNDED || v.status == laws::PROVED_CERTIFIED) {
             v.extra["verdict_before_assumptions"] = v.status;
             if (v.status == laws::PROVED_CERTIFIED) {
@@ -336,6 +678,8 @@ std::string tv_exclusion(const Function& fn) {
     if (!fn.ptr_params.empty()) return "pointer parameters bound to contract objects are not replayed";
     if (fn.returns_ptr) return "returns a pointer (object ids differ from addresses)";
     if (fn.mutable_globals) return "reads or writes mutable globals (state persists across replayed calls)";
+    for (const auto& v : fn.vars)
+        if (v.width > 64) return "integers wider than 64 bits (the interpreter is 64-bit)";
     return {};
 }
 

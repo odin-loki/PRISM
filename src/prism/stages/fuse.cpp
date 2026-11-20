@@ -368,7 +368,7 @@ Finding fuzz_function(const FunctionInfo& fn, const fs::path& src, double budget
     };
     auto is_bin_crash = [&](const ProcRun& rr) {
         if (rr.timeout || rr.failed) return false;
-        if (rr.crashed || rr.rc < 0) return true;
+        if (rr.crashed || rr.rc < 0 || sandbox::jail_crash_rc(rr.rc)) return true;
         auto low = lower_copy(rr.err);
         return low.find("runtime error") != std::string::npos ||
                low.find("undefinedbehaviorsanitizer") != std::string::npos ||

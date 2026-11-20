@@ -1,5 +1,5 @@
 // `prism PATH [options]`: argument parsing, testable without a process
-// (tests/cpp/test_cli.cpp). main.cpp handles subcommands and --gui first.
+// (tests/cpp/test_cli.cpp). main.cpp handles subcommands first.
 
 #include "prism/cli.hpp"
 #include "prism/complexity.hpp"
@@ -158,11 +158,17 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         const std::string& a = in.name;
         bool ok = true;
         if (a == "--no-llm") { ok = in.flag(); cfg.llm = false; }
-        else if (a == "--gui") { ok = in.flag(); cfg.gui = true; }
         else if (a == "--resume") { ok = in.flag(); cfg.resume = true; }
         else if (a == "--allow-exec") { ok = in.flag(); cfg.allow_exec = true; }
         else if (a == "--strict-aliasing") { ok = in.flag(); cfg.strict_aliasing = true; }
         else if (a == "--pir-drafts") { ok = in.flag(); cfg.pir_drafts = true; }
+        else if (a == "--pir-harness") { ok = in.flag(); cfg.pir_harness = true; }
+        else if (a == "--pir-discharge") { ok = in.flag(); cfg.pir_discharge = true; }
+        else if (a == "--pir-discharge-closure") { ok = in.flag(); cfg.pir_discharge_closure = true; }
+        else if (a == "--pir-container-of") { ok = in.flag(); cfg.pir_container_of = true; }
+        else if (a == "--pir-vacuity") { ok = in.flag(); cfg.pir_vacuity = true; }
+        else if (a == "--pir-input-hash") { ok = in.flag(); cfg.pir_input_hash = true; }
+        else if (a == "--pir-header-fns") { ok = in.flag(); cfg.pir_header_fns = true; }
         else if (a == "--fp-checks") { ok = in.flag(); cfg.fp_checks = true; }
         else if (a == "--certified") { ok = in.flag(); cfg.certified = true; }
         else if (a == "--z3-only") { ok = in.flag(); o.z3_only = true; }
@@ -184,6 +190,125 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--solver-cache") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.solver_cache = fs::absolute(*v);
+        } else if (a == "--kernel-api") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) {
+                if (*v == "linux" || *v == "freebsd") cfg.pir_kernel_api = *v;
+                else {
+                    ok = false;
+                    in.error = "argument --kernel-api: expected linux or freebsd, got '" + *v + "'";
+                }
+            }
+        } else if (a == "--assume-unknown-calls") {
+            ok = in.flag();
+            cfg.pir_assume_unknown_calls = true;
+        } else if (a == "--callee-contracts") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.callee_contracts = fs::absolute(*v);
+        } else if (a == "--pir-field-invariants") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_field_invariants = fs::absolute(*v);
+        } else if (a == "--pir-callback-models") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_callback_models = fs::absolute(*v);
+        } else if (a == "--pir-discharge-out") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_discharge_out = fs::absolute(*v);
+        } else if (a == "--pir-obligations") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_obligations = fs::absolute(*v);
+        } else if (a == "--pir-ops-auto") {
+            ok = in.flag();
+            cfg.pir_ops_auto = true;
+        } else if (a == "--pir-addr-values") {
+            ok = in.flag();
+            cfg.pir_addr_values = true;
+        } else if (a == "--pir-builtin-contracts") {
+            ok = in.flag();
+            cfg.pir_builtin_contracts = true;
+        } else if (a == "--pir-build-semantics") {
+            ok = in.flag();
+            cfg.pir_build_semantics = true;
+        } else if (a == "--pir-kernel-stops") {
+            ok = in.flag();
+            cfg.pir_kernel_stops = true;
+        } else if (a == "--pir-kernel-current") {
+            ok = in.flag();
+            cfg.pir_kernel_current = true;
+        } else if (a == "--pir-global-harness") {
+            ok = in.flag();
+            cfg.pir_global_harness = true;
+        } else if (a == "--pir-lock-wrappers") {
+            ok = in.flag();
+            cfg.pir_lock_wrappers = true;
+        } else if (a == "--pir-lock-scopes") {
+            ok = in.flag();
+            cfg.pir_lock_scopes = true;
+        } else if (a == "--pir-bpf-helpers") {
+            ok = in.flag();
+            cfg.pir_bpf_helpers = true;
+        } else if (a == "--pir-global-harness-deep") {
+            ok = in.flag();
+            cfg.pir_global_harness_deep = true;
+        } else if (a == "--pir-length-pairing") {
+            cfg.pir_length_pairing = true;
+        } else if (a == "--pir-icall-havoc") {
+            ok = in.flag();
+            cfg.pir_icall_havoc = true;
+        } else if (a == "--pir-variadic") {
+            ok = in.flag();
+            cfg.pir_variadic = true;
+        } else if (a == "--pir-recursion") {
+            ok = in.flag();
+            cfg.pir_recursion = true;
+        } else if (a == "--pir-kernel-sprintf") {
+            ok = in.flag();
+            cfg.pir_kernel_sprintf = true;
+        } else if (a == "--pir-addrspace") {
+            ok = in.flag();
+            cfg.pir_addrspace = true;
+        } else if (a == "--pir-wide-int") {
+            ok = in.flag();
+            cfg.pir_wide_int = true;
+        } else if (a == "--pir-declared-types") {
+            ok = in.flag();
+            cfg.pir_declared_types = true;
+        } else if (a == "--pir-priv-areas") {
+            ok = in.flag();
+            cfg.pir_priv_areas = true;
+        } else if (a == "--pir-index-field-bounds") {
+            ok = in.flag();
+            cfg.pir_index_field_bounds = true;
+        } else if (a == "--pir-heap-freed") {
+            ok = in.flag();
+            cfg.pir_heap_freed = true;
+        } else if (a == "--pir-param-preconditions") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_param_preconditions = fs::absolute(*v);
+        } else if (a == "--pir-harness-deep") {
+            ok = in.flag();
+            cfg.pir_harness_deep = true;
+        } else if (a == "--ops-table") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.ops_table = fs::absolute(*v);
+        } else if (a == "--lock-contracts") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_lock_contracts = *v;
+        } else if (a == "--pir-harness-depth") {
+            auto v = in.take_int(0);
+            if ((ok = v.has_value())) cfg.pir_harness_depth = *v;
+        } else if (a == "--pir-harness-elems") {
+            auto v = in.take_int(1);
+            if ((ok = v.has_value())) cfg.pir_harness_elems = static_cast<unsigned long long>(*v);
+        } else if (a == "--pir-harness-bytes") {
+            auto v = in.take_int(1);
+            if ((ok = v.has_value())) cfg.pir_harness_bytes = static_cast<unsigned long long>(*v);
+        } else if (a == "--jsonl") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.jsonl = fs::absolute(*v);
+        } else if (a == "--compile-commands") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.compile_commands = fs::absolute(*v);
         } else if (a == "--requirements") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.requirements.push_back(fs::absolute(*v));
@@ -330,13 +455,15 @@ CliResult<TriageCli> parse_triage_cli(std::span<const char* const> args) {
 
 std::string cli_usage() {
     return
-        "prism PATH [--gui] [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
+        "prism PATH [--no-llm] [--jobs N] [--tool NAME=PATH] [--pbsd PATH]\n"
         "           [--stage a,b] [--skip a,b] [--preset prove] [--out DIR] [--resume] [--unwind N]\n"
         "           [--fuzz-budget S] [--fuzz-iters N] [--repair-rounds N]\n"
         "           [--list-stages] [--version] [--fail-on never|defect|gap] [--allow-exec]\n"
         "           [--requirements PATH] [--contracts-approved PATH]\n"
         "           [--strict-aliasing] [--pir-drafts] [--fp-checks]\n"
         "           [--certified] [--solver-cache DIR] [--timeout S] [--complexity N]\n"
+        "           [--compile-commands FILE] [--kernel-api linux|freebsd]\n"
+        "           [--assume-unknown-calls] [--ops-table FILE]\n"
         "prism prove FILE.lean THEOREM [--write] [--allow-exec] (Lean proof search; prove --help)\n"
         "prism library import|vet|stats|lookup ... (proof library of earlier verdicts; library --help)\n"
         "PRISM = Performance, Regression, Integration and Security Module\n"
@@ -377,6 +504,83 @@ std::string cli_usage() {
         "  certified is PROVED-CERTIFIED, otherwise it stays PROVED with a certify_note.\n"
         "--solver-cache DIR: solver query cache (default $XDG_CACHE_HOME/prism/solver).\n"
         "--timeout S: solver seconds per query (default 30).\n"
+        "--compile-commands FILE: the pir stage compiles each unit with its entry's flags\n"
+        "  from this compile_commands.json (language level such as gnu11, defines, include\n"
+        "  path, target, short-wchar, ...); warning flags are never taken, so the UB-folding\n"
+        "  warnings stay on. A Linux kernel unit needs it (docs/PIR.md).\n"
+        "--kernel-api linux|freebsd: the pir stage links the kernel API specs (allocation,\n"
+        "  locking, user access, MMIO, delays, logging, BUG/WARN, ...) and models inline asm,\n"
+        "  asm goto, atomics and barriers conservatively; every spec and model used is a\n"
+        "  named assumption in the verdict (PROVED-ASSUMING). Off by default (docs/KERNEL_MODELS.md).\n"
+        "--pir-discharge: with --pir-harness, the harness of a static, non-address-taken, non-recursive\n"
+        "  function is a proof obligation checked at every call site of the unit; discharged, the\n"
+        "  invented assumption is replaced by the call sites (docs/HARNESS_GENERATOR.md).\n"
+        "  --pir-discharge-closure: also discharge the callers' harnesses up the unit's call graph; a callee\n"
+        "  whose call sites all rest on unconditional contexts and that assumes nothing else is PROVED.\n"
+        "  --pir-discharge-out FILE: append the unit's call graph, harness plans and call-site checks\n"
+        "  (JSONL) for prism-qa callsite-discharge (whole build); --pir-obligations FILE: check other\n"
+        "  units' harness plans (records \"plan\") at this unit's call sites.\n"
+        "--pir-container-of: with --pir-harness, a parameter used at a negative constant offset gets its\n"
+        "  containing object (container_of). --pir-vacuity: a harnessed function whose exit is\n"
+        "  unreachable under its assumptions is NEEDS-HARNESS (vacuous), never a proof.\n"
+        "--pir-input-hash: check nothing; each translated function's row (NOTRUN) carries input_key\n"
+        "  and input_key_loc_free: equal keys mean the same check (docs/PIR.md \"Input key\").\n"
+        "--pir-header-fns: a function defined in a header is checked in the unit when PRISM_PIR_ONLY\n"
+        "  names it for that unit (a stub unit that includes the header); unused ones get IR\n"
+        "  (-femit-all-decls). Other header code stays skipped (docs/PIR.md \"Header functions\").\n"
+        "--callee-contracts FILE: assume-guarantee stubs for callees without a body (TSV: function,\n"
+        "  signature, requires, assigns, ensures, status, source). The requires are checked at the call\n"
+        "  site, only the assigns are havocked, the ensures are assumed; a callee without a usable\n"
+        "  contract is treated as before. Every stub used is a named assumption with its status\n"
+        "  (docs/HARNESS_PHASE2.md). --pir-ops-auto: ops tables derived from the unit's own function-pointer\n"
+        "  stores; a harness function-pointer field is bound to one of its targets (named assumption).\n"
+        "  --pir-addr-values: ptrtoint / inttoptr constant expressions. --pir-harness-deep: depth 4, 64 objects.\n"
+        "  --pir-builtin-contracts: with --kernel-api, contracts for llvm.read_register / prefetch / objectsize.\n"
+        "  --pir-build-semantics: with --compile-commands, a unit built with -fwrapv or -fno-strict-overflow\n"
+        "  is checked with that semantics: signed + - * and << wrap (not UB); every other check stays (named).\n"
+        "  --pir-kernel-stops: with --kernel-api, Linux BUG() and panic() / kassert_panic() end the path\n"
+        "  (a named assumption: the verdict covers the paths that do not stop there).\n"
+        "  --pir-kernel-current: with --kernel-api, current (Linux) and curthread (FreeBSD) point to a valid object.\n"
+        "  --pir-global-harness: with --kernel-api, mutable pointer globals (MMIO bases, bus handles) point to a valid object.\n"
+        "  --pir-lock-wrappers: with --kernel-api, an acquire-only or release-only function is a lock wrapper (named).\n"
+        "  --pir-lock-scopes: with --kernel-api, guard()/scoped_guard cleanup and irqsave lock classes are followed in the\n"
+        "      lock-order pass, branches on constants (readl_poll_timeout sleep_us 0) are dead there, and a lock the function\n"
+        "      releases but never acquires (acquires but never releases) is its caller's (named, per lock).\n"
+        "  --pir-bpf-helpers: with --kernel-api linux, a BPF helper argument its bpf_func_proto types ARG_PTR_TO_* (not\n"
+        "      _OR_NULL) is a valid object, as the BPF verifier guarantees (named).\n"
+        "  --pir-global-harness-deep: with --pir-global-harness, pointer fields of a harnessed global and list_head\n"
+        "      globals get valid objects (named).\n"
+        "  --pir-icall-havoc: with --kernel-api, an indirect call with more than 16 targets or to a target outside\n"
+        "  the address-taken functions is a havoc of all memory with an arbitrary result (named).\n"
+        "  --pir-variadic: variadic functions are translated; their variadic arguments are arbitrary (named).\n"
+        "  --pir-recursion: a recursive call is the function's own verdict (induction) and a havoc of all memory (named).\n"
+        "  --pir-kernel-sprintf: with --kernel-api linux, sprintf with a literal format writes at most its bound (%p too).\n"
+        "  --pir-addrspace: with --kernel-api, ptr addrspace(N) accesses are ordinary pointer accesses (named).\n"
+        "  --pir-wide-int: integers of 65..512 bits (i128, bitfield containers) are bit-vectors.\n"
+        "  --pir-length-pairing: with --pir-harness, a pointer indexed under a bound by an integer parameter\n"
+        "  (or a pointer field by an integer field of the same object) points to that many elements (named;\n"
+        "  a proof is PROVED-ASSUMING, its non-vacuity is checked).\n"
+        "  --pir-field-invariants FILE: struct field invariants (TSV: struct, offset, width, kind valid|nonnull|range,\n"
+        "  a, b, status, source) applied to automatic-harness objects, one named assumption per row used.\n"
+        "  --pir-callback-models FILE: driver environment models (TSV: interface, container, field_off, callback, param,\n"
+        "  kind range|id-entry|trailing-alloc, a, b, status, source) for the parameters of driver callbacks, named.\n"
+        "  --pir-declared-types: a harness pointee without type evidence in the IR (or smaller than its declaration)\n"
+        "  gets its declared type and size from the unit lowered with -g (a named assumption).\n"
+        "  --pir-priv-areas: a struct based at the end of a harness object (netdev_priv-style private area) sizes the\n"
+        "  object to its end: from a visible allocation's private size, else the area struct (a named assumption).\n"
+        "  --pir-index-field-bounds: an integer field of a harness object that indexes an in-object array [N x T]\n"
+        "  is in [0, N-1] at entry (a named assumption, not discharged).\n"
+        "  --pir-heap-freed: a harness object the function passes to kfree / kvfree / vfree / free is a live heap\n"
+        "  allocation (a named assumption); double frees and frees of non-heap or interior pointers are still checked.\n"
+        "  --pir-param-preconditions FILE: per-parameter preconditions (TSV: function, parameter, condition\n"
+        "  valid N|type S|nonnull|range A B, scope, status, source), one named assumption per row used, minimised.\n"
+        "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
+        "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
+        "--ops-table FILE: an indirect call through a field of a known ops table (TSV: struct\n"
+        "  type, field, targets, role, optional field index) is checked against each target,\n"
+        "  at most 8 (more stays UNENCODED). Off by default (docs/PIR.md).\n"
+        "--lock-contracts FILE: TSV of lock contracts for unmodified kernel code (function, lock\n"
+        "  global:NAME|arg:N|field:TYPE.INDEX, acquires|releases|requires-held, optional mutex|spin); needs --kernel-api.\n"
         "--complexity N: Z3 resource-limit (rlimit) units per pir query of a function of\n"
         "  reference size (default: --timeout x 1000000, else PRISM_PIR_RLIMIT; 0 = off);\n"
         "  the same limit on every machine, so \"not decided\" is reproducible; the\n"

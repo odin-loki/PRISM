@@ -16,6 +16,7 @@
 #include <charconv>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -243,6 +244,16 @@ struct P {
         return i + k < t.size() ? t[i + k] : end;
     }
     bool at_end() const { return i >= t.size(); }
+    // memory orderings of an atomic instruction among the remaining tokens ("seq_cst", "acquire release", ...)
+    std::string orderings() const {
+        std::string r;
+        for (std::size_t k = i; k < t.size(); ++k)
+            if (t[k].kind == Tok::Word &&
+                (t[k].text == "monotonic" || t[k].text == "acquire" || t[k].text == "release" ||
+                 t[k].text == "acq_rel" || t[k].text == "seq_cst" || t[k].text == "unordered"))
+                r += (r.empty() ? "" : " ") + t[k].text;
+        return r;
+    }
     bool is_punct(char c, std::size_t k = 0) const {
         auto& x = peek(k);
         return x.kind == Tok::Punct && x.text.size() == 1 && x.text[0] == c;
@@ -551,12 +562,45 @@ struct P {
                 unsigned long long mag = 0;
                 auto r = std::from_chars(digits.data(), digits.data() + digits.size(), mag);
                 if (r.ec != std::errc()) {
-                    v.kind = Value::Other;  // wider than 64 bits
+                    // a literal beyond 64 bits (types of 65..512 bits, --pir-wide-int): kept when its magnitude fits 128 bits
+                    // (two 64-bit limbs, two's complement; a type wider than 128 bits extends them by the sign), else not parsed
+                    uint32_t limb[4] = {0, 0, 0, 0};  // magnitude, little endian
+                    bool ok = ty.bits > 64 && ty.bits <= 512 && r.ec == std::errc::result_out_of_range;
+                    for (char ch : digits) {
+                        if (!ok) break;
+                        uint64_t carry = static_cast<uint64_t>(ch - '0');
+                        for (auto& lb : limb) {
+                            uint64_t x = uint64_t{lb} * 10 + carry;
+                            lb = static_cast<uint32_t>(x);
+                            carry = x >> 32;
+                        }
+                        if (carry) ok = false;  // beyond 128 bits
+                    }
+                    // wider than 128 bits: a negative literal's 128-bit two's complement must keep its sign (magnitude <= 2^127;
+                    // a positive one is zero-extended)
+                    if (ok && ty.bits > 128 && neg && (limb[3] & 0x80000000u) &&
+                        !(limb[3] == 0x80000000u && !limb[2] && !limb[1] && !limb[0]))
+                        ok = false;
+                    if (!ok) {
+                        v.kind = Value::Other;  // wider than 64 bits
+                        return v;
+                    }
+                    uint64_t lo = uint64_t{limb[0]} | (uint64_t{limb[1]} << 32);
+                    uint64_t hi = uint64_t{limb[2]} | (uint64_t{limb[3]} << 32);
+                    if (neg) {  // two's complement of the 128-bit magnitude
+                        lo = ~lo + 1;
+                        hi = ~hi + (lo == 0 ? 1 : 0);
+                    }
+                    v.kind = Value::Int;
+                    v.negative = neg;
+                    v.bits = lo;
+                    v.hi = hi;
                     return v;
                 }
                 v.kind = Value::Int;
                 v.negative = neg;
                 v.bits = neg ? (~static_cast<uint64_t>(mag) + 1) : static_cast<uint64_t>(mag);
+                if (ty.bits > 64) v.hi = neg && mag != 0 ? ~uint64_t{0} : 0;
                 return v;
             }
             case Tok::Word: {
@@ -700,7 +744,9 @@ bool is_cast(std::string_view op) {
 }
 
 // Parse the tokens of one instruction (metadata attachments already removed).
-Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
+// kernel: the atomic and barrier forms are modelled (--kernel-api); otherwise
+// they stay unparsed, exactly as before those forms were added.
+Inst parse_inst(const std::vector<Tok>& toks, std::string line_text, bool kernel) {
     Inst in;
     in.text = std::move(line_text);
     P p{toks};
@@ -913,34 +959,88 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
     if (op == "load") {
         // volatile: the program's own object, read and written in program
         // order (C17 5.1.2.3p6); PIR keeps that order and checks the access
-        // like any other. The flag is kept. atomic stays unencoded.
-        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
-        if (p.is_word("atomic")) {
+        // like any other. The flag is kept. An atomic access is a plain access
+        // with a kernel_note (kernel mode: sequential model; otherwise it stays
+        // unencoded, as on main, and the conc stage reads its raw text).
+        if (!kernel && p.is_word("atomic")) {
             in.flags.push_back(p.next().text);
             in.parsed = false;
             return in;
         }
+        const bool atomic = p.accept_word("atomic");
+        if (atomic) in.flags.push_back("atomic");
+        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
         in.ty = p.type();
         p.expect_punct(',');
         in.ops.push_back(p.typed_operand());
+        if (atomic) in.kernel_note = "atomic load (" + p.orderings() + ") modelled as a plain load";
         in.align = p.trailing_align();
         return in;
     }
     if (op == "store") {
         // volatile: the program's own object, read and written in program
         // order (C17 5.1.2.3p6); PIR keeps that order and checks the access
-        // like any other. The flag is kept. atomic stays unencoded.
-        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
-        if (p.is_word("atomic")) {
+        // like any other. The flag is kept. atomic: as for load.
+        if (!kernel && p.is_word("atomic")) {
             in.flags.push_back(p.next().text);
             in.parsed = false;
             return in;
         }
+        const bool atomic = p.accept_word("atomic");
+        if (atomic) in.flags.push_back("atomic");
+        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
         auto v = p.typed_operand();
         p.expect_punct(',');
         auto ptr = p.typed_operand();
         in.ty = v.ty;
         in.ops = {v, ptr};
+        if (atomic) in.kernel_note = "atomic store (" + p.orderings() + ") modelled as a plain store";
+        in.align = p.trailing_align();
+        return in;
+    }
+    if (op == "fence" && kernel) {
+        // a barrier: no effect on the sequential memory model (--kernel-api, kernel_note)
+        in.op = "call";
+        in.callee = "llvm.donothing";
+        in.ty = Type{Type::Void, 0, "void", {}};
+        in.kernel_note = "fence (" + p.orderings() + ") modelled as no effect: no other thread or interrupt runs between this function's accesses";
+        return in;
+    }
+    if (op == "atomicrmw" && kernel) {
+        // atomicrmw [volatile] <op> ptr %p, <ty> %v [syncscope] <ordering> [, align N]
+        // (lowered to load, op, store by expand_atomic)
+        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
+        in.pred = p.next().text;
+        static const std::set<std::string> ok_ops{"xchg", "add", "sub", "and", "nand", "or", "xor",
+                                                  "max", "min", "umax", "umin"};
+        if (!ok_ops.count(in.pred)) {
+            in.parsed = false;  // fadd, uinc_wrap, ...: not modelled
+            return in;
+        }
+        auto ptr = p.typed_operand();
+        p.expect_punct(',');
+        auto v = p.typed_operand();
+        in.ty = v.ty;
+        in.ops = {ptr, v};
+        in.kernel_note = "atomicrmw " + in.pred + " (" + p.orderings() + ") modelled as a plain load, operation and store";
+        in.align = p.trailing_align();
+        return in;
+    }
+    if (op == "cmpxchg" && kernel) {
+        // cmpxchg [weak] [volatile] ptr %p, <ty> %cmp, <ty> %new [syncscope] <success> <failure> [, align N]
+        const bool weak = p.accept_word("weak");
+        if (weak) in.flags.push_back("weak");
+        if (p.is_word("volatile")) in.flags.push_back(p.next().text);
+        auto ptr = p.typed_operand();
+        p.expect_punct(',');
+        auto cmp = p.typed_operand();
+        p.expect_punct(',');
+        auto nv = p.typed_operand();
+        in.ty = cmp.ty;
+        in.ops = {ptr, cmp, nv};
+        in.kernel_note = std::string("cmpxchg") + (weak ? " weak" : "") + " (" + p.orderings() +
+                         ") modelled as a plain load, compare and store" +
+                         (weak ? " (a weak cmpxchg may also fail spuriously: modelled)" : "");
         in.align = p.trailing_align();
         return in;
     }
@@ -983,6 +1083,46 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         in.targets.push_back(p.label());
         return in;
     }
+    if (op == "callbr") {
+        // callbr <ty> asm [sideeffect ...] "text", "constraints"(args) to label %fallthrough [label %l1, ...]
+        // (asm goto): targets = fallthrough, then the indirect labels
+        while (p.peek().kind == Tok::Word && call_prefix_words().count(p.peek().text)) ++p.i;
+        p.skip_param_attrs();
+        in.ty = p.type();
+        if (in.ty.kind == Type::Other && !in.ty.elems.empty()) in.ty = in.ty.elems[0];
+        if (!p.is_word("asm")) {
+            in.parsed = false;
+            return in;
+        }
+        ++p.i;
+        while (p.peek().kind == Tok::Word) {
+            if (p.peek().text == "sideeffect") in.asm_sideeffect = true;
+            ++p.i;
+        }
+        auto t = p.next();
+        if (t.kind != Tok::Str) throw ParseError("expected asm string");
+        in.is_asm = true;
+        in.asm_text = t.text;
+        p.expect_punct(',');
+        in.asm_constraints = p.next().text;
+        p.expect_punct('(');
+        bool first = true;
+        while (!p.is_punct(')')) {
+            if (!first) p.expect_punct(',');
+            first = false;
+            in.ops.push_back(p.typed_operand(true));
+        }
+        p.expect_punct(')');
+        while (!p.at_end() && !p.is_word("to")) ++p.i;
+        if (!p.accept_word("to")) throw ParseError("callbr without a fallthrough destination");
+        in.targets.push_back(p.label());
+        p.expect_punct('[');
+        while (!p.is_punct(']')) {
+            in.targets.push_back(p.label());
+            p.accept_punct(',');
+        }
+        return in;
+    }
     if (op == "call") {
         while (p.peek().kind == Tok::Word && call_prefix_words().count(p.peek().text)) ++p.i;
         p.skip_param_attrs();
@@ -991,13 +1131,16 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
         if (p.is_word("asm")) {
             // inline assembly: asm [sideeffect] [alignstack] [inteldialect] [unwind] "text", "constraints"
             ++p.i;
-            while (p.peek().kind == Tok::Word) ++p.i;
+            while (p.peek().kind == Tok::Word) {
+                if (p.peek().text == "sideeffect") in.asm_sideeffect = true;
+                ++p.i;
+            }
             auto t = p.next();
             if (t.kind != Tok::Str) throw ParseError("expected asm string");
             in.is_asm = true;
             in.asm_text = t.text;
             p.expect_punct(',');
-            p.next();  // constraint string
+            in.asm_constraints = p.next().text;  // constraint string
         }
         auto cal = in.is_asm ? Tok{Tok::Word, "asm"} : p.next();
         if (in.is_asm) {
@@ -1023,6 +1166,115 @@ Inst parse_inst(const std::vector<Tok>& toks, std::string line_text) {
     // Recognised shape, not modelled: keep the opcode for the UNENCODED reason.
     in.parsed = false;
     return in;
+}
+
+// atomicrmw / cmpxchg as the plain instructions they are in a sequential
+// execution (docs/KERNEL_MODELS.md "Atomics and barriers"): the first
+// instruction carries the kernel_note (the named assumption; without
+// --kernel-api the translator refuses the function as before).
+std::vector<Inst> expand_atomic(const Inst& a, int serial) {
+    const std::string base = "prism.at" + std::to_string(serial);
+    const Type T = a.ty;
+    const Type ptr_t{Type::Ptr, 0, "ptr", {}};
+    const Type i1{Type::Int, 1, "i1", {}};
+    auto lcl = [](const Type& t, const std::string& n) {
+        Operand o;
+        o.ty = t;
+        o.v.kind = Value::Local;
+        o.v.name = n;
+        o.v.text = "%" + n;
+        return o;
+    };
+    auto mk = [&](const std::string& res, const std::string& op, const Type& ty, std::vector<Operand> ops) {
+        Inst x;
+        x.result = res;
+        x.op = op;
+        x.ty = ty;
+        x.ops = std::move(ops);
+        x.text = a.text;
+        return x;
+    };
+    std::vector<Inst> r;
+    const std::string old = a.op == "atomicrmw" ? (a.result.empty() ? base + ".old" : a.result)
+                                                : base + ".old";
+    Inst ld = mk(old, "load", T, {a.ops[0]});
+    ld.align = a.align;
+    for (auto& f : a.flags)
+        if (f == "volatile") ld.flags.push_back(f);
+    ld.kernel_note = a.kernel_note;
+    r.push_back(ld);
+    Operand newv;
+    if (a.op == "atomicrmw") {
+        const auto& v = a.ops[1];
+        const std::string& k = a.pred;
+        if (k == "xchg") {
+            newv = v;
+        } else if (k == "nand") {
+            r.push_back(mk(base + ".t", "and", T, {lcl(T, old), v}));
+            Operand m1;
+            m1.ty = T;
+            m1.v.kind = Value::Int;
+            m1.v.bits = T.bits >= 64 ? ~uint64_t{0} : (uint64_t{1} << T.bits) - 1;
+            m1.v.negative = false;
+            m1.v.text = "-1";
+            r.push_back(mk(base + ".n", "xor", T, {lcl(T, base + ".t"), m1}));
+            newv = lcl(T, base + ".n");
+        } else if (k == "add" || k == "sub" || k == "and" || k == "or" || k == "xor") {
+            r.push_back(mk(base + ".n", k, T, {lcl(T, old), v}));
+            newv = lcl(T, base + ".n");
+        } else {  // max min umax umin
+            Inst c = mk(base + ".c", "icmp", T, {lcl(T, old), v});
+            c.pred = k == "max" ? "sgt" : k == "min" ? "slt" : k == "umax" ? "ugt" : "ult";
+            r.push_back(c);
+            r.push_back(mk(base + ".n", "select", T, {lcl(i1, base + ".c"), lcl(T, old), v}));
+            newv = lcl(T, base + ".n");
+        }
+    } else {  // cmpxchg
+        const auto& cmp = a.ops[1];
+        const auto& nv = a.ops[2];
+        Inst c = mk(base + ".eq", "icmp", T, {lcl(T, old), cmp});
+        c.pred = "eq";
+        r.push_back(c);
+        std::string ok = base + ".eq";
+        if (std::find(a.flags.begin(), a.flags.end(), "weak") != a.flags.end()) {
+            // a weak cmpxchg may fail although the values are equal
+            Inst nd;
+            nd.result = base + ".nd";
+            nd.op = "call";
+            nd.callee = "__VERIFIER_nondet_bool";
+            nd.ty = i1;
+            nd.text = a.text;
+            r.push_back(nd);
+            r.push_back(mk(base + ".ok", "and", i1, {lcl(i1, base + ".eq"), lcl(i1, base + ".nd")}));
+            ok = base + ".ok";
+        }
+        r.push_back(mk(base + ".sel", "select", T, {lcl(i1, ok), nv, lcl(T, old)}));
+        newv = lcl(T, base + ".sel");
+        const Type pair{Type::Struct, 0, "{ " + T.text + ", i1 }", {T, i1}};
+        Operand undef_agg;
+        undef_agg.ty = pair;
+        undef_agg.v.kind = Value::Undef;
+        undef_agg.v.text = "undef";
+        Inst i0 = mk(base + ".a", "insertvalue", pair, {undef_agg, lcl(T, old)});
+        i0.indices = {0};
+        Inst i1i = mk(a.result.empty() ? base + ".res" : a.result, "insertvalue", pair,
+                      {lcl(pair, base + ".a"), lcl(i1, ok)});
+        i1i.indices = {1};
+        Inst st = mk("", "store", T, {newv, a.ops[0]});
+        st.align = a.align;
+        for (auto& f : a.flags)
+            if (f == "volatile") st.flags.push_back(f);
+        r.push_back(st);
+        r.push_back(i0);
+        r.push_back(i1i);
+        return r;
+    }
+    Inst st = mk("", "store", T, {newv, a.ops[0]});
+    st.align = a.align;
+    for (auto& f : a.flags)
+        if (f == "volatile") st.flags.push_back(f);
+    r.push_back(st);
+    return r;
 }
 
 // Strip trailing ", !kind !N" metadata attachments and "#N" attribute
@@ -1104,7 +1356,8 @@ int to_int(const std::string& s) {
     return v;
 }
 
-void parse_define(std::string_view header, const std::vector<std::string_view>& body, Function& fn) {
+void parse_define(std::string_view header, const std::vector<std::string_view>& body, Function& fn,
+                  bool kernel_atomics) {
     auto toks = lex(header);
     // header: define [linkage...] [ret attrs] <type> @name(params) [...] [!dbg !N] {
     for (std::size_t i = 0; i + 1 < toks.size(); ++i) {
@@ -1146,6 +1399,7 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
             if (p.is_word("...")) {
                 ++p.i;
                 fn.parse_error = "variadic function";
+                fn.variadic = true;
                 continue;
             }
             Param prm;
@@ -1159,6 +1413,7 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
     Block* cur = nullptr;
     std::string pending;
     int depth = 0;
+    int atomic_serial = 0;
     auto flush = [&](const std::string& line) {
         auto toks2 = lex(line);
         if (toks2.empty()) return;
@@ -1170,9 +1425,11 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         }
         Inst in;
         try {
-            in = parse_inst(toks2, trim(line));
+            in = parse_inst(toks2, trim(line), kernel_atomics);
         } catch (const ParseError& e) {
             if (fn.parse_error.empty()) fn.parse_error = std::string(e.what()) + ": " + trim(line);
+            else if (fn.parse_error == "variadic function")  // keep the body error visible (--pir-variadic needs a parsed body)
+                fn.parse_error += std::string("; ") + e.what() + ": " + trim(line);
             in.parsed = false;
             in.text = trim(line);
             auto sp = in.text.find(' ');
@@ -1182,6 +1439,13 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         }
         in.dbg = dbg;
         in.loop_md = loop_md;
+        if (kernel_atomics && in.parsed && (in.op == "atomicrmw" || in.op == "cmpxchg")) {
+            for (auto& x : expand_atomic(in, atomic_serial++)) {
+                x.dbg = dbg;
+                cur->insts.push_back(std::move(x));
+            }
+            return;
+        }
         cur->insts.push_back(std::move(in));
     };
     std::string lpad;  // a landingpad whose clauses continue on the next lines
@@ -1192,6 +1456,9 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         // "#dbg_assign(...)", "#dbg_label(...)") replace the llvm.dbg.*
         // intrinsics. They carry no semantics: dropped, like the intrinsics.
         if (line.starts_with("#dbg_")) continue;
+        // The intrinsic form (LLVM 18 with full -g, --pir-declared-types) is dropped the same way, so a unit lowered
+        // with -g has the instructions it has with -gline-tables-only (the translator ignores llvm.dbg.* calls).
+        if (line.starts_with("call void @llvm.dbg.") || line.starts_with("tail call void @llvm.dbg.")) continue;
         if (!lpad.empty()) {
             if (line.starts_with("catch ") || line.starts_with("filter ") || line.starts_with("cleanup")) {
                 lpad += " " + line;
@@ -1225,6 +1492,10 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
                            pending.find(" unwind label ") == std::string::npos &&
                            pending.find(" unwind to caller") == std::string::npos;
         if (depth <= 0 && open_invoke) continue;
+        // `callbr ...` (asm goto) continues on the next line with "to label %ft [label %l1, ...]"
+        const bool open_callbr = (pending.starts_with("callbr ") || pending.find(" = callbr ") != std::string::npos) &&
+                                 pending.find(" to label ") == std::string::npos;
+        if (depth <= 0 && open_callbr) continue;
         if (depth <= 0) {
             depth = 0;
             if (pending.find(" = landingpad ") != std::string::npos || pending.starts_with("landingpad "))
@@ -1308,7 +1579,7 @@ Type parse_type(std::string_view text) {
     return p.type();
 }
 
-Module parse_module(std::string_view text) {
+static Module parse_module_impl(std::string_view text, bool kernel_atomics) {
     Module m;
     std::vector<std::string_view> lines;
     std::size_t pos = 0;
@@ -1333,7 +1604,7 @@ Module parse_module(std::string_view text) {
             if (auto brace = header.rfind('{'); brace != std::string_view::npos)
                 header = header.substr(0, brace);
             try {
-                parse_define(header, body, fn);
+                parse_define(header, body, fn, kernel_atomics);
             } catch (const ParseError& e) {
                 fn.parse_error = std::string("header: ") + e.what();
             }
@@ -1396,6 +1667,10 @@ Module parse_module(std::string_view text) {
                 subs_raw.emplace_back(ref, std::string(rhs));
             } else if (rhs.find("!DIFile(") != std::string_view::npos) {
                 files[ref] = md_field(rhs, "filename");
+            } else if (rhs.starts_with("!{!\"") && rhs.ends_with("\"}") && rhs.size() > 6 &&
+                       rhs.substr(4, rhs.size() - 6).find('"') == std::string_view::npos) {
+                // a one-string tuple: the register name of llvm.read_register / llvm.write_register
+                m.md_strings[ref] = std::string(rhs.substr(4, rhs.size() - 6));
             } else if (rhs.starts_with("distinct !{")) {
                 // loop metadata: !N = distinct !{!N, !startloc, !endloc, ...}
                 std::vector<std::string> refs;
@@ -1408,6 +1683,57 @@ Module parse_module(std::string_view text) {
                     q = e - 1;
                 }
                 if (refs.size() >= 2 && refs.at(0) == ref) loop_tuples.emplace_back(ref, refs.at(1));
+            } else if (auto dk = rhs.find("!DI"); dk != std::string_view::npos && dk <= 9 &&
+                       (rhs.substr(dk).starts_with("!DIBasicType(") || rhs.substr(dk).starts_with("!DIDerivedType(") ||
+                        rhs.substr(dk).starts_with("!DICompositeType("))) {
+                // debug type nodes (full -g, --pir-declared-types; docs/PIR.md "Declared pointee types")
+                DIType t;
+                t.kind = rhs.substr(dk).starts_with("!DIBasicType(") ? "basic"
+                         : rhs.substr(dk).starts_with("!DIDerivedType(") ? "derived" : "composite";
+                t.tag = md_field(rhs, "tag");
+                t.name = md_field(rhs, "name");
+                const auto num = [&](std::string_view k) {
+                    uint64_t v = 0;
+                    const auto s = md_field(rhs, k);
+                    std::from_chars(s.data(), s.data() + s.size(), v);
+                    return v;
+                };
+                t.size_bits = num("size");
+                t.offset_bits = num("offset");
+                t.base = md_field(rhs, "baseType");
+                if (t.base == "null") t.base.clear();
+                t.elements = md_field(rhs, "elements");
+                t.fwd = md_field(rhs, "flags").find("DIFlagFwdDecl") != std::string::npos;
+                m.ditypes[ref] = std::move(t);
+            } else if (rhs.find("!DILocalVariable(") != std::string_view::npos) {
+                if (const int arg = to_int(md_field(rhs, "arg")); arg > 0) {
+                    DIParamVar v;
+                    v.name = md_field(rhs, "name");
+                    v.arg = arg;
+                    v.scope = md_field(rhs, "scope");
+                    v.type = md_field(rhs, "type");
+                    m.diparams.push_back(std::move(v));
+                }
+            } else if (rhs.starts_with("!{") && rhs.ends_with("}") && rhs.find('"') == std::string_view::npos) {
+                // a tuple of refs (struct members of a DICompositeType's `elements:`)
+                std::vector<std::string> refs;
+                std::string_view in = rhs.substr(2, rhs.size() - 3);
+                bool ok = true;
+                for (std::size_t s = 0; s < in.size();) {
+                    auto c = in.find(',', s);
+                    auto item = trim(in.substr(s, c == std::string_view::npos ? std::string_view::npos : c - s));
+                    if (!item.empty()) {
+                        if (item != "null" && !(item.size() > 1 && item[0] == '!' &&
+                                                std::isdigit(static_cast<unsigned char>(item[1])))) {
+                            ok = false;
+                            break;
+                        }
+                        refs.push_back(item);
+                    }
+                    if (c == std::string_view::npos) break;
+                    s = c + 1;
+                }
+                if (ok) m.md_tuples[ref] = std::move(refs);
             }
         }
     }
@@ -1425,5 +1751,9 @@ Module parse_module(std::string_view text) {
     }
     return m;
 }
+
+Module parse_module(std::string_view text) { return parse_module_impl(text, false); }
+
+Module parse_module_kernel(std::string_view text) { return parse_module_impl(text, true); }
 
 }  // namespace prism::pir::ir

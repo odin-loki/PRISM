@@ -51,6 +51,27 @@ SymMem::SymMem(z3::context& c, MemEncoding enc, bool tags, std::vector<z3::expr>
     if (enc_ == MemEncoding::Array) arr_ = z3::const_array(c_.bv_sort(ptr_w()), bv(0, cw_));
 }
 
+std::string SymMem::stats_line() const {
+    uint64_t k[6] = {0, 0, 0, 0, 0, 0};
+    for (auto& e : log_) ++k[static_cast<int>(e.kind)];
+    char buf[512];
+    std::snprintf(buf, sizeof buf,
+                  "objects=%zu log=%zu (byte=%llu set=%llu copy=%llu havoc=%llu havocobj=%llu havocall=%llu) reads=%llu "
+                  "walked=%llu copy_reads=%llu sym_reads=%llu havoc_reads=%llu ackermann=%llu z3=%lluMB",
+                  objs_.size(), log_.size(), (unsigned long long)k[0], (unsigned long long)k[1], (unsigned long long)k[2],
+                  (unsigned long long)k[3], (unsigned long long)k[4], (unsigned long long)k[5],
+                  (unsigned long long)st_.reads, (unsigned long long)st_.walked, (unsigned long long)st_.copy_reads,
+                  (unsigned long long)st_.sym_reads, (unsigned long long)st_.havoc_reads,
+                  (unsigned long long)st_.ackermann, (unsigned long long)(Z3_get_estimated_alloc_size() >> 20));
+    return buf;
+}
+
+SymMem::~SymMem() {
+    if (prism::settings::mem_trace().is_set())
+        std::fprintf(stderr, "[memtrace] symmem end rss=%llu %s\n", static_cast<unsigned long long>(membudget::rss_mb()),
+                     stats_line().c_str());
+}
+
 std::optional<uint64_t> SymMem::known(const z3::expr& e) const {
     uint64_t v = 0;
     if (e.is_numeral() && e.is_numeral_u64(v)) return obj_of(v);
@@ -108,12 +129,36 @@ std::optional<uint64_t> eval_const(const z3::expr& e, const std::vector<uint64_t
 }
 }  // namespace
 
+namespace {
+thread_local const FunctionBudget* g_enc_budget = nullptr;
+thread_local std::string g_enc_total;
+}  // namespace
+
+EncodeBudgetScope::EncodeBudgetScope(const FunctionBudget* budget, std::string total_s)
+    : prev_(g_enc_budget), prev_total_(g_enc_total) {
+    g_enc_budget = budget;
+    g_enc_total = std::move(total_s);
+}
+
+EncodeBudgetScope::~EncodeBudgetScope() {
+    g_enc_budget = prev_;
+    g_enc_total = prev_total_;
+}
+
+void encode_budget_check(const char* where) {
+    if (g_enc_budget && g_enc_budget->exhausted())
+        throw EncodeError{std::string(laws::TIMEOUT), "pir function budget of " + g_enc_total + " s spent while " +
+                                                          where + " (PRISM_FUNCTION_BUDGET)"};
+}
+
 // Law 7: one load can build millions of read-over-write terms (a symbolic
 // address against a long write log, nested once per copy). The process RSS
 // is checked every few thousand steps against the memory budget; past it the
 // function ends with a reported UNKNOWN (encode.cpp maps this exception) and
-// its context, with everything built here, is freed.
+// its context, with everything built here, is freed. The function budget is
+// checked here too (EncodeBudgetScope): past it, a TIMEOUT.
 static void mem_guard() {
+    encode_budget_check("encoding memory");
     if (membudget::over_budget_sampled(256))
         throw z3::exception("soft memory cap (memory budget) reached while encoding memory");
     // Headroom for one more growth step: Z3's term tables double when they
@@ -131,6 +176,17 @@ static void mem_guard() {
     // A full doubling must fit (two jobs may grow at once; rss is sampled).
     if (rss + z3mb > b)
         throw z3::exception("soft memory cap (memory budget) reached while encoding memory: no room for Z3's next growth");
+}
+
+// Per log entry walked: the budget check of mem_guard every 1024 entries
+// (one read walks the whole log and, through copies, earlier logs again;
+// cdns_torrent_phy_on walked 97M entries): the walk itself polls the budget,
+// not only each read_cell_log call (sampled every 256 calls).
+static void walk_guard() {
+    thread_local unsigned n = 0;
+    if ((++n & 1023u) != 0) return;
+    if (membudget::over_budget())
+        throw z3::exception("soft memory cap (memory budget) reached while encoding memory (log walk)");
 }
 
 // Raw value sets: the options are kept apart even when two have the same
@@ -738,11 +794,11 @@ z3::expr SymMem::align(const z3::expr& ptr) {
 }
 
 std::size_t SymMem::havoc_objects(const z3::expr& guard, const std::vector<uint64_t>& ids, bool all,
-                                  bool keep_init) {
+                                  bool keep_init, bool consts) {
     std::vector<uint64_t> todo;
     if (all) {
         for (auto& o : objs_)
-            if (o.kind != MemKind::Const) todo.push_back(o.id);
+            if (consts || o.kind != MemKind::Const) todo.push_back(o.id);
     } else {
         todo = ids;
     }
@@ -753,6 +809,11 @@ std::size_t SymMem::havoc_objects(const z3::expr& guard, const std::vector<uint6
         add_entry(std::move(e));
     }
     return todo.size();
+}
+
+void SymMem::havoc_all(const z3::expr& guard) {
+    // addr/len/src are dummies: a HavocAll entry covers every address
+    add_entry(Entry{Entry::HavocAll, guard, bv(0, ptr_w()), bv(0, ptr_w()), bv(0, ptr_w()), bv(0, cw_)});
 }
 
 std::size_t SymMem::havoc_pointed(const z3::expr& guard, const std::vector<z3::expr>& ptrs, bool keep_init) {
@@ -767,7 +828,7 @@ std::size_t SymMem::havoc_pointed(const z3::expr& guard, const std::vector<z3::e
 
 void SymMem::add_entry(Entry e) {
     if (enc_ == MemEncoding::Bv) {
-        if (e.kind == Entry::Havoc || e.kind == Entry::HavocObj) {
+        if (e.kind == Entry::Havoc || e.kind == Entry::HavocObj || e.kind == Entry::HavocAll) {
             e.havoc = static_cast<int>(havoc_reads_.size());
             havoc_reads_.emplace_back();
         }
@@ -781,6 +842,16 @@ void SymMem::add_entry(Entry e) {
         return;
     }
     auto x = c_.bv_const(("mem!x" + std::to_string(fresh_++)).c_str(), ptr_w());
+    if (live.kind == Entry::HavocAll) {
+        // every byte: arbitrary value and tag, initialised before or arbitrary
+        // (the object metadata is kept apart from the byte array, in objs_)
+        auto h = c_.constant(("mem!havocall" + std::to_string(fresh_++)).c_str(),
+                             c_.array_sort(c_.bv_sort(ptr_w()), c_.bv_sort(cw_)));
+        z3::expr old = z3::select(A, x);
+        z3::expr val = z3::select(h, x) | (old & bv(uint64_t{1} << kCellInit, cw_));
+        A = z3::lambda(x, z3::ite(live.guard, val, old));
+        return;
+    }
     if (live.kind == Entry::HavocObj) {
         auto h = c_.constant(("mem!havocobj" + std::to_string(fresh_++)).c_str(),
                              c_.array_sort(c_.bv_sort(ptr_w()), c_.bv_sort(cw_)));
@@ -839,6 +910,8 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
     auto key = std::make_tuple(addr_in.id(), upto, use_prov);
     if (auto it = memo_.find(key); it != memo_.end()) return it->second;
     mem_guard();
+    ++st_.reads;
+    st_.walked += std::min(upto, log_.size());
     keep_.push_back(addr_in);
     // Value sets: an address with several possible constants reads each of
     // them (under its guard); one constant is read as that numeral, so the
@@ -875,9 +948,17 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
         return os && std::find(os->begin(), os->end(), obj_of(*caddr)) == os->end();
     };
     auto ko = use_prov ? known(addr) : std::nullopt;
+    if (!caddr && !ko) ++st_.sym_reads;
     z3::expr v = bv(0, cw_);  // never written: value 0, not initialised
     for (std::size_t i = 0; i < upto && i < log_.size(); ++i) {
+        walk_guard();
         auto& e = log_.at(i);
+        if (e.kind == Entry::HavocAll) {  // every address (no object or provenance test)
+            // arbitrary value and tag; the initialised flag is old | arbitrary, as in HavocObj with keep_init
+            z3::expr cell = havoc_read(e, addr, cw_, "mem!ha") | (v & bv(uint64_t{1} << kCellInit, cw_));
+            v = z3::ite(e.guard, cell, v);
+            continue;
+        }
         if (ko) {
             auto kb = known(e.addr);
             if (kb && *kb != *ko) continue;
@@ -918,6 +999,7 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
                     }
                 }
                 auto src = e.src + (addr - e.addr);
+                ++st_.copy_reads;
                 if (use_prov)
                     if (auto ks = known(e.src)) note(src, *ks);
                 v = z3::ite(e.guard && in_range(addr, e.addr, e.len), read_cell_log(src, i, use_prov), v);
@@ -936,6 +1018,7 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
                 v = z3::ite(e.guard && objid(addr) == objid(e.addr), cell, v);
                 break;
             }
+            case Entry::HavocAll: break;  // handled above
         }
     }
     memo_.emplace(key, v);
@@ -948,6 +1031,24 @@ z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width
     auto key = std::make_pair(e.havoc, addr.id());
     if (auto it = havoc_memo_.find(key); it != havoc_memo_.end()) return it->second;
     mem_guard();
+    ++st_.havoc_reads;
+    if (havoc_uf_) {
+        // one uninterpreted function per havoc entry (and width; an entry is
+        // read at one width, the key only keeps the sorts apart): the
+        // contents are f(addr), so equal addresses read equal values by
+        // congruence, which is what the pairwise constraints below state
+        auto fk = std::make_pair(e.havoc, width);
+        auto it = havoc_fn_.find(fk);
+        if (it == havoc_fn_.end())
+            it = havoc_fn_
+                     .emplace(fk, c_.function((std::string(base) + "f" + std::to_string(fresh_++)).c_str(),
+                                              c_.bv_sort(ptr_w()), c_.bv_sort(width)))
+                     .first;
+        z3::expr h = it->second(addr);
+        keep_.push_back(addr);
+        havoc_memo_.emplace(key, h);
+        return h;
+    }
     auto h = c_.bv_const((std::string(base) + std::to_string(fresh_++)).c_str(), width);
     auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
     uint64_t x1 = 0, x2 = 0;
@@ -955,6 +1056,7 @@ z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width
     for (auto& [a2, h2] : reads) {
         if (n1 && a2.is_numeral() && a2.is_numeral_u64(x2) && x1 != x2) continue;  // never the same address
         side_.push_back(z3::implies(addr == a2, h == h2));
+        ++st_.ackermann;
     }
     reads.emplace_back(addr, h);
     keep_.push_back(addr);
@@ -975,7 +1077,9 @@ std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto
     const uint64_t ko = obj_of(a);
     z3::expr v = bv(0, 8 * n);
     for (std::size_t i = 0; i < upto; ++i) {
+        walk_guard();
         auto& e = log_[i];
+        if (e.kind == Entry::HavocAll) return std::nullopt;  // byte-level reads handle it
         if (auto kb = known(e.addr); kb && *kb != ko) continue;
         const Vs* ev = vs_of(e.addr);
         if (e.kind == Entry::Byte) {

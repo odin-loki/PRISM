@@ -1617,3 +1617,139 @@ int null_bad(int *p) { return *p; }
     for (auto& [n, f] : i32) CHECK(f.status != prism::laws::PROVED_CERTIFIED);
     std::filesystem::remove_all(dir);
 }
+
+// Differential test of havoc reads as functions (docs/PIR.md "Havoc reads as
+// functions"). Random programs read arbitrary memory (a mutable
+// global, an object havocked by an asm memory clobber, a heap object with
+// arbitrary bytes) at symbolic offsets, so their havoc reads need the pairwise
+// consistency constraints; half of them assert that two reads of the same
+// address agree, which only that consistency proves. Each program is checked
+// with the pairwise constraints (the old encoding, the reference) and as
+// functions: the verdicts and classes must be the same, every counterexample
+// must validate (FAILED is only given for a model that satisfies the query),
+// and one that does not depend on arbitrary memory must replay in the
+// interpreter.
+namespace {
+
+struct AckGen {
+    uint32_t s;
+    explicit AckGen(uint32_t seed) : s(seed * 2246822519u + 374761393u) {}
+    uint32_t next() {
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        return s;
+    }
+    unsigned pick(unsigned n) { return next() % n; }
+    std::string make() {
+        std::string o = "@g = dso_local global [16 x i8] zeroinitializer, align 1\n"
+                        "define i32 @f(i32 %i, i32 %j, i32 %k) {\nentry:\n"
+                        "  %a = alloca [16 x i8], align 1\n";
+        if (pick(3) != 0) o += "  call void @llvm.memset.p0.i64(ptr %a, i8 " + std::to_string(pick(4)) + ", i64 16, i1 false)\n";
+        o += "  %h = call ptr @__prism_alloc(i64 16, i32 2, i32 2)\n";  // heap, arbitrary initialised bytes
+        o += "  %xi = zext i32 %i to i64\n  %xj = zext i32 %j to i64\n";
+        const unsigned bi = pick(6) == 0 ? 40 : 16, bj = pick(6) == 0 ? 40 : 16;  // 40: out of bounds is possible
+        o += "  %ci = icmp ult i64 %xi, " + std::to_string(bi) + "\n  %cj = icmp ult i64 %xj, " + std::to_string(bj) +
+             "\n  %c = and i1 %ci, %cj\n  br i1 %c, label %body, label %out\nbody:\n";
+        const char* objs[3] = {"@g", "%a", "%h"};
+        int ctr = 0;
+        auto off = [&]() -> std::string {
+            switch (pick(4)) {
+                case 0: return "%xi";
+                case 1: return "%xj";
+                default: return std::to_string(pick(16));
+            }
+        };
+        auto gep = [&](const std::string& ob, const std::string& offs) {
+            std::string r = "%p" + std::to_string(ctr++);
+            o += "  " + r + " = getelementptr inbounds i8, ptr " + ob + ", i64 " + offs + "\n";
+            return r;
+        };
+        std::vector<std::string> vals;
+        auto load = [&](const std::string& ob, const std::string& offs) {
+            auto p = gep(ob, offs);
+            std::string v = "%v" + std::to_string(ctr++);
+            o += "  " + v + " = load i8, ptr " + p + ", align 1\n";
+            vals.push_back(v);
+            return v;
+        };
+        const unsigned steps = 2 + pick(5);
+        for (unsigned st = 0; st < steps; ++st) {
+            switch (pick(5)) {
+                case 0: o += "  call void asm sideeffect \"\", \"~{memory}\"()\n"; break;  // every object havocked
+                case 1: {
+                    auto p = gep(objs[pick(3)], off());
+                    o += "  store i8 " + std::to_string(pick(256)) + ", ptr " + p + ", align 1\n";
+                    break;
+                }
+                default: load(objs[pick(3)], off()); break;
+            }
+        }
+        std::string cond;
+        if (pick(2) == 0) {
+            // consistency: two reads of one object at %xi and %xj, nothing written between them
+            const std::string ob = objs[pick(3)];
+            auto v1 = load(ob, "%xi");
+            if (pick(2) == 0) o += "  call void asm sideeffect \"\", \"~{memory}\"()\n";  // then they may differ
+            auto v2 = load(ob, "%xj");
+            o += "  %same = icmp eq i64 %xi, %xj\n  %ne = icmp ne i8 " + v1 + ", " + v2 + "\n"
+                 "  %e = and i1 %same, %ne\n";
+        } else {
+            auto v = vals.empty() ? load(objs[pick(3)], off()) : vals[pick(static_cast<unsigned>(vals.size()))];
+            const char* cmp = pick(2) == 0 ? "eq" : "ult";
+            o += std::string("  %e = icmp ") + cmp + " i8 " + v + ", " + std::to_string(pick(3)) + "\n";
+        }
+        o += "  br i1 %e, label %bad, label %out\nbad:\n  call void @reach_error()\n  unreachable\nout:\n  ret i32 0\n}\n";
+        return o;
+    }
+};
+
+}  // namespace
+
+TEST_CASE("pir mem: differential: havoc reads as functions agree with the pairwise constraints on random programs") {
+    if (!pp::z3_available()) return;
+    constexpr unsigned kCases = 200;
+    unsigned failed = 0, proved = 0, other = 0, replayed = 0, uf_used = 0;
+    for (unsigned n = 0; n < kCases; ++n) {
+        AckGen g(n + 1);
+        const std::string ir = g.make();
+        CAPTURE(n);
+        CAPTURE(ir);
+        pp::TranslateOptions to;
+        to.kernel_api = "linux";  // an asm memory clobber is a havoc of all memory
+        auto t = mem_tr(with_decls(ir), "f", to);
+        REQUIRE_MESSAGE(t.fn.has_value(), t.reason);
+        pp::Verdict v[2];
+        for (int uf = 0; uf < 2; ++uf) {
+            pp::CheckOptions o;
+            o.unwind = 4;
+            o.timeout_s = 30;
+            o.use_cache = false;
+            o.deepen_max = 0;
+            o.encode.havoc_uf = uf == 1;
+            v[uf] = pp::check_function(*t.fn, o);
+            if (v[uf].extra.count("havoc_reads") && v[uf].extra.at("havoc_reads") == (uf == 1 ? "functions" : "ackermann")) ++uf_used;
+        }
+        CAPTURE(v[0].message);
+        CAPTURE(v[1].message);
+        CHECK(v[1].status == v[0].status);
+        CHECK(v[1].cls == v[0].cls);
+        for (auto& x : v)
+            if (x.status == prism::laws::FAILED && !x.cex_args.empty()) {
+                // a counterexample that depends on arbitrary memory cannot be run concretely
+                // (the interpreter marks the branch it took on such a value: ret_nondet)
+                auto r = pp::interpret(*t.fn, x.cex_args);
+                CHECK((r.status == pp::InterpResult::Violation || r.ret_nondet));
+                if (r.status == pp::InterpResult::Violation) ++replayed;
+            }
+        if (v[0].status == prism::laws::FAILED) ++failed;
+        else if (v[0].status == prism::laws::PROVED) ++proved;
+        else ++other;
+    }
+    MESSAGE("havoc functions differential: " << kCases << " cases, FAILED " << failed << ", PROVED " << proved << ", other "
+                                            << other << ", counterexamples replayed " << replayed);
+    CHECK(uf_used == 2 * kCases);
+    // both outcomes, and proofs that need the consistency constraints
+    CHECK(failed > 20);
+    CHECK(proved > 20);
+}

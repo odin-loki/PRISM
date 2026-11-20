@@ -1,0 +1,112 @@
+# Device model: ARM PrimeCell PL031 real-time clock (the ARM variant; no ST extensions).
+#
+# What this model is taken from:
+#  - register map, access types, reset behaviour, interrupt semantics: QEMU hw/rtc/pl031.c
+#    (pl031_read, pl031_write, pl031_set_alarm, pl031_interrupt, pl031_update; QEMU master,
+#    fetched 2026-11-16) - the register list is exactly the cases of those two functions;
+#  - what the driver expects of each register: drivers/rtc/rtc-pl031.c (Linux 6.18.60) comments
+#    ("Data read register", "Match register", ...);
+#  - the PL031 Technical Reference Manual (ARM DDI 0224B) is NOT consulted: it was not available
+#    to the author. Where QEMU and the manual may differ (ICR clears the written bits in QEMU; the
+#    manual text is quoted in QEMU's history as clearing the interrupt on any write) the model
+#    follows QEMU and says so below.
+#
+# Time: the counter is `now + tick_offset` seconds modulo 2^32. `tick` is a device event: any
+# amount of time (1 .. 2^32-1 s) may pass between two driver steps. The alarm timer is armed by a
+# write to MR or LR and fires when the counter reaches MR (QEMU's timer_mod / pl031_interrupt).
+#
+# Not modelled: the ST Microelectronics variants (clockwatch, timer registers 0x20..0x38, the ST v2
+# BCD/weekday format), migration, the 1 Hz clock source.
+
+model pl031 {
+  doc "ARM PrimeCell PL031 RTC (ARM variant), after QEMU hw/rtc/pl031.c";
+  source "QEMU hw/rtc/pl031.c (qemu/qemu master, 2026-11-16): register semantics, reset, interrupt";
+  source "Linux drivers/rtc/rtc-pl031.c 6.18.60: register names and intended use";
+  validation differential "70 random register traces (about 2,600 reads) agree with QEMU virt PL031 on AArch64, 6 of 7 model mutants rejected (tools/module-validate, docs/DEVICE_MODEL.md section 7); the ARM manual DDI 0224B was not consulted; the alarm-timing boundary is not validated";
+  window 0x1000;
+
+  state now : u32 = 0;
+  state tick_offset : u32 = nondet();
+  state armed : u32 = 0;
+  state dt : u32 = 0;
+  state rem : u32 = 0;     # seconds left until the counter reaches MR, as of the last arming or tick
+  state fire : u32 = 0;
+
+
+  # Data register: the current time (read-only; a write is a driver error, as in QEMU's log)
+  register DR @0x00 : u32 RO {
+    read = now + tick_offset;
+  }
+
+  # Match register: alarm time. Writing arms the timer; equal to the counter raises the interrupt now.
+  register MR @0x04 : u32 RW reset 0 {
+    write {
+      MR = value;
+      if (((MR - (now + tick_offset)) & 0xffffffff) == 0) { RIS = 1; armed = 0; } else { armed = 1; rem = MR - (now + tick_offset); }
+    }
+  }
+
+  # Load register: sets the counter (QEMU: tick_offset += value - count), re-arms the alarm.
+  register LR @0x08 : u32 RW reset 0 {
+    write {
+      LR = value;
+      tick_offset = value - now;
+      if (((MR - (now + tick_offset)) & 0xffffffff) == 0) { RIS = 1; armed = 0; } else { armed = 1; rem = MR - (now + tick_offset); }
+    }
+  }
+
+  # Control register: QEMU: "RTC is permanently enabled", reads 1, writes ignored.
+  register CR @0x0c : u32 RW reset 1 {
+    read = 1;
+    write { }
+  }
+
+  # Interrupt mask: one bit (QEMU: im = value & 1).
+  register IMSC @0x10 : u32 RW reset 0 mask 1;
+
+  # Raw interrupt status: set by the alarm, cleared through ICR.
+  register RIS @0x14 : u32 RO reset 0;
+
+  # Masked interrupt status.
+  register MIS @0x18 : u32 RO {
+    read = RIS & IMSC;
+  }
+
+  # Interrupt clear: QEMU clears the written bits (is &= ~value); write-only (a read is a driver error).
+  register ICR @0x1c : u32 WO {
+    write {
+      RIS = RIS & ~value;
+    }
+  }
+
+  # PrimeCell identification registers 0xfe0..0xfff: bytes 0x31 0x10 0x14 0x00 0x0d 0xf0 0x05 0xb1.
+  group ID @0xfe0 .. 0x1000 : u32 RO {
+    read = (0xb105f00d00141031 >> (index * 8)) & 0xff;
+  }
+
+  # The alarm timer. Any amount of time passes between two steps. Once the counter has reached MR the
+  # interrupt MAY be raised now or on a later tick: a synchronous compare raises it when the counter equals MR,
+  # QEMU's timer fires up to one second after the counter incremented (its timer is armed at a
+  # fractional second), so the model allows both (an over-approximation, never a missed behaviour).
+  event tick {
+    havoc dt;
+    if (armed != 0) {
+      if (rem <= dt) {
+        havoc fire where fire <= 1;
+        if (fire != 0) { RIS = 1; armed = 0; } else { rem = 0; }
+      } else {
+        rem = rem - dt;
+      }
+    }
+    now = now + dt;
+  }
+
+  # Line level: pl031_update, qemu_set_irq(is & im).
+  irq alarm = RIS & IMSC;
+
+  policy unmapped_read violation;
+  policy unmapped_write violation;
+  policy wo_read violation;
+  policy ro_write violation;
+  policy width strict;
+}

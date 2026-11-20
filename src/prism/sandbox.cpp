@@ -98,6 +98,11 @@ std::string kind() {
 #endif
 }
 
+bool jail_crash_rc(int rc) {
+    if (rc != 132 && rc != 134 && rc != 135 && rc != 136 && rc != 139) return false;
+    return bwrap_path().has_value();
+}
+
 std::vector<std::string> wrap_argv(const std::vector<std::string>& argv, const fs::path& scratch) {
     const auto& bw = bwrap_path();
     if (!bw) return argv;

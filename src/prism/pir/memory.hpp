@@ -57,6 +57,28 @@ struct EncodeError {
     std::string msg;
 };
 
+// The function budget while a function's encoding is built
+// (check_function_at holds one around Encoding::build). The memory
+// encoder's guard (every read-over-write step) ends the function with a
+// TIMEOUT EncodeError once it is spent. Without it a symbolic load against a
+// long write log ran past the budget (r1: 1,363 kernel functions reached the
+// runner's wall limit with no record, all four sampled ones in
+// SymMem::read_cell_log under Encoding::build). Thread-local; nests.
+class EncodeBudgetScope {
+public:
+    EncodeBudgetScope(const FunctionBudget* budget, std::string total_s);
+    ~EncodeBudgetScope();
+    EncodeBudgetScope(const EncodeBudgetScope&) = delete;
+    EncodeBudgetScope& operator=(const EncodeBudgetScope&) = delete;
+
+private:
+    const FunctionBudget* prev_;
+    std::string prev_total_;
+};
+// Throws EncodeError (TIMEOUT) when the scope's budget is spent; `where`
+// names the step. No scope: nothing.
+void encode_budget_check(const char* where);
+
 class SymMem {
 public:
     SymMem(z3::context& c, MemEncoding enc, bool tags, std::vector<z3::expr>& side);
@@ -86,6 +108,30 @@ public:
 
     std::size_t objects() const { return objs_.size(); }
 
+    // PRISM_MEM_TRACE profile (docs/PIR.md "Memory profile"): what the
+    // encoding built. Counters only; nothing reads them for a verdict.
+    struct Stats {
+        uint64_t reads = 0;          // read_cell_log calls that were not memo hits
+        uint64_t walked = 0;         // log entries visited by those calls
+        uint64_t copy_reads = 0;     // recursive reads through a Copy entry
+        uint64_t havoc_reads = 0;    // fresh havoc values (havoc_read misses)
+        uint64_t ackermann = 0;      // pairwise constraints added for them
+        uint64_t sym_reads = 0;      // reads whose address had neither a value set nor provenance
+    };
+    const Stats& stats() const { return st_; }
+    std::string stats_line() const;
+    // Havoc contents as uninterpreted functions (docs/PIR.md "Havoc reads as
+    // functions"). Off: every havoc read is a fresh constant h with one
+    // pairwise constraint (a = a' -> h = h') per earlier read of the same
+    // entry, quadratic in the reads. On: the read of havoc entry e at address
+    // a is f_e(a), consistent by congruence (exactly the same constraint, the
+    // solver's), and nothing pairwise is built. The VCs are QF_UFBV, not
+    // QF_BV, so encode.cpp keeps it off in certified mode and in pir_vcs.
+    void set_havoc_uf(bool on) { havoc_uf_ = on; }
+    ~SymMem();  // PRISM_MEM_TRACE: prints stats_line() (also when the budget stopped the encoding)
+    SymMem(const SymMem&) = delete;
+    SymMem& operator=(const SymMem&) = delete;
+
     // Invariant evaluation (encode.cpp, Houdini over loop cuts): a snapshot
     // of the memory state at one point of the encoding, and an *exact* load
     // from that state. The exact load never uses provenance (known()) to
@@ -105,7 +151,15 @@ public:
     // arbitrary" (old | fresh): a byte that may be uninitialised before stays
     // maybe-uninitialised, never assumed initialised. Liveness, size and
     // kind are unchanged. Returns the number of objects havocked.
-    std::size_t havoc_objects(const z3::expr& guard, const std::vector<uint64_t>& ids, bool all, bool keep_init);
+    // consts: with all, const objects are havocked too (Stmt::MemHavoc).
+    std::size_t havoc_objects(const z3::expr& guard, const std::vector<uint64_t>& ids, bool all, bool keep_init,
+                              bool consts = false);
+    // Stmt::MemHavoc (inline asm with a "memory" clobber): every byte of every
+    // object (const and dead ones included) gets an arbitrary value and tag, and
+    // its initialised flag becomes "initialised before or arbitrary" (an asm
+    // stores initialised bytes; it does not make one uninitialised). Object
+    // sizes, liveness, kinds and alignment are unchanged.
+    void havoc_all(const z3::expr& guard);
     // The same for the objects the given pointer values point to (symbolic
     // object ids; loop-cut footprints). Returns the number of pointers.
     std::size_t havoc_pointed(const z3::expr& guard, const std::vector<z3::expr>& ptrs, bool keep_init);
@@ -155,7 +209,7 @@ private:
         z3::expr alive;  // bool
     };
     struct Entry {
-        enum Kind { Byte, Set, Copy, Havoc, HavocObj } kind;
+        enum Kind { Byte, Set, Copy, Havoc, HavocObj, HavocAll } kind;
         z3::expr guard, addr, len, src, cell;
         int havoc = -1;
         bool keep = false;  // HavocObj: initialised flag = old | fresh
@@ -167,6 +221,7 @@ private:
         unsigned n;
     };
     std::vector<StoreRec> stores_;
+    Stats st_;
     z3::context& c_;
     MemEncoding enc_;
     bool tags_;
@@ -181,6 +236,8 @@ private:
     std::vector<std::vector<std::pair<z3::expr, z3::expr>>> havoc_reads_;
     std::map<std::pair<int, unsigned>, z3::expr> havoc_memo_;  // (entry, address ast) -> its value
     z3::expr havoc_read(const Entry& e, const z3::expr& addr, unsigned width, const char* base);
+    bool havoc_uf_ = false;
+    std::map<std::pair<int, unsigned>, z3::func_decl> havoc_fn_;  // (havoc entry, width) -> contents
     std::map<std::tuple<unsigned, std::size_t, bool>, z3::expr> memo_;
     std::unordered_map<unsigned, uint64_t> prov_;
     std::vector<z3::expr> keep_;

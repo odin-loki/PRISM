@@ -804,6 +804,10 @@ TEST_CASE("assurance-check catches missing artefacts") {
     CHECK_FALSE(prism::qa::is_path_ref("build/prism"));
 
     // the standalone checker (the docs CI job) agrees: exit 0 on the package, 1 here
+    if (!fs::exists(sibling("prism_docs_check"))) {  // built next to prism_tests; absent when the binary is copied alone
+        MESSAGE("NOTRUN: prism_docs_check is not next to prism_tests (the standalone checker part is not checked here)");
+        return;
+    }
     auto ok = prism::exec::run_session({sibling("prism_docs_check").string(), "assurance-check", "--repo",
                                           repo().string()});
     CHECK_MESSAGE(ok.rc == 0, (ok.out + ok.err));
