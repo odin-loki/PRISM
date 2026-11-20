@@ -456,6 +456,25 @@ struct ObligationNode {
 // callee (IR name) -> per parameter index the obligation (nullptr: none)
 using CallObligations = std::map<std::string, std::vector<std::shared_ptr<ObligationNode>>>;
 
+// One contract of --callee-contracts for a callee without a body (docs/HARNESS_PHASE2.md). TSV, 7 columns:
+//   function  signature  requires  assigns  ensures  status  source
+// signature: `name:type,...->type` with type ptr, bool, u8/u16/u32/u64, s8/s16/s32/s64 (parameter names; ACSL style
+// clauses refer to them). Clauses are separated by `;`. requires: boolean expressions over the parameters, and
+// `\valid_bytes(p, n)` / `\valid_read_bytes(p, n)`. assigns: `\nothing`, `\anything`, `\bytes(p, n)`; empty = the pointer
+// arguments' objects are havocked (as --assume-unknown-calls, named). ensures: boolean expressions over `\result` and the
+// parameters, `\false` (the call does not return), and for a pointer result `\valid_bytes(\result, n)` (a fresh object),
+// optionally `\result == \null || \valid_bytes(\result, n)`. status: UNVALIDATED, REVIEWED or VALIDATED, always shown.
+struct CalleeContract {
+    std::string function;
+    std::string signature;
+    std::string requires_;
+    std::string assigns;
+    std::string ensures;
+    std::string status;
+    std::string source;
+};
+PRISM_API std::map<std::string, CalleeContract> load_callee_contracts(const std::filesystem::path& file, std::string& error);
+
 struct TranslateOptions {
     // --pir-discharge: a translation that keeps only the obligations of these
     // callees at their direct call sites (every other check is dropped).
@@ -494,7 +513,25 @@ struct TranslateOptions {
     // than ops_max_targets targets stays UNENCODED ("too many indirect targets").
     std::vector<OpsField> ops_table;
     std::size_t ops_max_targets = 8;
+    // --callee-contracts FILE (docs/HARNESS_PHASE2.md): assume-guarantee stubs for callees that have no body
+    // (IR name -> contract). A callee with a body, or a kernel spec, is never replaced by one.
+    std::map<std::string, CalleeContract> callee_contracts;
+    // --pir-ops-auto: ops_table also holds the entries derived from the unit's own stores and initialisers
+    // (OpsField::role "unit-derived"); a function-pointer field of an automatic harness is bound to one of its targets.
+    bool ops_auto = false;
+    // --pir-addr-values: ptrtoint / inttoptr constant expressions and integer-address initialisers are modelled
+    bool addr_values = false;
+    // --pir-builtin-contracts (kernel mode): contracts for @llvm.read_register / @llvm.prefetch / @llvm.objectsize
+    bool builtin_contracts = false;
 };
+
+// Ops-table entries derived from the module itself (--pir-ops-auto): every `store ptr @f, getelementptr %struct.T, p, 0, K`
+// and every function address in a constant initialiser of struct type T at field K makes @f a target of (T, K). The set is
+// what THIS unit assigns: a field another unit assigns is not in it (a call through it then ends in the "target outside"
+// stop, never in a silent proof). `role` is "unit-derived"; fields with more than max_targets targets are left out.
+PRISM_API std::vector<OpsField> derive_ops_table(const ir::Module& m, std::size_t max_targets = 8);
+// Adds the entries of `derived` for fields the explicit table does not list.
+PRISM_API void merge_ops_tables(std::vector<OpsField>& explicit_table, const std::vector<OpsField>& derived);
 
 // Reads an --ops-table file (format in docs/PIR.md). On failure returns {} and sets error.
 PRISM_API std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error);

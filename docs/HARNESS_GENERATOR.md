@@ -186,6 +186,11 @@ initialisation is not in the function": `e1000e_probe` fills the ops table, `ior
 Neither is in this branch: each is an assumption about the framework that nothing here can check, and it needs
 #56/#52 to land first. The discharge (2.2) then applies to the helpers below them unchanged.
 
+Phase 2 (`docs/HARNESS_PHASE2.md`) builds the first of these (`--pir-ops-auto`: the table is derived from the unit's own
+stores and initialisers, and a harness function-pointer field is bound to one of its targets as a named assumption),
+contract stubs for body-less callees (`--callee-contracts`), constant `ptrtoint` / `inttoptr` (`--pir-addr-values`) and a
+deeper harness with the bound recorded (`--pir-harness-deep`). The MMIO-base object is still not built.
+
 ## 3. Implementation summary
 
 | flag | effect | tests |

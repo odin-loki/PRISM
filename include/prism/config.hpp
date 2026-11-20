@@ -93,6 +93,17 @@ struct Config {
     // --ops-table FILE: indirect calls through a field of a known ops table are checked
     // against that field's targets (docs/PIR.md). Empty = off (default).
     std::filesystem::path ops_table;
+    // Harness phase 2 (docs/HARNESS_PHASE2.md), all opt-in, each use a named assumption:
+    //  --callee-contracts FILE: assume-guarantee stubs for callees without a body (TSV, requires checked at the call site)
+    //  --pir-ops-auto: ops tables derived from the unit's own function-pointer stores and initialisers; a harness
+    //    function-pointer field is bound to one of its targets
+    //  --pir-addr-values: ptrtoint / inttoptr constant expressions and integer-address initialisers
+    //  --pir-harness-deep: harness depth 4 and 64 objects per parameter (unless set explicitly)
+    std::filesystem::path callee_contracts;
+    bool pir_ops_auto = false;
+    bool pir_addr_values = false;
+    bool pir_harness_deep = false;
+    bool pir_builtin_contracts = false;  // --pir-builtin-contracts: contracts for llvm.read_register / prefetch / objectsize (needs --kernel-api)
     // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
     // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.
     std::string pir_lock_contracts;

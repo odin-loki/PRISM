@@ -1,0 +1,9 @@
+# function	signature	requires	assigns	ensures	status	source
+hw_count	->s32		\nothing	\result >= 0 && \result <= 16	UNVALIDATED	test fixture (callee_contract.tsv)
+hw_read	reg:s32->s32		\nothing	\result >= 0 && \result <= 255	REVIEWED	test fixture
+hw_fill	buf:ptr,n:u64	\valid_bytes(buf, n)	\bytes(buf, n)		UNVALIDATED	test fixture
+hw_log	s:ptr->s32		\nothing	\result >= 0	UNVALIDATED	test fixture
+hw_alloc	n:u64->ptr		\nothing	\result == \null || \valid_bytes(\result, n)	UNVALIDATED	test fixture
+hw_false	->s32		\nothing	\false	UNVALIDATED	test fixture (a deliberately false ensures)
+hw_badsig	x:u64->s32		\nothing	\result == 0	UNVALIDATED	test fixture (signature does not match the call)
+hw_defined	x:s32->s32		\nothing	\result == 99	UNVALIDATED	test fixture (the callee has a body: ignored)

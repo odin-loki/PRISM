@@ -199,6 +199,21 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--assume-unknown-calls") {
             ok = in.flag();
             cfg.pir_assume_unknown_calls = true;
+        } else if (a == "--callee-contracts") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.callee_contracts = fs::absolute(*v);
+        } else if (a == "--pir-ops-auto") {
+            ok = in.flag();
+            cfg.pir_ops_auto = true;
+        } else if (a == "--pir-addr-values") {
+            ok = in.flag();
+            cfg.pir_addr_values = true;
+        } else if (a == "--pir-builtin-contracts") {
+            ok = in.flag();
+            cfg.pir_builtin_contracts = true;
+        } else if (a == "--pir-harness-deep") {
+            ok = in.flag();
+            cfg.pir_harness_deep = true;
         } else if (a == "--ops-table") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.ops_table = fs::absolute(*v);
@@ -429,6 +444,14 @@ std::string cli_usage() {
         "--pir-container-of: with --pir-harness, a parameter used at a negative constant offset gets its\n"
         "  containing object (container_of). --pir-vacuity: a harnessed function whose exit is\n"
         "  unreachable under its assumptions is NEEDS-HARNESS (vacuous), never a proof.\n"
+        "--callee-contracts FILE: assume-guarantee stubs for callees without a body (TSV: function,\n"
+        "  signature, requires, assigns, ensures, status, source). The requires are checked at the call\n"
+        "  site, only the assigns are havocked, the ensures are assumed; a callee without a usable\n"
+        "  contract is treated as before. Every stub used is a named assumption with its status\n"
+        "  (docs/HARNESS_PHASE2.md). --pir-ops-auto: ops tables derived from the unit's own function-pointer\n"
+        "  stores; a harness function-pointer field is bound to one of its targets (named assumption).\n"
+        "  --pir-addr-values: ptrtoint / inttoptr constant expressions. --pir-harness-deep: depth 4, 64 objects.\n"
+        "  --pir-builtin-contracts: with --kernel-api, contracts for llvm.read_register / prefetch / objectsize.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
         "--ops-table FILE: an indirect call through a field of a known ops table (TSV: struct\n"

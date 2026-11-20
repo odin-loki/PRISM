@@ -1211,6 +1211,15 @@ option a call is `UNENCODED: indirect call with 19 possible targets (> 16)`; wit
 safe call is PROVED, the dividing call FAILED (INT-DIV-ZERO) and a 9-target field is
 UNENCODED (too many indirect targets). Tests: `tests/cpp/test_pir_e2e.cpp` ("--ops-table ...").
 
+### Harness phase 2 (`docs/HARNESS_PHASE2.md`)
+
+Four opt-in flags, each use a named assumption, none changes a default: `--callee-contracts FILE` (assume-guarantee stubs for
+callees without a body: the requires are checked at the call site, only the assigns are havocked, the ensures are assumed, the
+status of the contract is shown, never PROVED), `--pir-ops-auto` (ops tables derived from the unit's own function-pointer
+stores and initialisers, and harness function-pointer fields bound to one of their targets), `--pir-addr-values`
+(constant `ptrtoint` / `inttoptr`), `--pir-harness-deep` (depth 4, 64 objects; the bound and what it cut are recorded in the
+assumptions and the `--jsonl` record). Tests: `tests/cpp/test_pir_harness2.cpp`.
+
 ## Inline assembly (roadmap 2.6)
 
 An `asm` call is `UNENCODED: inline assembly` unless the source states its

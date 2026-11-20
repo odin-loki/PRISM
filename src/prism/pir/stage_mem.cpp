@@ -129,7 +129,8 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     o.globals_initial = source_name == "main";
     o.auto_harness.on = cfg.pir_harness;
     o.container_of = cfg.pir_container_of;
-    o.auto_harness.depth = cfg.pir_harness_depth;
+    o.auto_harness.depth = cfg.pir_harness_deep ? std::max(cfg.pir_harness_depth, 4) : cfg.pir_harness_depth;
+    if (cfg.pir_harness_deep) o.auto_harness.max_objects = 64;
     o.auto_harness.elems = cfg.pir_harness_elems;
     o.auto_harness.unknown_bytes = cfg.pir_harness_bytes;
     // C++ library code (constructors, accessors) nests deeper than C helpers
@@ -314,6 +315,22 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
                     "); state the precondition with // requires: (Law 6)";
         v.cex.clear();
         v.cex_args.clear();
+    }
+    // --pir-addr-values: an integer constant used as a pointer points to no object, and the absolute address of an object is not
+    // modelled (a pointer is its packed object/offset value). Kernel code dereferences fixed addresses (MMIO) and adds per-cpu
+    // offsets to bases: a violation in a function that used either model is not a defect report (docs/HARNESS_PHASE2.md
+    // "Address values").
+    if (v.status == laws::FAILED) {
+        bool addr_model = false;
+        for (auto& a : fn.assumptions) addr_model = addr_model || a.starts_with("addr-values:");
+        if (addr_model) {
+            v.extra["verdict_under_addr_model"] = v.status + ": " + v.message;
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "violation only under the address-value model (a constant address is its packed object/offset value, an integer "
+                        "constant used as a pointer points to no object; absolute addresses are not modelled): " + v.message;
+            v.cex.clear();
+            v.cex_args.clear();
+        }
     }
     if (!fn.ptr_params.empty()) {
         std::string pp;
