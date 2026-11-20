@@ -263,6 +263,21 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-wide-int") {
             ok = in.flag();
             cfg.pir_wide_int = true;
+        } else if (a == "--pir-declared-types") {
+            ok = in.flag();
+            cfg.pir_declared_types = true;
+        } else if (a == "--pir-priv-areas") {
+            ok = in.flag();
+            cfg.pir_priv_areas = true;
+        } else if (a == "--pir-index-field-bounds") {
+            ok = in.flag();
+            cfg.pir_index_field_bounds = true;
+        } else if (a == "--pir-heap-freed") {
+            ok = in.flag();
+            cfg.pir_heap_freed = true;
+        } else if (a == "--pir-param-preconditions") {
+            auto v = in.take_nonempty();
+            if ((ok = v.has_value())) cfg.pir_param_preconditions = fs::absolute(*v);
         } else if (a == "--pir-harness-deep") {
             ok = in.flag();
             cfg.pir_harness_deep = true;
@@ -537,6 +552,16 @@ std::string cli_usage() {
         "  a, b, status, source) applied to automatic-harness objects, one named assumption per row used.\n"
         "  --pir-callback-models FILE: driver environment models (TSV: interface, container, field_off, callback, param,\n"
         "  kind range|id-entry|trailing-alloc, a, b, status, source) for the parameters of driver callbacks, named.\n"
+        "  --pir-declared-types: a harness pointee without type evidence in the IR (or smaller than its declaration)\n"
+        "  gets its declared type and size from the unit lowered with -g (a named assumption).\n"
+        "  --pir-priv-areas: a struct based at the end of a harness object (netdev_priv-style private area) sizes the\n"
+        "  object to its end: from a visible allocation's private size, else the area struct (a named assumption).\n"
+        "  --pir-index-field-bounds: an integer field of a harness object that indexes an in-object array [N x T]\n"
+        "  is in [0, N-1] at entry (a named assumption, not discharged).\n"
+        "  --pir-heap-freed: a harness object the function passes to kfree / kvfree / vfree / free is a live heap\n"
+        "  allocation (a named assumption); double frees and frees of non-heap or interior pointers are still checked.\n"
+        "  --pir-param-preconditions FILE: per-parameter preconditions (TSV: function, parameter, condition\n"
+        "  valid N|type S|nonnull|range A B, scope, status, source), one named assumption per row used, minimised.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"
         "  pointer arguments point to (assumption listed). Opt-in; the default stays UNENCODED.\n"
         "--ops-table FILE: an indirect call through a field of a known ops table (TSV: struct\n"

@@ -7,6 +7,7 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <tuple>
 
 namespace prism::pir::pirmem {
 
@@ -26,6 +27,12 @@ struct Use {
     int64_t min_neg = 0;                // lowest constant offset accessed or derived (negative: container_of)
     std::optional<ir::Type> neg_struct; // struct type of a getelementptr based at a negative offset (the container)
     int64_t neg_base = 0;               // that base's offset from the parameter
+    std::map<int64_t, ir::Type> pos_struct;  // offset -> struct type of the first getelementptr based there (a > 0)
+    uint64_t max_struct0 = 0;  // largest struct type a getelementptr uses at offset 0 (tcp_sk(sk): struct tcp_sock over a struct sock)
+    std::string max_struct0_ty, max_struct0_at;  // that struct and where (function, line)
+    std::string freed_at;  // --pir-heap-freed: the object itself is passed to a free function (function, line)
+    // --pir-index-field-bounds: (index field offset, width) -> (array element count, array offset, where)
+    std::map<std::pair<int64_t, unsigned>, std::tuple<uint64_t, int64_t, std::string>> index_fields;
     std::map<uint64_t, std::vector<Root>> ptr_fields;  // byte offset -> pointer values loaded from there
     // byte offset -> (struct spelling, field index) of a loaded pointer that is the callee of an indirect call
     std::map<uint64_t, std::pair<std::string, int>> fp_fields;
@@ -556,6 +563,12 @@ std::optional<int64_t> returned_field(const ir::Module& m, const Layout& lay, co
     return off;
 }
 
+// " line N" of an instruction (its !dbg location), or ""
+std::string where_line(const ir::Module& m, const ir::Inst& in) {
+    auto it = m.locs.find(in.dbg);
+    return it == m.locs.end() || it->second.line <= 0 ? std::string() : " line " + std::to_string(it->second.line);
+}
+
 void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, const std::string& rootname,
               int64_t base, int depth, bool container, Use& u,
               std::set<std::pair<const ir::Function*, std::string>>& visited) {
@@ -626,6 +639,16 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                     }
                     continue;
                 }
+                if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a > 0 &&
+                    !u.pos_struct.count(a) && lay.resolve(in.ety).kind == ir::Type::Struct)
+                    u.pos_struct[a] = in.ety;  // --pir-priv-areas: a struct based past the start (a private area)
+                if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a == 0 &&
+                    lay.resolve(in.ety).kind == ir::Type::Struct)  // the largest struct the object is used as
+                    if (const uint64_t sz = lay.alloc_size(in.ety); sz > u.max_struct0) {
+                        u.max_struct0 = sz;
+                        u.max_struct0_ty = in.ety.text;
+                        u.max_struct0_at = g.name + where_line(m, in);
+                    }
                 if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a < 0) {
                     u.negative = true;
                     u.min_neg = std::min(u.min_neg, a);
@@ -633,6 +656,68 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                         u.neg_struct = in.ety;
                         u.neg_base = a;
                     }
+                }
+                // --pir-index-field-bounds: getelementptr (base at a constant offset of this object), constant indices
+                // down to an in-object array [N x T], then a variable index that is (a cast of) an integer loaded from
+                // a constant offset of the same object: that field indexes the array
+                if (in.op == "getelementptr" && in.ops.size() >= 3 && is_local(in.ops[0], alias, &a) && a >= 0 &&
+                    in.ops.back().v.kind == ir::Value::Local) {
+                    bool ok = in.ops[1].v.kind == ir::Value::Zero ||
+                              (in.ops[1].v.kind == ir::Value::Int && in.ops[1].v.bits == 0);
+                    int64_t off = a;
+                    ir::Type cur = in.ety;
+                    for (std::size_t k = 2; ok && k + 1 < in.ops.size(); ++k) {
+                        const auto& o = in.ops[k];
+                        if (o.v.kind != ir::Value::Int && o.v.kind != ir::Value::Zero) { ok = false; break; }
+                        const int64_t i = o.v.kind == ir::Value::Zero ? 0 : signed_of(o);
+                        const auto& r = lay.resolve(cur);
+                        if (r.kind == ir::Type::Struct && i >= 0) {
+                            off += static_cast<int64_t>(lay.field_offset(r, static_cast<unsigned>(i)));
+                            cur = lay.field_type(r, static_cast<unsigned>(i));
+                        } else if (r.kind == ir::Type::Array && !r.elems.empty()) {
+                            off += i * static_cast<int64_t>(lay.alloc_size(r.elems.at(0)));
+                            cur = r.elems.at(0);
+                        } else {
+                            ok = false;
+                        }
+                    }
+                    const auto& arr = ok ? lay.resolve(cur) : cur;
+                    if (ok && arr.kind == ir::Type::Array && !arr.elems.empty()) {
+                        const uint64_t esz = lay.alloc_size(arr.elems.at(0));
+                        const uint64_t cnt = esz ? lay.alloc_size(arr) / esz : 0;
+                        // the index: sext / zext / trunc of a load
+                        std::string v = in.ops.back().v.name;
+                        for (int g2 = 0; g2 < 4; ++g2) {
+                            auto d = defs.find(v);
+                            if (d == defs.end()) break;
+                            const auto& di = *d->second;
+                            if ((di.op == "sext" || di.op == "zext" || di.op == "trunc") && !di.ops.empty() &&
+                                di.ops[0].v.kind == ir::Value::Local) {
+                                v = di.ops[0].v.name;
+                                continue;
+                            }
+                            int64_t fo = 0;
+                            if (di.op == "load" && di.ty.kind == ir::Type::Int && di.ty.bits >= 8 && di.ty.bits <= 64 &&
+                                di.ty.bits % 8 == 0 && !di.ops.empty() && is_local(di.ops[0], alias, &fo) && fo >= 0 && cnt > 0)
+                                u.index_fields.emplace(std::make_pair(fo, di.ty.bits / 8),
+                                                       std::make_tuple(cnt, off, in.ety.text + " array of " + std::to_string(cnt) +
+                                                                                    " at byte " + std::to_string(off)));
+                            break;
+                        }
+                    }
+                }
+                // --pir-heap-freed: the object itself (offset 0) is passed to a free function
+                if (in.op == "call" && !in.callee.empty() && u.freed_at.empty()) {
+                    static const std::map<std::string, std::size_t> kFree{
+                        {"__prism_free", 0}, {"kfree", 0},      {"kvfree", 0},        {"vfree", 0},
+                        {"kfree_sensitive", 0}, {"kvfree_sensitive", 0}, {"kzfree", 0}, {"free", 0},
+                        {"devm_kfree", 1},   {"kmem_cache_free", 1}, {"kmem_free", 0}, {"zfs_kmem_free", 0}};
+                    if (auto it = kFree.find(in.callee); it != kFree.end() && it->second < in.ops.size() &&
+                        is_local(in.ops[it->second], alias, &a) && a == 0 &&
+                        (in.callee != "__prism_free" ||
+                         (in.ops.size() >= 2 && in.ops[1].v.kind == ir::Value::Int &&
+                          in.ops[1].v.bits == static_cast<uint64_t>(MemKind::Heap))))
+                        u.freed_at = in.callee + " in " + g.name + where_line(m, in);
                 }
                 if (in.op == "call" && !in.callee.empty() && depth < 3) {
                     const auto* callee = m.find(in.callee);
@@ -658,6 +743,40 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
             } catch (const Unenc&) {
             }
         }
+}
+
+// --pir-priv-areas: the size of a private area whose struct is `psz` bytes. The allocation is used when the unit makes
+// one with a constant private size at least psz (alloc_netdev_mqs(sizeof_priv, ...), devm_iio_device_alloc(dev,
+// sizeof_priv), ...) and all such allocations agree; otherwise the area struct's own size. `src` says which.
+uint64_t priv_area_size(const ir::Module& m, uint64_t psz, std::string* src) {
+    static const std::map<std::string, std::size_t> kAlloc{
+        {"alloc_netdev_mqs", 0},      {"alloc_etherdev_mqs", 0},      {"devm_alloc_etherdev_mqs", 1},
+        {"alloc_candev_mqs", 0},      {"devm_iio_device_alloc", 1},   {"iio_device_alloc", 1},
+        {"ieee80211_alloc_hw_nm", 0}, {"wiphy_new_nm", 1},            {"scsi_host_alloc", 1},
+        {"__spi_alloc_controller", 1}, {"__devm_spi_alloc_controller", 1}, {"mdiobus_alloc_size", 0},
+        {"devm_mdiobus_alloc_size", 1}, {"alloc_hdlcdev", 0},         {"devm_alloc_etherdev", 1}};
+    std::set<uint64_t> sizes;
+    std::string callee;
+    for (const auto& g : m.functions)
+        for (const auto& bl : g.blocks)
+            for (const auto& in : bl.insts) {
+                if (in.op != "call" || in.callee.empty()) continue;
+                auto it = kAlloc.find(in.callee);
+                if (it == kAlloc.end() || it->second >= in.ops.size()) continue;
+                const auto& o = in.ops[it->second];
+                if (o.v.kind != ir::Value::Int) continue;
+                if (o.v.bits >= psz && o.v.bits < (uint64_t{1} << 30)) {
+                    sizes.insert(o.v.bits);
+                    callee = in.callee;
+                }
+            }
+    if (sizes.size() == 1) {
+        *src = "from " + callee + "(sizeof_priv = " + std::to_string(*sizes.begin()) + ") in this unit";
+        return *sizes.begin();
+    }
+    *src = sizes.empty() ? "of the private area's struct (no allocation with a constant private size in this unit)"
+                         : "of the private area's struct (the unit's allocations disagree)";
+    return psz;
 }
 
 struct Builder {
@@ -709,8 +828,10 @@ struct Builder {
         return c;
     }
 
-    // `roots`: the SSA values (of any function) that hold the pointer to this object
-    std::shared_ptr<HarnessNode> build(const std::vector<Root>& roots, int depth, const std::string& name) {
+    // `roots`: the SSA values (of any function) that hold the pointer to this object; `decl`: its declared pointee
+    // (--pir-declared-types), when the debug information has one
+    std::shared_ptr<HarnessNode> build(const std::vector<Root>& roots, int depth, const std::string& name,
+                                       const std::optional<DeclaredPointee>& decl = std::nullopt) {
         Use u;
         std::set<std::pair<const ir::Function*, std::string>> visited;
         for (auto& r : roots) scan_one(m, lay, *r.fn, r.name, 0, 0, opt.container_of, u, visited);
@@ -764,24 +885,132 @@ struct Builder {
                 n->basis = "pointee type not determined (not accessed by the function), default " +
                            std::to_string(opt.unknown_bytes) + " bytes";
             }
+            uint64_t min_bytes = 0;  // a declared or stated size the element count does not express
+            // --pir-param-preconditions "type S" (the parameter's own object): the stated type replaces the evidence
+            if (depth == 0 && opt.root_type && !container &&
+                !(n->type_known && n->type.text == opt.root_type->text && n->elems == 1)) {
+                n->type = *opt.root_type;
+                n->type_known = true;
+                n->elems = 1;
+                n->basis = "type " + opt.root_type->text + " stated by a parameter precondition (--pir-param-preconditions)";
+                plan.root_override_used = true;
+            }
             const uint64_t esz = std::max<uint64_t>(1, lay.alloc_size(n->type));
             if (esz && n->elems > max_obj_size() / esz) {
                 if (depth == 0) fail = "pointee object larger than the pointer model allows";
                 return nullptr;
             }
-            if (!container) {
-                const uint64_t reach = (u.max_end + esz - 1) / esz;
-                if (reach > n->elems)  // say so: the size then comes from the accesses themselves, not the default
-                    n->basis += "; raised to " + std::to_string(reach) + " elements to reach the highest constant offset accessed";
-                n->elems = std::max<uint64_t>(n->elems, reach);
+            const uint64_t type_bytes = n->elems * esz;  // what the type evidence and the defaults give
+            // --pir-declared-types: a declared pointee of known size (struct, union or array) IS the object's size. A
+            // constant-offset access past it is a violation, reported as such, not a reason to grow the object. Not
+            // used when an evidence struct is larger than the declaration (a cast to a bigger type: the object is never
+            // made smaller than the evidence type), for an indexed struct pointee (the count is not declared), or for a
+            // `void *` / `char *` declaration (no composite pointee). Each use is a named "declared-type:" line.
+            const bool none = !u.struct_ty && !u.scalar_ty;
+            const bool use_decl = opt.declared_types && decl && decl->bytes && decl->composite && !container &&
+                                  !(depth == 0 && opt.root_type) && !(u.struct_ty && u.indexed) &&
+                                  u.max_struct0 <= decl->bytes;
+            // --pir-priv-areas: a struct based at the end of the object (within 128 bytes of alignment) is a private
+            // area (netdev_priv, shost_priv, ...): the object reaches its end. The struct end is the declared size or
+            // the evidence struct's; without either there is no end to find a tail after.
+            uint64_t priv_end = 0;
+            std::string priv_line;
+            if (opt.priv_areas && !container) {
+                const uint64_t base_end = use_decl ? decl->bytes
+                                          : (u.struct_ty && !u.indexed) ? lay.alloc_size(*u.struct_ty) : 0;
+                if (base_end)
+                    for (const auto& [t, pty] : u.pos_struct) {
+                        if (t < static_cast<int64_t>(base_end) || static_cast<uint64_t>(t) >= base_end + 128) continue;
+                        const uint64_t psz = lay.alloc_size(pty);
+                        std::string src;
+                        const uint64_t area = priv_area_size(m, psz, &src);
+                        if (!area || area >= max_obj_size() - static_cast<uint64_t>(t)) break;
+                        priv_end = static_cast<uint64_t>(t) + area;
+                        priv_line = "priv-area: " + name + " has a private area at byte " + std::to_string(t) + " of " +
+                                    std::to_string(area) + " bytes (" + pty.text + " is based there, past the " +
+                                    std::to_string(base_end) + "-byte struct; size " + src +
+                                    ") (--pir-priv-areas; not checked here)";
+                        break;
+                    }
+            }
+            if (use_decl) {
+                const std::string was = none ? "no type evidence in the IR"
+                                             : "the IR evidence and defaults gave " + std::to_string(type_bytes) + " bytes (" +
+                                                   std::to_string(n->elems) + " x " + n->type.text + ")";
+                if (!decl->ir_struct.empty()) {
+                    n->type = ir::Type{};
+                    n->type.kind = ir::Type::Struct;
+                    n->type.text = decl->ir_struct;
+                    n->elems = 1;
+                } else if (!u.struct_ty) {
+                    n->type = ir::parse_type("i8");
+                    n->elems = decl->bytes;
+                }  // else: an evidence struct no larger than the declaration keeps its type, the object is extended
+                n->type_known = true;
+                n->bytes = decl->bytes;
+                n->basis += "; declared pointee type " + decl->spelling + " of " + std::to_string(decl->bytes) +
+                            " bytes (--pir-declared-types)";
+                plan.assumptions.push_back("declared-type: " + name + " points to " + decl->spelling + " (" +
+                                           std::to_string(decl->bytes) +
+                                           " bytes, from the declaration in the unit's debug information; " + was +
+                                           ") (--pir-declared-types; not checked here)");
+                ++plan.declared_used;
+                if (priv_end > n->bytes) {
+                    n->bytes = priv_end;
+                    plan.assumptions.push_back(priv_line);
+                }
+            } else {
+                const uint64_t typed = std::max({type_bytes, priv_end, (!container && !u.indexed) ? u.max_struct0 : uint64_t{0}});
+                // a struct plus its private area is a fully typed object: an access past the area is a violation
+                if (!container && !priv_end) {
+                    const uint64_t reach = (u.max_end + esz - 1) / esz;
+                    if (reach > n->elems)  // say so: the size then comes from the accesses themselves, not the default
+                        n->basis += "; raised to " + std::to_string(reach) + " elements to reach the highest constant offset accessed";
+                    n->elems = std::max<uint64_t>(n->elems, reach);
+                }
+                // the largest struct the object is used as at offset 0 is type evidence too (not access-sized)
+                const uint64_t ev = (opt.declared_types && !container && !u.indexed) ? u.max_struct0 : 0;
+                n->bytes = std::max({n->elems * esz, priv_end, ev});
+                if (ev > type_bytes && ev > priv_end)
+                    plan.assumptions.push_back("container-type-from-cast: " + name + " is treated as " + u.max_struct0_ty +
+                                               " (" + std::to_string(ev) + " bytes; a getelementptr uses it at offset 0 in " +
+                                               u.max_struct0_at + "; larger than its declared or first-used type) (--pir-declared-types; not checked here)");
+                if (priv_end > type_bytes) plan.assumptions.push_back(priv_line);
+                // sized from the very accesses being checked: says little, so it is tagged for separate counting/review
+                if (!container && n->bytes > typed)
+                    plan.assumptions.push_back("harness-size-from-access: " + name +
+                                               " sized to reach the highest constant offset accessed (" +
+                                               std::to_string(n->bytes) + " bytes; the type evidence and defaults gave " +
+                                               std::to_string(typed) + ") (auto harness)");
+            }
+            if (depth == 0 && opt.root_min_bytes > n->bytes && !container) {
+                min_bytes = std::max(min_bytes, opt.root_min_bytes);
+                n->basis += "; at least " + std::to_string(opt.root_min_bytes) +
+                            " bytes stated by a parameter precondition (--pir-param-preconditions)";
+                plan.root_override_used = true;
+            }
+            if (min_bytes > n->bytes) {
+                if (min_bytes >= max_obj_size()) {
+                    if (depth == 0) fail = "pointee object larger than the pointer model allows";
+                    return nullptr;
+                }
+                n->bytes = min_bytes;
             }
             n->align = harness_align(lay, n->type);
             if (n->type_known && !container && lay.resolve(n->type).kind == ir::Type::Struct && u.field_align > n->align)
                 n->align = std::min(u.field_align, 4096u);
-            n->bytes = n->elems * esz;
         } catch (const Unenc& e) {
             if (depth == 0) fail = e.reason;
             return nullptr;
+        }
+        // --pir-heap-freed: the function passes this object to a free function: it is a heap allocation (named), so the
+        // free is checked against a live heap object (a second free, a free of an interior or non-heap pointer: caught)
+        if (opt.heap_freed && !u.freed_at.empty() && !container) {
+            n->type_known = true;  // bound even without type evidence: an object of the size chosen above
+            n->heap = true;
+            plan.assumptions.push_back("heap-object: " + name + " is heap-allocated (freed by " + u.freed_at +
+                                       "): its harness object is a live heap allocation of " + std::to_string(n->bytes) +
+                                       " bytes (--pir-heap-freed; not checked here)");
         }
         ++plan.objects;
         plan.depth_reached = std::max(plan.depth_reached, depth);
@@ -790,6 +1019,23 @@ struct Builder {
                                    std::to_string(n->bytes) +
                                    " bytes (" + std::to_string(n->elems) + " x " + n->type.text + "; " + n->basis +
                                    "), " + std::to_string(n->align) + "-byte aligned, fields initialised with arbitrary values (auto harness)");
+        if (opt.index_field_bounds)
+            for (const auto& [fw, info] : u.index_fields) {
+                const auto& [cnt, aoff, where] = info;
+                const uint64_t fo = n->member_off + static_cast<uint64_t>(fw.first);
+                if (fo + fw.second > n->bytes || cnt == 0 || cnt - 1 > (uint64_t{1} << (fw.second * 8 - 1)) - 1) continue;
+                HarnessNode::IndexBound ib;
+                ib.offset = fo;
+                ib.width = fw.second;
+                ib.count = cnt;
+                ib.array_off = n->member_off + static_cast<uint64_t>(aoff);
+                ib.where = where;
+                n->index_bounds.push_back(ib);
+                plan.assumptions.push_back("index-field-bound: " + name + "->@" + std::to_string(fo) + " (" +
+                                           std::to_string(fw.second) + " bytes) is in [0, " + std::to_string(cnt - 1) +
+                                           "]: it indexes the " + where +
+                                           " (--pir-index-field-bounds; UNVALIDATED, not discharged; not checked here)");
+            }
         const uint64_t psz = lay.store_size(ir::parse_type("ptr"));
         for (auto& [off, rs] : u.ptr_fields) {
             if (n->member_off + off + psz > n->bytes) continue;
@@ -842,12 +1088,13 @@ struct Builder {
                     n->nested.emplace_back(off, std::move(child));
                     continue;
                 }
-            auto child = build(rs, depth + 1, fname);
+            std::optional<DeclaredPointee> cdecl;
+            if (opt.declared_types && decl) cdecl = declared_member_pointee(m, lay, decl->ref, off);
+            const std::size_t before = plan.assumptions.size();
+            auto child = build(rs, depth + 1, fname, cdecl);
             if (!child || (!child->type_known && !opt.keep_untyped)) {
-                if (child) {  // no type evidence: its object was counted and listed, take it back
-                    --plan.objects;
-                    plan.assumptions.pop_back();
-                }
+                if (child) --plan.objects;  // no type evidence: its object was counted and listed, take it back
+                plan.assumptions.resize(before);  // its object line and any size / declared-type line
                 n->unbound_fields.push_back(off);
                 ++n->cut_notype;
                 continue;
@@ -883,7 +1130,9 @@ void unbound_lines(const HarnessNode& n, const HarnessOptions& opt, std::vector<
 std::optional<HarnessPlan> plan_pointer_harness(const ir::Module& m, const Layout& lay, const ir::Function& f,
                                                 const ir::Param& p, const HarnessOptions& opt, std::string* why) {
     Builder b{m, lay, opt, {}, {}};
-    auto root = b.build({Root{&f, p.name}}, 0, p.name);
+    std::optional<DeclaredPointee> decl;
+    if (opt.declared_types) decl = declared_param_pointee(m, lay, f, p);
+    auto root = b.build({Root{&f, p.name}}, 0, p.name, decl);
     if (!root) {
         if (why) *why = b.fail.empty() ? "no harness object" : b.fail;
         return std::nullopt;
@@ -942,6 +1191,107 @@ std::optional<LengthPair> infer_param_length(const ir::Module& m, const Layout& 
     std::vector<PairEvidence> ev;
     pair_evidence(m, lay, f, {p.name}, count_of, 0, ev);
     return agree(ev);
+}
+
+// --pir-declared-types (docs/PIR.md "Declared pointee types"): the debug information of a unit lowered with -g.
+namespace {
+
+// typedef / const / volatile / restrict / atomic: the type they name
+const ir::DIType* di_strip(const ir::Module& m, std::string ref, std::string* out_ref) {
+    for (int guard = 0; guard < 64 && !ref.empty(); ++guard) {
+        auto it = m.ditypes.find(ref);
+        if (it == m.ditypes.end()) return nullptr;
+        const auto& t = it->second;
+        if (t.kind == "derived" && (t.tag == "DW_TAG_typedef" || t.tag == "DW_TAG_const_type" ||
+                                    t.tag == "DW_TAG_volatile_type" || t.tag == "DW_TAG_restrict_type" ||
+                                    t.tag == "DW_TAG_atomic_type")) {
+            ref = t.base;
+            continue;
+        }
+        if (out_ref) *out_ref = ref;
+        return &t;
+    }
+    return nullptr;
+}
+
+// the pointee of the (unstripped) pointer type `ref`
+std::optional<DeclaredPointee> pointee_of(const ir::Module& m, const Layout& lay, const std::string& ref) {
+    const auto* pt = di_strip(m, ref, nullptr);
+    if (!pt || pt->kind != "derived" || pt->tag != "DW_TAG_pointer_type" || pt->base.empty()) return std::nullopt;
+    DeclaredPointee d;
+    const auto* t = di_strip(m, pt->base, &d.ref);
+    if (!t || t->fwd || t->size_bits == 0 || t->size_bits % 8) return std::nullopt;
+    d.bytes = t->size_bits / 8;
+    const bool s = t->tag == "DW_TAG_structure_type", un = t->tag == "DW_TAG_union_type";
+    d.composite = t->kind == "composite" && (s || un || t->tag == "DW_TAG_array_type");
+    d.spelling = s ? "struct " + t->name : un ? "union " + t->name : t->name.empty() ? t->tag : t->name;
+    if ((s || un) && !t->name.empty()) {
+        const std::string key = (s ? "struct." : "union.") + t->name;
+        if (auto it = m.types.find(key); it != m.types.end() && it->second.kind == ir::Type::Struct) {
+            try {
+                if (lay.alloc_size(it->second) == d.bytes) d.ir_struct = "%" + key;
+            } catch (const Unenc&) {
+            }
+        }
+    }
+    return d;
+}
+
+}  // namespace
+
+std::optional<DeclaredPointee> declared_param_pointee(const ir::Module& m, const Layout& lay, const ir::Function& f,
+                                                      const ir::Param& p) {
+    if (f.dbg.empty() || p.name.empty()) return std::nullopt;
+    for (const auto& v : m.diparams)
+        if (v.scope == f.dbg && v.name == p.name) return pointee_of(m, lay, v.type);
+    return std::nullopt;
+}
+
+std::optional<DeclaredPointee> declared_member_pointee(const ir::Module& m, const Layout& lay, const std::string& ref,
+                                                       uint64_t off) {
+    std::string cur = ref;
+    for (int guard = 0; guard < 32; ++guard) {
+        const auto* t = di_strip(m, cur, &cur);
+        if (!t || t->kind != "composite") return std::nullopt;
+        if (t->tag == "DW_TAG_array_type") {
+            std::string eref;
+            const auto* e = di_strip(m, t->base, &eref);
+            if (!e || e->size_bits == 0 || e->size_bits % 8) return std::nullopt;
+            const uint64_t esz = e->size_bits / 8;
+            if (t->size_bits && off >= t->size_bits / 8) return std::nullopt;
+            off %= esz;
+            if (e->kind == "derived" && e->tag == "DW_TAG_pointer_type") return off == 0 ? pointee_of(m, lay, eref) : std::nullopt;
+            cur = eref;
+            continue;
+        }
+        if (t->tag != "DW_TAG_structure_type" && t->tag != "DW_TAG_union_type") return std::nullopt;
+        auto el = m.md_tuples.find(t->elements);
+        if (el == m.md_tuples.end()) return std::nullopt;
+        std::string next;
+        uint64_t next_off = 0;
+        for (const auto& r : el->second) {
+            auto it = m.ditypes.find(r);
+            if (it == m.ditypes.end() || it->second.tag != "DW_TAG_member" || it->second.offset_bits % 8) continue;
+            const uint64_t mo = it->second.offset_bits / 8;
+            std::string mref;
+            const auto* mt = di_strip(m, it->second.base, &mref);
+            if (!mt) continue;
+            if (mt->kind == "derived" && mt->tag == "DW_TAG_pointer_type") {
+                if (mo == off) return pointee_of(m, lay, mref);
+                continue;
+            }
+            const uint64_t msz = (it->second.size_bits ? it->second.size_bits : mt->size_bits) / 8;
+            if (mt->kind == "composite" && off >= mo && off < mo + msz) {
+                next = mref;
+                next_off = off - mo;
+                break;
+            }
+        }
+        if (next.empty()) return std::nullopt;
+        cur = next;
+        off = next_off;
+    }
+    return std::nullopt;
 }
 
 }  // namespace prism::pir::pirmem

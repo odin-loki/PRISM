@@ -123,6 +123,11 @@ struct Config {
     bool pir_kernel_sprintf = false;    // --pir-kernel-sprintf: Linux sprintf with a literal format: output length bound incl. %p extensions
     bool pir_addrspace = false;         // --pir-addrspace: kernel address-space pointers (per-CPU %gs, __user) as ordinary pointers (named)
     bool pir_wide_int = false;          // --pir-wide-int: i65..i128 values as 128-bit bit-vectors
+    bool pir_declared_types = false;    // --pir-declared-types: harness pointees without type evidence take their declared type (-g, named)
+    bool pir_priv_areas = false;        // --pir-priv-areas: a private area past the struct end is sized (allocation or its struct, named)
+    bool pir_index_field_bounds = false;  // --pir-index-field-bounds: a field indexing an in-object array [N x T] is in [0, N-1] (named)
+    bool pir_heap_freed = false;        // --pir-heap-freed: a harness object the function passes to kfree/free is a heap allocation (named)
+    std::filesystem::path pir_param_preconditions;  // --pir-param-preconditions FILE: per-parameter preconditions (named, minimised)
     // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
     // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.
     std::string pir_lock_contracts;

@@ -2853,14 +2853,46 @@ Arg alloc_paired_node(Tr& tr, const pirmem::HarnessNode& c, Arg parent, uint64_t
     return tr.mt.alloc(-1, size, MemKind::Extern, 2, "*" + c.name + " (length pairing)", 0, -1, c.align);
 }
 
+// --pir-param-preconditions: the rows of parameter p (by name or 0-based index) of f
+std::vector<const ParamPrecondition*> param_rows(const TranslateOptions& o, const ir::Function& f, const ir::Param& p) {
+    std::vector<const ParamPrecondition*> out;
+    if (o.param_preconditions.empty()) return out;
+    std::size_t idx = 0;
+    while (idx < f.params.size() && &f.params[idx] != &p) ++idx;
+    for (const auto& r : o.param_preconditions)
+        if (r.function == f.name && ((!p.name.empty() && r.param == p.name) || r.param == std::to_string(idx)))
+            out.push_back(&r);
+    return out;
+}
+
 // Allocates the objects of an automatic pointer harness (harness.cpp) and
 // stores the nested pointers: returns the pointer to `n`'s object.
 Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
-    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0, -1, n.align);
+    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), n.heap ? MemKind::Heap : MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0, -1, n.align);
     const auto ptr_ty = ir::parse_type("ptr");
     std::set<uint64_t> bound;  // byte offsets (from the object start) that got an object of their own
     for (const auto& [off, child] : n.nested) {
-        Arg cp = child->pair ? alloc_paired_node(tr, *child, obj, n.member_off) : alloc_harness_node(tr, *child);
+        // --pir-field-invariants "valid N" on a pointer field that already has its own harness object: the object is
+        // made N bytes when that is larger than the harness chose (one named assumption, as for an unbound field)
+        const pirmem::HarnessNode* use = child.get();
+        pirmem::HarnessNode grown;
+        if (!child->pair && n.type_known && n.type.kind == ir::Type::Struct)
+            for (const auto& fi : tr.opt.field_invariants) {
+                if (fi.kind != "valid" || fi.struct_type != n.type.text || fi.offset != n.member_off + off ||
+                    static_cast<uint64_t>(fi.a) <= use->bytes)
+                    continue;
+                grown = *use;
+                grown.bytes = static_cast<uint64_t>(fi.a);
+                use = &grown;
+                const std::string a = "field-invariant: " + n.name + "->@" + std::to_string(fi.offset) + " (" + fi.struct_type +
+                                      " at byte " + std::to_string(fi.offset) + ") points to a valid object of " +
+                                      std::to_string(fi.a) + " bytes (its harness object grown from " +
+                                      std::to_string(child->bytes) + " bytes) (--pir-field-invariants; status " + fi.status +
+                                      "; source " + fi.source + "; not checked here)";
+                if (std::find(tr.out.assumptions.begin(), tr.out.assumptions.end(), a) == tr.out.assumptions.end())
+                    tr.out.assumptions.push_back(a);
+            }
+        Arg cp = child->pair ? alloc_paired_node(tr, *child, obj, n.member_off) : alloc_harness_node(tr, *use);
         int slot = tr.newvar(tr.tmpname("hslot"), ptr_w());
         tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off + off)}, true, 0);
         tr.mt.store(-1, Arg::v(slot, ptr_w()), cp, Arg::c(1, 1), ptr_ty, 1, 0);
@@ -2906,6 +2938,17 @@ Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
             if (std::find(tr.out.assumptions.begin(), tr.out.assumptions.end(), a) == tr.out.assumptions.end())
                 tr.out.assumptions.push_back(a);
         }
+    }
+    // --pir-index-field-bounds: an index field of an in-object array is in [0, count - 1] at entry (named in the plan)
+    for (const auto& ib : n.index_bounds) {
+        int slot = tr.newvar(tr.tmpname("hib"), ptr_w());
+        tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, ib.offset)}, true, 0);
+        const unsigned bits = ib.width * 8;
+        int v = tr.newvar(tr.tmpname("hibv"), bits);
+        tr.mt.load(-1, v, ir::parse_type("i" + std::to_string(bits)), Arg::v(slot, ptr_w()), 1, 0, false);
+        const Arg val = Arg::v(v, bits);
+        tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {val, Arg::c(bits, 0)}, "ib"), Arg::c(1, 1)}, "ib"));
+        tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {Arg::c(bits, ib.count - 1), val}, "ib"), Arg::c(1, 1)}, "ib"));
     }
     // function-pointer fields known to the ops tables (--pir-ops-auto): one of the targets, chosen freely
     for (const auto& fp : n.fp_fields) {
@@ -3060,6 +3103,26 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
         ho.ops = &tr.opt.ops_table;
         ho.ops_module = &tr.m;
     }
+    ho.declared_types = tr.opt.auto_harness.declared_types;
+    ho.priv_areas = tr.opt.auto_harness.priv_areas;
+    ho.index_field_bounds = tr.opt.auto_harness.index_field_bounds;
+    ho.heap_freed = tr.opt.auto_harness.heap_freed;
+    // --pir-param-preconditions: "valid N" / "type S" rows set the parameter's own object
+    std::vector<const ParamPrecondition*> used;
+    for (const auto* r : param_rows(tr.opt, f, p)) {
+        if (r->kind == "valid") {
+            ho.root_min_bytes = std::max<uint64_t>(ho.root_min_bytes, static_cast<uint64_t>(r->a));
+            used.push_back(r);
+        } else if (r->kind == "type") {
+            auto it = tr.m.types.find(r->type_name.substr(1));
+            if (it == tr.m.types.end() || it->second.kind != ir::Type::Struct) continue;  // not this unit's type
+            ir::Type t;
+            t.kind = ir::Type::Struct;
+            t.text = r->type_name;
+            ho.root_type = t;
+            used.push_back(r);
+        }
+    }
     auto plan = pirmem::plan_pointer_harness(tr.m, tr.mt.layout(), f, p, ho, why);
     if (!plan) return false;
     // --pir-callback-models trailing-alloc: the object is the driver's own allocation with its private area appended
@@ -3172,6 +3235,8 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
     for (auto& a : plan->assumptions) tr.out.assumptions.push_back(a);
     if (!trailing_text.empty()) tr.out.assumptions.push_back(trailing_text);
     if (!drvdata_text.empty()) tr.out.assumptions.push_back(drvdata_text);
+    if (plan->root_override_used)
+        for (const auto* r : used) tr.out.assumptions.push_back(param_precondition_text(*r));
     return true;
 }
 
@@ -3490,6 +3555,21 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
                 if (b->hi < mn || b->lo > mx) tr.assume(-1, Arg::c(1, 0));  // empty at this width: no execution
                 tr.out.assumptions.push_back(b->text);
             }
+            // --pir-param-preconditions "range A B" of an integer parameter: A <= v <= B (signed), named
+            if (p.ty.kind == ir::Type::Int)
+                for (const auto* r : param_rows(opt, f, p)) {
+                    if (r->kind != "range" || w > 64 || w < 1) continue;
+                    if (w < 64) {  // bounds must be signed w-bit values, else the row does not apply
+                        const int64_t smax = (int64_t{1} << (w - 1)) - 1, smin = -smax - 1;
+                        if (r->a < smin || r->b > smax) continue;
+                    }
+                    const uint64_t m = w == 64 ? ~uint64_t{0} : (uint64_t{1} << w) - 1;
+                    const Arg val = Arg::v(v, w);
+                    const Arg lo = Arg::c(w, static_cast<uint64_t>(r->a) & m), hi = Arg::c(w, static_cast<uint64_t>(r->b) & m);
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {val, lo}, "pp"), Arg::c(1, 1)}, "pp"));
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {hi, val}, "pp"), Arg::c(1, 1)}, "pp"));
+                    tr.out.assumptions.push_back(param_precondition_text(*r));
+                }
         }
         if (opt.bpf_helpers && !opt.kernel_api.empty()) bind_bpf_helper_args(tr, f, top);  // --pir-bpf-helpers
         int contracts = 0;

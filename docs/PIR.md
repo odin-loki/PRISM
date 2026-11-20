@@ -681,6 +681,101 @@ bounds give no pair and no proof; not discharged) and
 bound, and a read through a pointer no depth bounds (`q[1000]` through a
 nested field, a list walk) is never a proof.
 
+### Declared pointee types (`--pir-declared-types`)
+
+The harness only sees opaque `ptr` parameters: a pointee the function never accesses through a struct type gets a
+guess (`--pir-harness-bytes`, 64 bytes, or 16 elements of the scalar it is indexed as). With `--pir-declared-types`
+the unit is lowered with `-g` instead of `-gline-tables-only` (metadata only: the parser drops the `llvm.dbg.*`
+calls, so the instructions are the same) and the planner reads the parameter's declaration
+(`DILocalVariable(arg: N)` of the function's `DISubprogram`, through typedefs and qualifiers to the pointee). When
+the pointee is a struct, union or array of known size, and the IR has no struct evidence for it, only a scalar
+guess, or an evidence struct smaller than the declaration (the function reaches its object through an inner
+member's type), the object gets the declared type (the module's `%struct.NAME` when it has the same size, else
+`N x i8`). Nested pointer fields follow the declared member types (`DW_TAG_member` at the field's byte offset,
+through nested structs and arrays), so a loaded field without type evidence gets the size of its declared pointee
+instead of staying arbitrary. The object line of the harness then says `declared pointee type struct NAME of N bytes
+(--pir-declared-types: the declaration in the unit's debug information; the IR evidence was T)`: a named
+assumption, like every harness choice. Scalar pointees (`u8 *`) say nothing about a count and keep the guess.
+The call-site discharge plans the same objects (its obligations are the declared sizes).
+
+**A declared size is the size.** When the declaration gives the object's size, that is the object: a constant-offset
+access past it is a violation, reported as usual, not a reason to grow the object. The declaration is not used when
+an evidence struct is larger than it (a cast to a bigger type), for an indexed struct pointee (the count is not
+declared) or for `void *` / `char *` (no composite pointee). Each use is its own line `declared-type: P points to
+struct NAME (N bytes, from the declaration in the unit's debug information; ...) (--pir-declared-types; not checked
+here)`; a proof is translated again without declared types, and when the verdict holds (with no more objects sized
+from accesses) the lines go (`extra.declared_types_not_needed`); the vacuity check runs on what remains.
+
+**Objects sized from their accesses.** Without a declared size, an object still grows to the highest constant offset
+the function accesses (as before), and that is tagged: `harness-size-from-access: P sized to reach the highest
+constant offset accessed (N bytes; the type evidence and defaults gave M) (auto harness)`. Such a proof rests on an
+assumption taken from the access it checks; the tag lets a merge count those proofs separately and review them.
+
+**Containers from casts.** A declaration smaller than a struct the code uses the object as at offset 0 (`tcp_sk(sk)`:
+a `struct sock *` read as `struct tcp_sock`; `container_of` over a first member) is not used: the object is that
+larger struct, never smaller than the evidence, and the choice is its own line `container-type-from-cast: P is treated
+as %struct.T (N bytes; a getelementptr uses it at offset 0 in FN line L; larger than its declared or first-used type)
+(--pir-declared-types; not checked here)`, so a reviewer sees the type confusion it assumes. It is minimised with the
+declared types.
+
+### Freed harness objects (`--pir-heap-freed`)
+
+A harness object (a parameter's or a nested field's) that the function passes, at its start, to a free function
+(`kfree`, `kvfree`, `vfree`, `kfree_sensitive`, `devm_kfree`, `kmem_cache_free`, `free`, ... or the models'
+`__prism_free` of the heap kind) is allocated as a live heap object instead of a parameter object, and a field without
+type evidence is bound (an object of the declared or default size) instead of staying arbitrary. Named:
+`heap-object: P is heap-allocated (freed by kfree in FN line L): its harness object is a live heap allocation of N
+bytes (--pir-heap-freed; not checked here)`; minimised like the other options (`extra.heap_freed_not_needed`). The
+free itself is still checked: a second free is `MEM-DOUBLE-FREE`, a free of an interior pointer or of an object that
+is not one of these is `MEM-INVALID-FREE`.
+
+### Private areas past the struct end (`--pir-priv-areas`)
+
+`netdev_priv(dev)`, `shost_priv`, `wiphy_priv` and friends return the object's address plus the aligned struct size:
+the driver's private area lives past the end of the struct. When a struct type is based on a pointer derived at an
+offset T at or after the end of the object's struct (its declared size or its evidence struct, within 128 bytes for
+the alignment), the object reaches T plus the area: the private size of an allocation the unit makes with a constant
+(`alloc_netdev_mqs(sizeof_priv, ...)`, `devm_alloc_etherdev_mqs`, `devm_iio_device_alloc`, `scsi_host_alloc`,
+`wiphy_new_nm`, `ieee80211_alloc_hw_nm`, `__spi_alloc_controller`, ...) when all such allocations agree and are at
+least the area struct's size, else the area struct's own size. The object is then fully typed: an access past the
+area is a violation, not grown. Named: `priv-area: P has a private area at byte T of N bytes (... size from
+alloc_netdev_mqs(sizeof_priv = N) in this unit | of the private area's struct ...) (--pir-priv-areas; not checked
+here)`, minimised like the declared types (`extra.priv_areas_not_needed`).
+
+### Index fields of in-object arrays (`--pir-index-field-bounds`)
+
+A `getelementptr` into an array `[N x T]` of the object (through constant struct and array indices) whose variable
+index is (a `sext`/`zext`/`trunc` of) an integer loaded from a constant offset of the same object: that field is
+assumed in `[0, N-1]` at entry (`index-field-bound: P->@F (W bytes) is in [0, N-1]: it indexes the ... array of N at
+byte X (--pir-index-field-bounds; UNVALIDATED, not discharged; not checked here)`). This assumes away the very check
+on that access, so it is only an assumption, never a discharge: other indices (`q[tail + 1]`), a value the function
+stores into the field before the access, and indices that are parameters are checked as before. Minimised like the
+declared types (`extra.index_field_bounds_not_needed`).
+
+### Parameter preconditions (`--pir-param-preconditions FILE`)
+
+Per-parameter preconditions from drafts and tools (Haiku drafts, Smatch, Infer). TSV, 6 columns; `#` lines, blank
+lines and a header line starting `function<TAB>` are skipped:
+
+| column | meaning |
+|---|---|
+| function | the IR name of the function (`@` optional) |
+| parameter | the parameter's name, or its 0-based index in the IR signature |
+| condition | `valid N` (a pointer parameter points to the start of a valid object of at least N bytes, N in (0, 1 GiB]); `type S` (... of struct S: `struct foo`, `union foo`, `%struct.foo` or `foo`; the unit must have that type); `nonnull` (implied by the automatic harness, whose objects are never NULL: accepted, adds nothing, not named); `range A B` (an integer parameter, signed, A <= v <= B; a bound that is not a signed value of the parameter's width makes the row not apply) |
+| scope | `*`, or a substring of the unit's path (`fs/namespace.c`): rows for other units are not loaded |
+| status | free text, always shown (`UNVALIDATED`, `REVIEWED`, ...) |
+| source | free text, always shown (`haiku b01`, `smatch`, `infer`, ...) |
+
+Example: `find_master	m	valid 352	fs/namespace.c	UNVALIDATED	haiku b01 (sizeof struct mount)`.
+
+A pointer row sets the parameter's own harness object (its nested objects are planned as before); a range row is
+assumed at entry. Each row that changes the translation is a named assumption `param-precondition: FUNCTION(PARAM)
+CONDITION (--pir-param-preconditions; scope ...; status ...; source ...; not checked here)`. A proof keeps only the
+rows it needs: as for `--pir-field-invariants`, the used rows are first dropped all at once, then one by one, and
+each row whose removal keeps the verdict is removed for good (`extra.param_preconditions_not_needed`). The vacuity
+check (`--pir-vacuity`) then runs on what remains, also for a function whose only assumption is a range row.
+Nothing in the file is checked: a row is an assumption until a call-site check discharges it.
+
 ## Machine-readable output (`--jsonl FILE`)
 
 `prism UNIT --stage pir --jsonl out.jsonl` appends one line per function (and

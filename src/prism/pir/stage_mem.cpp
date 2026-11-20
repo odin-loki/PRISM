@@ -143,6 +143,10 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     o.auto_harness.elems = cfg.pir_harness_elems;
     o.auto_harness.unknown_bytes = cfg.pir_harness_bytes;
     o.auto_harness.length_pairing = cfg.pir_length_pairing;
+    o.auto_harness.declared_types = cfg.pir_declared_types;
+    o.auto_harness.priv_areas = cfg.pir_priv_areas;
+    o.auto_harness.index_field_bounds = cfg.pir_index_field_bounds;
+    o.auto_harness.heap_freed = cfg.pir_heap_freed;
     // C++ library code (constructors, accessors) nests deeper than C helpers
     if (unit.cxx) o.inline_depth = std::max(o.inline_depth, 12);
     // PRISM_PIR_INLINE_DEPTH: raise (or lower) the call-inlining depth; the module harness needs more (docs/DEVICE_MODEL.md)
@@ -241,6 +245,7 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
     // does not need. Each row the translation used is dropped in turn and the function checked again; a row whose
     // removal keeps the verdict is removed for good (the function is re-translated without it, so its assumption and
     // its assume statements are gone). What remains is the set the proof used; the vacuity check later runs on it.
+    std::vector<FieldInvariant> fi_kept = topt.field_invariants;  // after its minimisation (below)
     if (!topt.field_invariants.empty() &&
         (v.status == laws::PROVED || v.status == laws::PROVED_ASSUMING || v.status == laws::PROVED_UNBOUNDED ||
          v.status == laws::BOUNDED)) {
@@ -309,6 +314,120 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
             ++i;
         }
         if (!dropped.empty()) f.extra["field_invariants_not_needed"] = dropped;
+        fi_kept = kept;
+    }
+    // --pir-param-preconditions: minimised like the field invariants (all used rows dropped at once first, then row by
+    // row); a row whose removal keeps the verdict goes for good, so what remains is the set the proof needs
+    std::vector<ParamPrecondition> pp_kept = topt.param_preconditions;
+    if (!topt.param_preconditions.empty() &&
+        (v.status == laws::PROVED || v.status == laws::PROVED_ASSUMING || v.status == laws::PROVED_UNBOUNDED ||
+         v.status == laws::BOUNDED)) {
+        auto row_used = [](const Function& g, const ParamPrecondition& r) {
+            const std::string key = param_precondition_key(r);
+            for (const auto& a : g.assumptions)
+                if (a.starts_with(key)) return true;
+            return false;
+        };
+        const auto adopt = [&](Function&& g) {
+            auto name = fn.name;
+            auto file = fn.file;
+            auto line = fn.line;
+            fn = std::move(g);
+            fn.name = std::move(name);
+            fn.file = std::move(file);
+            fn.line = line;
+        };
+        const auto label = [](const ParamPrecondition& r) { return r.function + "(" + r.param + ") " + r.condition; };
+        std::vector<ParamPrecondition> kept = topt.param_preconditions;
+        std::string dropped;
+        const auto try_without = [&](const std::vector<ParamPrecondition>& rest, const std::string& what) {
+            auto o = topt;
+            o.param_preconditions = rest;
+            o.field_invariants = fi_kept;  // what the field-invariant minimisation kept
+            auto tr = translate(mod, irf, o);
+            if (!tr.fn) return false;
+            const auto r = recheck(*tr.fn, "without the parameter preconditions " + what);
+            if (r.status == v.status || (v.status == laws::PROVED_ASSUMING && r.status == laws::PROVED)) {
+                if (r.status != v.status) v = r;
+                dropped += (dropped.empty() ? "" : "; ") + what;
+                adopt(std::move(*tr.fn));
+                return true;
+            }
+            return false;
+        };
+        {
+            std::vector<ParamPrecondition> rest;
+            std::string all;
+            for (const auto& r : kept) {
+                if (row_used(fn, r)) all += (all.empty() ? "" : "; ") + label(r);
+                else rest.push_back(r);
+            }
+            if (!all.empty() && try_without(rest, all)) kept = std::move(rest);
+        }
+        for (std::size_t i = 0; i < kept.size();) {
+            if (!row_used(fn, kept[i])) {
+                ++i;
+                continue;
+            }
+            auto rest = kept;
+            rest.erase(rest.begin() + static_cast<std::ptrdiff_t>(i));
+            if (try_without(rest, label(kept[i]))) {
+                kept = std::move(rest);
+                continue;
+            }
+            ++i;
+        }
+        if (!dropped.empty()) f.extra["param_preconditions_not_needed"] = dropped;
+        pp_kept = kept;
+    }
+    // --pir-declared-types: the declared-type lines go through the same minimisation (all at once: the function is
+    // translated again without declared types; when the verdict holds, the proof does not rest on them). The vacuity
+    // check later runs on what remains.
+    // --pir-priv-areas and --pir-index-field-bounds lines likewise, each option in turn.
+    AutoHarness ah_kept = topt.auto_harness;
+    const struct {
+        bool AutoHarness::*flag;
+        const char* prefix;
+        const char* what;
+        const char* key;
+    } kOpts[] = {{&AutoHarness::declared_types, "declared-type: ", "the declared types", "declared_types_not_needed"},
+                 {&AutoHarness::priv_areas, "priv-area: ", "the private areas", "priv_areas_not_needed"},
+                 {&AutoHarness::index_field_bounds, "index-field-bound: ", "the index-field bounds", "index_field_bounds_not_needed"},
+                 {&AutoHarness::declared_types, "container-type-from-cast: ", "the declared types (cast containers)", "declared_types_not_needed"},
+                 {&AutoHarness::heap_freed, "heap-object: ", "the heap objects of freed pointers", "heap_freed_not_needed"}};
+    for (const auto& op : kOpts) {
+    if (ah_kept.*op.flag &&
+        (v.status == laws::PROVED || v.status == laws::PROVED_ASSUMING || v.status == laws::PROVED_UNBOUNDED ||
+         v.status == laws::BOUNDED) &&
+        std::any_of(fn.assumptions.begin(), fn.assumptions.end(),
+                    [&](const std::string& a) { return a.starts_with(op.prefix); })) {
+        auto o = topt;
+        o.auto_harness = ah_kept;
+        o.auto_harness.*op.flag = false;
+        o.field_invariants = fi_kept;
+        o.param_preconditions = pp_kept;
+        auto tr = translate(mod, irf, o);
+        // a translation that sizes more objects from the accesses being checked is not a smaller set of assumptions
+        const auto from_access = [](const Function& g) {
+            return std::count_if(g.assumptions.begin(), g.assumptions.end(),
+                                 [](const std::string& a) { return a.starts_with("harness-size-from-access: "); });
+        };
+        if (tr.fn && from_access(*tr.fn) <= from_access(fn)) {
+            const auto r = recheck(*tr.fn, std::string("without ") + op.what);
+            if (r.status == v.status || (v.status == laws::PROVED_ASSUMING && r.status == laws::PROVED)) {
+                if (r.status != v.status) v = r;
+                auto name = fn.name;
+                auto file = fn.file;
+                auto line = fn.line;
+                fn = std::move(*tr.fn);
+                fn.name = std::move(name);
+                fn.file = std::move(file);
+                fn.line = line;
+                ah_kept.*op.flag = false;
+                f.extra[op.key] = std::string("the verdict holds without ") + op.what;
+            }
+        }
+    }
     }
     if (fn.uses_memory) {
         f.extra["strict_aliasing"] = cfg.strict_aliasing ? "checked" : "off (--strict-aliasing checks effective types)";
