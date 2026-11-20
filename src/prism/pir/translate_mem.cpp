@@ -62,7 +62,18 @@ uint64_t count_of(const ir::Type& t) {
 // ---------------------------------------------------------------------------
 
 Layout::Layout(const ir::Module& m) : m_(m) {
-    int_align_ = {{1, 1}, {8, 1}, {16, 2}, {32, 4}, {64, 8}, {128, 16}};
+    // No datalayout (hand-written IR): the x86-64 layout PIR always assumed.
+    // With one, LLVM's defaults (DataLayout.cpp: i64 ABI alignment 4, no i128
+    // entry, f16/f32/f64/f128 natural) overridden by the string's own specs,
+    // exactly as clang's code generator laid the IR out (m68k has no i64 spec:
+    // i64 is 4-aligned there; i386 has f64:32 and f80:32).
+    if (m.datalayout.empty()) {
+        int_align_ = {{1, 1}, {8, 1}, {16, 2}, {32, 4}, {64, 8}, {128, 16}};
+        float_align_ = {{16, 2}, {32, 4}, {64, 8}, {80, 16}, {128, 16}};
+    } else {
+        int_align_ = {{1, 1}, {8, 1}, {16, 2}, {32, 4}, {64, 4}};
+        float_align_ = {{16, 2}, {32, 4}, {64, 8}, {128, 16}};
+    }
     std::string dl = m.datalayout;
     std::size_t pos = 0;
     while (pos < dl.size()) {
@@ -88,6 +99,15 @@ Layout::Layout(const ir::Module& m) : m_(m) {
         if (spec.size() > 1 && spec[0] == 'i' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
             auto v = nums(1);
             if (v.size() >= 2 && v.at(0) && v.at(1)) int_align_[v.at(0)] = v.at(1) / 8;
+        } else if (spec.size() > 1 && spec[0] == 'f' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
+            auto v = nums(1);
+            if (v.size() >= 2 && v.at(0) && v.at(1)) float_align_[v.at(0)] = v.at(1) / 8;
+        } else if (spec.size() > 1 && spec[0] == 'v' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
+            auto v = nums(1);
+            if (v.size() >= 2 && v.at(0) && v.at(1)) vec_align_[v.at(0)] = v.at(1) / 8;
+        } else if (spec.size() > 1 && spec[0] == 'a' && spec[1] == ':') {
+            auto v = nums(2);
+            if (!v.empty() && v.at(0) >= 8) agg_align_ = v.at(0) / 8;
         } else if (spec.size() > 1 && spec[0] == 'p' && (spec[1] == ':' || spec.starts_with("p0:"))) {
             auto v = nums(spec[1] == ':' ? 2 : 3);
             if (v.size() >= 2 && v.at(0) && v.at(1)) {
@@ -117,21 +137,29 @@ unsigned Layout::align(const ir::Type& t0) const {
             return int_align_.rbegin()->second;
         }
         case ir::Type::Ptr: return ptr_align_;
-        case ir::Type::Float:
-            if (t.text == "half" || t.text == "bfloat") return 2;
-            if (t.text == "float") return 4;
-            if (t.text == "double") return 8;
-            return 16;
+        case ir::Type::Float: {
+            // LLVM: the entry of the format's bit width, else the natural alignment of its size
+            unsigned bits = 128;
+            if (t.text == "half" || t.text == "bfloat") bits = 16;
+            else if (t.text == "float") bits = 32;
+            else if (t.text == "double") bits = 64;
+            else if (t.text == "x86_fp80") bits = 80;
+            if (auto it = float_align_.find(bits); it != float_align_.end()) return it->second;
+            unsigned a = 1;
+            while (a < store_size(t)) a *= 2;
+            return a;
+        }
         case ir::Type::Array: return align(t.elems.at(0));
         case ir::Type::Vector: {
             auto s = store_size(t);
+            if (auto it = vec_align_.find(static_cast<unsigned>(8 * s)); it != vec_align_.end()) return it->second;
             unsigned a = 1;
             while (a < s && a < 64) a *= 2;
             return a;
         }
         case ir::Type::Struct: {
             if (t.text.starts_with("<{")) return 1;
-            unsigned a = 1;
+            unsigned a = agg_align_;
             for (auto& e : t.elems) a = std::max(a, align(e));
             return a;
         }
@@ -494,6 +522,7 @@ void MemTr::emit_entry_globals() {
             Stmt w;
             w.kind = Stmt::Store;
             w.args = {st.off ? ptr_add(-1, p, c64(st.off)) : p, Arg::c(st.w, st.bits), Arg::c(1, 1)};
+            w.be = be_value(w.args.at(1).width);
             t_.push(-1, w);
         }
         if (e.init == 2) global_harness(p, *e.g, name);
@@ -552,6 +581,7 @@ Arg MemTr::global(const std::string& name) {
         Stmt st;
         st.kind = Stmt::Store;
         st.args = {ptr_add(-1, p, c64(8)), np, Arg::c(1, 1)};
+        st.be = be_value(st.args.at(1).width);
         t_.push(-1, st);
         return p;
     }
@@ -605,6 +635,7 @@ Arg MemTr::global(const std::string& name) {
         Stmt st;
         st.kind = Stmt::Store;
         st.args = {p, f, Arg::c(1, 1)};
+        st.be = be_value(st.args.at(1).width);
         t_.push(-1, st);
     } else if (init == 1 && !g->init.empty()) {
         emit_init(p, 0, g->ty, g->init[0].v, name);
@@ -624,6 +655,7 @@ void MemTr::global_harness(Arg p, const ir::Global& g, const std::string& name) 
     Stmt st;
     st.kind = Stmt::Store;
     st.args = {p, obj, Arg::c(1, 1)};
+    st.be = be_value(st.args.at(1).width);
     t_.push(-1, st);
     const std::string a = "global harness: @" + name + " (a mutable pointer global) points at entry to a valid object of " +
                           std::to_string(kGlobalHarnessBytes) +
@@ -642,6 +674,7 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
         Stmt st;
         st.kind = Stmt::Store;
         st.args = {at(o), val, Arg::c(1, 1)};
+        st.be = be_value(st.args.at(1).width);
         t_.push(-1, st);
     };
     switch (v.kind) {
@@ -665,6 +698,7 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
                 Stmt st;
                 st.kind = Stmt::Store;
                 st.args = {at(offs), t_.havoc(-1, value_width(ty, "initializer of"), false, false), Arg::c(1, 0)};
+                st.be = be_value(st.args.at(1).width);
                 t_.push(-1, st);
             }
             return;  // aggregate undef: padding
@@ -893,13 +927,38 @@ void MemTr::access_checks(int b, Arg p, Arg n, bool write, unsigned al, int line
                  line);
 }
 
+// Big-endian target (PtrModel::big): a scalar of more than one byte is loaded
+// and stored most significant byte first (Stmt::be). A first-class aggregate
+// or vector value is one bit-vector with its fields at their offsets, which a
+// whole-value byte order cannot express, and an iN whose N is not a multiple
+// of 8 has extension bits LLVM places by the target's order: both UNENCODED
+// on a big-endian target rather than read in the wrong order.
+bool MemTr::be_access(const ir::Type& ty, unsigned w, uint64_t n) const {
+    if (!ptr_model().big || n <= 1) return false;
+    const auto& rt = lay_.resolve(ty);
+    if (rt.kind != ir::Type::Int && rt.kind != ir::Type::Float && rt.kind != ir::Type::Ptr)
+        throw Unenc{"UNENCODED: big-endian load/store of " + rt.text + " (an aggregate or vector value in memory)"};
+    if (w != 8 * n)
+        throw Unenc{"UNENCODED: big-endian load/store of " + rt.text + " (" + std::to_string(w) + " bits in " +
+                    std::to_string(n) + " bytes)"};
+    return true;
+}
+
+bool MemTr::be_value(unsigned w) const {
+    if (!ptr_model().big || w <= 8) return false;
+    if (w % 8 != 0) throw Unenc{"UNENCODED: big-endian store of a " + std::to_string(w) + "-bit value"};
+    return true;
+}
+
 int MemTr::load(int b, int dst, const ir::Type& ty, Arg ptr, unsigned al, int line, bool check_uninit) {
     mark_memory();
     auto w = value_width(ty, "load of");
     auto n = lay_.store_size(ty);
+    const bool be = be_access(ty, w, n);
     access_checks(b, ptr, c64(n), false, al, line);
     Stmt s;
     s.kind = Stmt::Load;
+    s.be = be;
     s.dst = dst;
     s.args = {ptr};
     s.dst2 = t_.newvar("_ldu" + std::to_string(t_.fn().vars.size()), check_uninit ? 1u : static_cast<unsigned>(n));
@@ -918,10 +977,12 @@ void MemTr::store(int b, Arg ptr, Arg val, Arg init, const ir::Type& ty, unsigne
     mark_memory();
     auto w = value_width(ty, "store of");
     auto n = lay_.store_size(ty);
+    const bool be = be_access(ty, w, n);
     access_checks(b, ptr, c64(n), true, al, line);
     val.width = w;
     Stmt s;
     s.kind = Stmt::Store;
+    s.be = be;
     s.args = {ptr, val, init};
     s.tag = tag_of(ty);
     t_.push(b, s);
@@ -1321,6 +1382,7 @@ Arg MemTr::fresh_cstr(int b, MemKind k, int line) {
     Stmt st;
     st.kind = Stmt::Store;
     st.args = {ptr_add(b, p, n), Arg::c(8, 0), Arg::c(1, 1)};
+    st.be = be_value(st.args.at(1).width);
     t_.push(b, st);
     return p;
 }

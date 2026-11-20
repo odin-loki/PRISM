@@ -41,7 +41,8 @@ bool is_format_function(const std::string& callee) {
 }
 
 FormatPlan plan_format(const std::string& callee, const std::optional<std::string>& fmt,
-                       const std::vector<ir::Type>& args, const std::vector<std::optional<uint64_t>>& consts) {
+                       const std::vector<ir::Type>& args, const std::vector<std::optional<uint64_t>>& consts,
+                       const std::string& long_double, bool exact_ok) {
     FormatPlan p;
     if (!is_format_function(callee)) return p;
     p.handled = true;
@@ -196,8 +197,16 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
             case 'a':
             case 'A': {
                 bool ld = lenmod == "L";
+                if (ld && (long_double.empty() || long_double == "double")) {
+                    // long double is double on this target (or unknown): the IR type cannot tell a long double
+                    // argument from a double one, so the C type rule of %L cannot be checked
+                    p.unencoded = "UNENCODED: call @" + callee + " with a %L conversion (long double is " +
+                                  (long_double.empty() ? std::string("of unknown format") : std::string("double")) +
+                                  " on this target: the argument's C type is not visible in the IR)";
+                    return p;
+                }
                 take(ld ? "long double" : "double", conv, [&](const ir::Type& t) {
-                    return t.kind == ir::Type::Float && t.text == (ld ? "x86_fp80" : "double");
+                    return t.kind == ir::Type::Float && t.text == (ld ? long_double : std::string("double"));
                 });
                 m = (c == 'f' || c == 'F') ? (ld ? 4950 : 330) + prec : 32 + prec;
                 if (next > 0 && !(next - 1 < consts.size() && consts.at(next - 1))) {
@@ -232,7 +241,9 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
     // the symbolic value) instead of havoc bytes.
     // Session 11: any number of conversions (ints, chars, strings,
     // pointers, doubles, '*' width/precision) via __prism_fmtv.
-    if (p.buf_arg >= 0 && (float_arg >= 0 || loc_dep) && !float_star) p.exact_double_arg = float_arg >= 0 ? float_arg : 0;
+    // exact_ok: only where the __prism_fmtv model renders what the target's libc prints (x86: glibc, x87 long double)
+    if (exact_ok && p.buf_arg >= 0 && (float_arg >= 0 || loc_dep) && !float_star)
+        p.exact_double_arg = float_arg >= 0 ? float_arg : 0;
     if (p.buf_arg >= 0 && p.size_arg < 0) {
         if (!bounded && p.exact_double_arg < 0) {
             p.unencoded = "UNENCODED: " + callee + " with %s or '*' (output length not bounded by the format)";

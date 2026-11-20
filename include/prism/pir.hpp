@@ -158,6 +158,7 @@ struct Global {
 struct Module {
     std::vector<Global> globals;
     std::string datalayout;                    // target datalayout string
+    std::string triple;                        // target triple ("" when the IR has none)
     std::map<std::string, Type> types;         // named struct types ("struct.S" -> body; opaque: kind Other)
     std::vector<Function> functions;           // definitions only
     std::vector<std::string> declarations;      // declared symbol names
@@ -237,6 +238,9 @@ struct PtrModel {
     uint64_t max_obj_size;   // exclusive bound on an object's size
     uint64_t max_objects;    // ids [1, fn_obj_base) allocations, [fn_obj_base, max_objects) functions
     uint64_t fn_obj_base;
+    // Big-endian target (datalayout component "E"): multi-byte scalar loads and
+    // stores carry Stmt::be; byte-level memory (memcpy, memset, havoc) is the same.
+    bool big = false;
     uint64_t off_mask() const { return (uint64_t{1} << obj_shift) - 1; }
     uint64_t make(uint64_t obj, uint64_t off) const { return (obj << obj_shift) | (off & off_mask()); }
     uint64_t obj_of(uint64_t p) const { return p >> obj_shift; }
@@ -287,7 +291,8 @@ struct Stmt {
     // Memory statements (docs/PIR.md "Memory model"):
     //   Alloc        dst := fresh object; args [size i64]; mkind, init, align
     //   Free         args [ptr]            object ends its lifetime (checks are separate)
-    //   Load         dst := bytes at args[0] (width of dst, little endian);
+    //   Load         dst := bytes at args[0] (width of dst, little endian;
+    //                big endian when `be`);
     //                dst2 := i1: some loaded byte is uninitialised, or iN
     //                (N = bytes): bit k = byte k uninitialised (raw copies);
     //                dst3 (i1) := effective-type mismatch (strict aliasing)
@@ -329,6 +334,9 @@ struct Stmt {
     int init = 0;              // Alloc: 0 uninitialised, 1 zero-filled, 2 initialised with arbitrary bytes
     unsigned align = 1;        // Alloc: base alignment
     unsigned tag = 0;          // Load/Store: effective-type tag (strict aliasing), 0 = untyped
+    // Load/Store of a multi-byte scalar on a big-endian target (PtrModel::big): the value's most significant
+    // byte is at the lowest address. The shadows and the per-byte init mask stay in address order (bit k = byte k).
+    bool be = false;
     int dst2 = -1, dst3 = -1;  // Load shadows
     bool ptr_arith = false;    // Assign add/copy/select: result stays in args[0]'s object (checked)
 };
@@ -594,8 +602,23 @@ PRISM_API void mine_field_stores(const ir::Module& m, const std::string& unit, s
 // Reads an --ops-table file (format in docs/PIR.md). On failure returns {} and sets error.
 PRISM_API std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error);
 
-// LP64 unless the module's datalayout has 32-bit pointers (ILP32).
+// LP64 unless the module's datalayout has 32-bit pointers (ILP32); `big` from
+// the datalayout's "E" component.
 PRISM_API PtrModel ptr_model_of(const ir::Module& m);
+// Target of a lowered module (docs/PIR.md "Targets"): the triple's architecture
+// ("x86_64", "armv7", "mips", ...; "" when the IR has no triple, which PIR
+// reads as the host's x86-64), and why PIR cannot check the module ("" when it
+// can: 32- or 64-bit integral pointers in address space 0).
+PRISM_API std::string target_arch(const ir::Module& m);
+PRISM_API std::string target_unsupported(const ir::Module& m);
+// x86-64 (or no triple): the x86-64 inline-asm semantics, the %gs `current`
+// read and the exact printf model apply only there.
+PRISM_API bool target_x86_64(const ir::Module& m);
+// i386 or x86-64 (or no triple): lli on this host runs the IR (translation validation).
+PRISM_API bool target_x86(const ir::Module& m);
+// The IR type of C `long double` on the module's target ("x86_fp80", "fp128",
+// "ppc_fp128", "double"; "" when unknown).
+PRISM_API std::string target_long_double(const ir::Module& m);
 PRISM_API Translation translate(const ir::Module& m, const ir::Function& f,
                                 const TranslateOptions& opt = {});
 PRISM_API std::string to_text(const Function& fn);
@@ -860,6 +883,9 @@ struct ModelLibrary {
 };
 // Lower the embedded models with the same clang/opt pipeline (once per run).
 PRISM_API ModelLibrary build_models(const Frontend& fe, double timeout_s);
+// The same, lowered for `triple` ("" = the run's frontend target): the models
+// of a unit compiled for its own target (--compile-commands --target=...).
+PRISM_API ModelLibrary build_models(const Frontend& fe, double timeout_s, const std::string& triple);
 // Link into m every model function m declares but does not define
 // (transitively, with the globals they use). Returns the linked names.
 // kernel_api "linux" / "freebsd" also links the kernel API specs of that kernel

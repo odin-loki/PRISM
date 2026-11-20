@@ -51,7 +51,10 @@ public:
 
 private:
     const ir::Module& m_;
-    std::map<unsigned, unsigned> int_align_;  // bits -> bytes
+    std::map<unsigned, unsigned> int_align_;    // bits -> bytes
+    std::map<unsigned, unsigned> float_align_;  // bits -> bytes (f specs)
+    std::map<unsigned, unsigned> vec_align_;    // bits -> bytes (v specs)
+    unsigned agg_align_ = 1;                    // a spec: least alignment of a (non-packed) struct
     unsigned ptr_bytes_ = 8, ptr_align_ = 8;
 };
 
@@ -211,6 +214,11 @@ private:
     // counted up to `cap`.
     uint64_t init_stores(const ir::Type& ty, const ir::Value& v, uint64_t cap) const;
     void mark_memory() { t_.fn().uses_memory = true; }
+    // big-endian target: whether a load/store of `ty` (w bits in n bytes) is Stmt::be; throws
+    // Unenc for what PIR cannot store in big-endian order (aggregate values, iN with N % 8 != 0)
+    bool be_access(const ir::Type& ty, unsigned w, uint64_t n) const;
+    // the same for a store PIR makes itself (initialisers, harness pointers) of a w-bit scalar
+    bool be_value(unsigned w) const;
     unsigned tag_of(const ir::Type& ty) const;
 };
 
@@ -232,7 +240,10 @@ struct FormatPlan {
 // max_len instead of the type's maximum (`sprintf(v, "%i.%i", 1, 7)` writes 3 characters).
 PRISM_API FormatPlan plan_format(const std::string& callee, const std::optional<std::string>& fmt,
                                  const std::vector<ir::Type>& args,
-                                 const std::vector<std::optional<uint64_t>>& consts = {});
+                                 const std::vector<std::optional<uint64_t>>& consts = {},
+                                 // the target's C long double IR type (pir.hpp target_long_double; "" unknown), and
+                                 // whether the exact __prism_fmtv route may be used (x86 targets only)
+                                 const std::string& long_double = "x86_fp80", bool exact_ok = true);
 PRISM_API bool is_format_function(const std::string& callee);
 
 }  // namespace prism::pir::pirmem

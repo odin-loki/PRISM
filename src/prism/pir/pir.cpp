@@ -19,18 +19,80 @@ thread_local PtrModel g_ptr_model = kLP64;
 const PtrModel& ptr_model() { return g_ptr_model; }
 PtrModelScope::PtrModelScope(const PtrModel& m) : prev_(g_ptr_model) { g_ptr_model = m; }
 PtrModelScope::~PtrModelScope() { g_ptr_model = prev_; }
-PtrModel ptr_model_of(const ir::Module& m) {
-    // datalayout pointer spec "p:32:32" / "p0:32:32..." (default LP64)
-    const std::string& dl = m.datalayout;
+namespace {
+std::vector<std::string> dl_specs(const std::string& dl) {
+    std::vector<std::string> out;
     std::size_t pos = 0;
-    while (pos <= dl.size()) {
+    while (pos < dl.size()) {
         auto e = dl.find('-', pos);
         if (e == std::string::npos) e = dl.size();
-        std::string spec = dl.substr(pos, e - pos);
+        out.push_back(dl.substr(pos, e - pos));
         pos = e + 1;
-        if (spec.starts_with("p:32") || spec.starts_with("p0:32")) return kILP32;
     }
-    return kLP64;
+    return out;
+}
+// address-space-0 pointer size in bits from the datalayout (LLVM default 64)
+unsigned dl_ptr_bits(const std::string& dl) {
+    for (auto& spec : dl_specs(dl)) {
+        std::string_view v;
+        if (spec.starts_with("p:")) v = std::string_view(spec).substr(2);
+        else if (spec.starts_with("p0:")) v = std::string_view(spec).substr(3);
+        else continue;
+        unsigned bits = 0;
+        for (char c : v) {
+            if (c < '0' || c > '9') break;
+            bits = bits * 10 + static_cast<unsigned>(c - '0');
+        }
+        return bits;
+    }
+    return 64;
+}
+}  // namespace
+
+PtrModel ptr_model_of(const ir::Module& m) {
+    // datalayout pointer spec "p:32:32" / "p0:32:32..." (default LP64); "E": big endian
+    PtrModel r = dl_ptr_bits(m.datalayout) == 32 ? kILP32 : kLP64;
+    for (auto& spec : dl_specs(m.datalayout))
+        if (spec == "E") r.big = true;
+    return r;
+}
+
+std::string target_arch(const ir::Module& m) { return m.triple.substr(0, m.triple.find('-')); }
+
+bool target_x86_64(const ir::Module& m) {
+    const auto a = target_arch(m);
+    return a.empty() || a == "x86_64" || a == "amd64";
+}
+
+bool target_x86(const ir::Module& m) {
+    const auto a = target_arch(m);
+    return target_x86_64(m) || a == "i386" || a == "i486" || a == "i586" || a == "i686";
+}
+
+std::string target_unsupported(const ir::Module& m) {
+    const unsigned pb = dl_ptr_bits(m.datalayout);
+    if (pb != 32 && pb != 64)
+        return std::to_string(pb) + "-bit pointers (datalayout \"" + m.datalayout +
+               "\"): PIR's pointer model has 32- and 64-bit pointers only";
+    for (auto& spec : dl_specs(m.datalayout))
+        if (spec.starts_with("ni:"))
+            return "non-integral pointer address spaces (datalayout \"" + m.datalayout + "\") are not modelled";
+    return {};
+}
+
+std::string target_long_double(const ir::Module& m) {
+    const auto a = target_arch(m);
+    const auto& t = m.triple;
+    if (target_x86(m) || a == "m68k") return "x86_fp80";
+    if (a == "aarch64" || a == "aarch64_be" || a == "arm64" || a == "riscv64" || a == "riscv32" || a == "s390x" ||
+        a == "loongarch64" || a == "sparcv9" || a == "sparc64" || a == "mips64" || a == "mips64el")
+        return "fp128";
+    if (a == "powerpc" || a == "powerpc64" || a == "powerpc64le" || a == "ppc" || a == "ppc64" || a == "ppc64le")
+        return t.find("musl") != std::string::npos ? "double" : "ppc_fp128";
+    if (a.starts_with("arm") || a.starts_with("thumb") || a == "mips" || a == "mipsel" || a == "hexagon" ||
+        a == "loongarch32")
+        return "double";
+    return {};
 }
 
 using prism::i128;
@@ -175,8 +237,8 @@ std::string mem_stmt_text(const Function& fn, const Stmt& s) {
         case Stmt::Free: return "free " + args;
         case Stmt::Load:
             return var_text(fn, s.dst) + ", " + var_text(fn, s.dst2) + ", " + var_text(fn, s.dst3) + " = load " + args +
-                   (s.tag ? " tag " + std::to_string(s.tag) : "");
-        case Stmt::Store: return "store " + args + (s.tag ? " tag " + std::to_string(s.tag) : "");
+                   (s.tag ? " tag " + std::to_string(s.tag) : "") + (s.be ? " be" : "");
+        case Stmt::Store: return "store " + args + (s.tag ? " tag " + std::to_string(s.tag) : "") + (s.be ? " be" : "");
         case Stmt::MemCpy: return "memcpy " + args;
         case Stmt::MemSet: return "memset " + args;
         case Stmt::StackSave: return var_text(fn, s.dst) + " = stacksave";
@@ -583,7 +645,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                         bool uninit = false, t = tainted(s.args.at(0)) || mem_taint, tagbad = false;
                         for (unsigned k = 0; k < n; ++k) {
                             auto c = M.read(A(0) + k);
-                            v |= static_cast<uint64_t>(c.val) << (8 * k);
+                            v |= static_cast<uint64_t>(c.val) << (8 * (s.be ? n - 1 - k : k));
                             if (!c.init) umask |= uint64_t{1} << k;
                             uninit = uninit || !c.init;
                             t = t || c.taint;
@@ -603,7 +665,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
                         if (tainted(s.args.at(0))) mem_taint = true;
                         const bool per_byte = s.args.at(2).width > 1;
                         for (unsigned k = 0; k < n; ++k)
-                            M.write(A(0) + k, mem::ConcMem::Cell{static_cast<uint8_t>(v >> (8 * k)),
+                            M.write(A(0) + k, mem::ConcMem::Cell{static_cast<uint8_t>(v >> (8 * (s.be ? n - 1 - k : k))),
                                                                  ((A(2) >> (per_byte ? k : 0)) & 1) != 0,
                                                                  static_cast<uint8_t>(s.tag), t});
                         break;

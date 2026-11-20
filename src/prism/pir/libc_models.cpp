@@ -186,11 +186,11 @@ fs::path model_cache_root() {
 
 // One model file through clang -> opt; "" on success, else why not.
 std::string lower_model(const Frontend& fe, const fs::path& dir, const std::string& name, double timeout_s,
-                        std::string& ll) {
+                        std::string& ll, const std::vector<std::string>& target_flags) {
     auto src = dir / ("prism_model_" + name);
     auto o0 = dir / (name + ".o0.ll"), o1 = dir / (name + ".ll");
     std::vector<std::string> argv{fe.clang->string(), "-S"};
-    for (auto& t : frontend_target_flags()) argv.push_back(t);
+    for (auto& t : target_flags) argv.push_back(t);
     argv.insert(argv.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-builtin", "-ffreestanding",
                              "-fno-discard-value-names", "-gline-tables-only", "-std=c++23", "-w", "-o", o0.string(),
                              src.string()});
@@ -253,19 +253,27 @@ bool try_load_model_cache(const fs::path& cache, std::vector<std::pair<std::stri
 // runs on a loaded machine) do not lower the models again. A clang/opt that
 // times out is retried once with twice the time; if the models still cannot
 // be built, lib.error says why and the pir stage records it (never silent).
-ModelLibrary build_models(const Frontend& fe, double timeout_s) {
+ModelLibrary build_models(const Frontend& fe, double timeout_s) { return build_models(fe, timeout_s, ""); }
+
+// triple: "" = the run's frontend target (frontend_target_flags); else the
+// models are lowered with --target=<triple> (a unit lowered for its own
+// target, docs/PIR.md "Targets"), cached under their own key.
+ModelLibrary build_models(const Frontend& fe, double timeout_s, const std::string& triple) {
     ModelLibrary lib;
     if (!fe.clang || !fe.opt) {
         lib.error = "clang/opt not found";
         return lib;
     }
+    const std::vector<std::string> tflags =
+        triple.empty() ? frontend_target_flags() : std::vector<std::string>{"--target=" + triple};
 #ifdef _WIN32
     std::string key_text = "prism-pir-models-v5\n" + fe.version + "\n" + fe.clang->string() + "\n" +
                            fe.opt->string() + "\n" + lp64_target_triple() + "\n";
 #else
     std::string key_text = "prism-pir-models-v5\n" + fe.version + "\n" + fe.clang->string() + "\n" + fe.opt->string();
 #endif
-    if (frontend_ilp32()) key_text += std::string("\n") + ilp32_target_triple() + "\n";
+    if (!triple.empty()) key_text += "\ntarget " + triple + "\n";
+    else if (frontend_ilp32()) key_text += std::string("\n") + ilp32_target_triple() + "\n";
     for (auto& [name, text] : model_sources())
         if (!name.starts_with("cxx/")) key_text += "\n--" + name + "\n" + text;
     std::error_code ec;
@@ -309,9 +317,9 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
         for (auto& [name, text] : model_sources()) {
             if (!is_lowered_libc_model(name)) continue;
             std::string ll;
-            auto err = lower_model(fe, dir, name, timeout_s, ll);
+            auto err = lower_model(fe, dir, name, timeout_s, ll, tflags);
             if (!err.empty() && err.find("timed out") != std::string::npos)
-                err = lower_model(fe, dir, name, 2 * timeout_s, ll);  // a loaded machine: once more
+                err = lower_model(fe, dir, name, 2 * timeout_s, ll, tflags);  // a loaded machine: once more
             if (!err.empty()) {
                 lib.error = err;
                 break;

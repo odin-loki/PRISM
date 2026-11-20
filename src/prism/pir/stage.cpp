@@ -808,12 +808,20 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semant
         fs::path q(p);
         return (q.is_relative() ? e.directory / q : q).lexically_normal().string();
     };
-    auto lp64_target = [](std::string_view t) {
-        const auto arch = t.substr(0, t.find('-'));
-        for (std::string_view a : {"x86_64", "aarch64", "arm64", "riscv64", "powerpc64", "powerpc64le", "ppc64",
-                                   "ppc64le", "s390x", "loongarch64", "mips64"})
-            if (arch == a) return true;
-        return false;
+    // The unit's target (docs/PIR.md "Targets"): its --target (or -target T) and,
+    // for a target other than x86-64, the flags that change that target's ABI,
+    // byte order or instruction set (`--target=mipsel-linux-gnu -mabi=64 -EB`
+    // is big-endian mips64). -m32 / -m16 / -mx32 always: they switch x86-64 to
+    // a 32-bit target. PIR takes pointer width, byte order and layout from the
+    // IR this produces (pir.hpp ptr_model_of, Layout).
+    std::string target;
+    std::vector<std::string> abi;
+    auto abi_flag = [](const std::string& x) {
+        static const std::set<std::string> exact{"-EB", "-EL", "-mbig-endian", "-mlittle-endian", "-mthumb", "-marm",
+                                                 "-msoft-float", "-mhard-float", "-m31", "-mlong-double-64",
+                                                 "-mlong-double-80", "-mlong-double-128"};
+        return exact.count(x) || x.starts_with("-mabi=") || x.starts_with("-march=") || x.starts_with("-mcpu=") ||
+               x.starts_with("-mfloat-abi=") || x.starts_with("-mfpu=");
     };
     static const std::set<std::string> kExact{
         "-nostdinc", "-ffreestanding", "-fshort-wchar", "-funsigned-char", "-fsigned-char", "-fno-common",
@@ -849,8 +857,13 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semant
                 std_taken = x;
             }
         } else if (x.starts_with("--target=")) {
-            if (lp64_target(std::string_view(x).substr(9))) out.flags.push_back(x);
-            else dropped.push_back(x + " (not an LP64 target: PIR's memory model assumes LP64)");
+            target = x.substr(9);
+        } else if (x == "-target" && has_next) {
+            target = a[++i];
+        } else if (x == "-m32" || x == "-m16" || x == "-mx32") {
+            out.flags.push_back(x);
+        } else if (abi_flag(x)) {
+            abi.push_back(x);
         } else if (kExact.count(x) || x.starts_with("-fno-builtin-") || x.starts_with("-fstrict-flex-arrays=")) {
             out.flags.push_back(x);
         } else if (x == "-w" || x.starts_with("-W")) {
@@ -864,8 +877,19 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semant
             dropped.push_back(x);
         }
     }
+    bool other_target = false;
+    if (!target.empty()) {
+        out.flags.push_back("--target=" + target);
+        const std::string arch = target.substr(0, target.find('-'));
+        other_target = arch != "x86_64" && arch != "amd64";
+        if (other_target) out.flags.insert(out.flags.end(), abi.begin(), abi.end());
+    }
     if (pre) out.main_file = e.file;
     out.note = "compile_commands.json entry " + e.file.string();
+    if (other_target) {
+        out.note += "; target --target=" + target;
+        for (auto& f : abi) out.note += " " + f;
+    }
     if (!std_taken.empty()) out.note += "; " + std_taken;
     if (pre) out.note += "; preprocessed unit: only language and ABI flags taken";
     if (out.wrapv)
@@ -2078,6 +2102,14 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
     };
     std::vector<Case> cases;
     std::vector<std::size_t> todo;
+    // lli runs the IR on this (x86) host: a unit lowered for another target is not run (its datalayout, byte order
+    // and calling convention are not the host's)
+    ir::Module tmod;
+    if (auto tp = ir.find("\ntarget triple = \""); tp != std::string::npos) {
+        tp += 18;
+        tmod.triple = ir.substr(tp, ir.find('"', tp) - tp);
+    }
+    const bool host_target = target_x86(tmod);
     for (std::size_t i = 0; i < recs.size(); ++i) {
         auto& r = recs.at(i);
         if (!r.fn) continue;
@@ -2085,6 +2117,10 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
         if (!(st == laws::FAILED || st == laws::PROVED || st == laws::PROVED_CERTIFIED ||
               st == laws::PROVED_UNBOUNDED || st == laws::BOUNDED || st == laws::PROVED_ASSUMING))
             continue;
+        if (!host_target) {
+            r.f.extra["tv"] = "NOTRUN (target " + tmod.triple + " is not the host's: lli cannot run its IR here)";
+            continue;
+        }
         if (!cfg.allow_exec) {
             r.f.extra["tv"] = "NOTRUN (needs --allow-exec)";
             r.f.extra["exec"] = std::string(laws::NOTRUN);
@@ -3082,8 +3118,47 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
     }
 }
 
+// Library models per target (docs/PIR.md "Targets"): the run's own, lowered
+// once before the units, and for a unit compiled for another target (its
+// --compile-commands --target and ABI flags) the models lowered for that
+// unit's triple, once per triple and datalayout. Models whose datalayout is
+// not the unit's are never linked (their size_t, long and pointers would not
+// be the unit's): the library calls stay UNENCODED and the rows say why.
+class TargetModels {
+public:
+    TargetModels(const Frontend& fe, double timeout_s, ModelLibrary base)
+        : fe_(fe), timeout_s_(timeout_s), base_(std::move(base)) {}
+    const ModelLibrary& base() const { return base_; }
+    const ModelLibrary& for_module(const ir::Module& m) {
+        if (base_.units.empty() || m.triple.empty() ||
+            (base_.units.front().triple == m.triple && base_.units.front().datalayout == m.datalayout))
+            return base_;
+        std::lock_guard<std::mutex> lock(mu_);
+        auto& slot = by_target_[m.triple + "\n" + m.datalayout];
+        if (!slot) {
+            slot = std::make_unique<ModelLibrary>(build_models(fe_, timeout_s_, m.triple));
+            for (const auto& mu : slot->units)
+                if (slot->error.empty() && mu.datalayout != m.datalayout)
+                    slot->error = "the models lowered for " + m.triple + " have datalayout \"" + mu.datalayout +
+                                  "\", the unit \"" + m.datalayout + "\" (ABI flags the triple does not carry)";
+            if (!slot->error.empty()) {
+                slot->units.clear();
+                slot->unit_names.clear();
+            }
+        }
+        return *slot;
+    }
+
+private:
+    const Frontend& fe_;
+    double timeout_s_;
+    ModelLibrary base_;
+    std::mutex mu_;
+    std::map<std::string, std::unique_ptr<ModelLibrary>> by_target_;
+};
+
 Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
-                  const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
+                  TargetModels& tmodels, const std::shared_ptr<HoudiniBudget>& budget) {
     Analyzed res;
     auto& out = res.out;
     auto& recs = res.recs;
@@ -3125,27 +3200,20 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     res.mod = std::make_unique<ir::Module>(cfg.pir_kernel_api.empty() ? ir::parse_module(*ir)
                                                                        : ir::parse_module_kernel(*ir));
     auto& mod = *res.mod;
-    // A big-endian target (datalayout component "E": s390x, sparc64, big-endian powerpc64 / mips64): PIR's memory model
-    // assembles a multi-byte load little-endian (docs/PIR.md "Memory model"), so a byte-level view of a wider value
-    // (unions, casts, memcpy into a struct) would be the wrong value. Not checked rather than checked wrongly (Law 7).
-    {
-        bool big = false;
-        std::string comp;
-        for (char ch : mod.datalayout + "-") {
-            if (ch == '-') { big = big || comp == "E"; comp.clear(); }
-            else comp += ch;
-        }
-        if (big) {
-            auto f = base_finding(u);
-            f.status = std::string(laws::NOTRUN);
-            f.strength = std::string(laws::STRENGTH_SOME);
-            f.message = "big-endian target (datalayout \"" + mod.datalayout +
-                        "\"): PIR's memory model is little-endian; not checked";
-            f.extra["frontend"] = fe.version;
-            out.push_back(std::move(f));
-            return res;
-        }
+    // The unit's own target (docs/PIR.md "Targets"): pointer width, byte order
+    // and layout come from the IR's datalayout and triple. A target PIR cannot
+    // model is not checked rather than checked as another one (Law 7).
+    if (auto why = target_unsupported(mod); !why.empty()) {
+        auto f = base_finding(u);
+        f.status = std::string(laws::NOTRUN);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.message = "target " + (mod.triple.empty() ? std::string("(no triple)") : mod.triple) + ": " + why + "; not checked";
+        f.extra["frontend"] = fe.version;
+        f.extra["target"] = mod.triple;
+        out.push_back(std::move(f));
+        return res;
     }
+    const ModelLibrary& models = tmodels.for_module(mod);
     // library operational models for what the unit declares (docs/PIR.md "Library models")
     link_models(mod, models, cfg.pir_kernel_api);
     TranslateOptions topt;
@@ -3262,7 +3330,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
             f.extra["lean_supported"] = lc.supported ? "yes" : "no";
             if (!lc.supported) f.extra["lean_reason"] = lc.reason;
         }
-        if (!tr.fn || tr.fn->ptr.w == 64) export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);  // Lean: LP64 only
+        if (!tr.fn || (tr.fn->ptr.w == 64 && !tr.fn->ptr.big))
+            export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);  // Lean: LP64 little-endian only
         for (int k : tr.folded_used) used_folded.insert(k);
         if (export_only) {
             // `prism-qa pir-lean-check` needs the translation, not the model
@@ -3587,7 +3656,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
     // library models: lowered once per run (process phase) and cached across
     // runs; their own time limit, well above the per-unit one: they are
     // PRISM's code, and every library call of every unit depends on them
-    auto models = build_models(fe, std::max(120.0, 4 * cfg.timeout));
+    TargetModels tmodels(fe, std::max(120.0, 4 * cfg.timeout), build_models(fe, std::max(120.0, 4 * cfg.timeout)));
+    const ModelLibrary& models = tmodels.base();
     // C++ library model headers (docs/PIR.md "C++ library models"): written
     // once per run; without them C++ units use the platform library, and
     // every C++ function says which one it was checked against.
@@ -3633,6 +3703,17 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
             for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
         if (!low.at(i).cc_note.empty())
             for (auto& f : per.at(i)) f.extra["front_end_flags"] = low.at(i).cc_note;
+        if (low.at(i).ir) {
+            // a unit lowered for a target other than x86-64 says which (JSONL "target")
+            ir::Module tm;
+            const auto& t = *low.at(i).ir;
+            if (auto tp = t.find("\ntarget triple = \""); tp != std::string::npos) {
+                tp += 18;
+                tm.triple = t.substr(tp, t.find('"', tp) - tp);
+            }
+            if (!target_x86_64(tm))
+                for (auto& f : per.at(i)) f.extra["target"] = tm.triple;
+        }
         low.at(i).ir.reset();
         a = Analyzed{};
     };
@@ -3730,7 +3811,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
         try {
             const prism::clock::Stopwatch t0;
             progress_note("start", u.path, 0.0);
-            an.at(i) = run_unit(u, fe, cfg, low.at(i), models, budget);
+            an.at(i) = run_unit(u, fe, cfg, low.at(i), tmodels, budget);
             progress_note("done", u.path, t0.elapsed_s());
         } catch (const std::exception& ex) {
             auto f = base_finding(u);

@@ -849,6 +849,7 @@ if(PRISM_TESTS)
     tests/cpp/test_pir_harness.cpp
     tests/cpp/test_pir_harness2.cpp
     tests/cpp/test_pir_header_fns.cpp
+    tests/cpp/test_pir_targets.cpp
     tests/cpp/test_ai_assist.cpp
     tests/cpp/test_triage_status.cpp
     tests/cpp/test_pbsd.cpp

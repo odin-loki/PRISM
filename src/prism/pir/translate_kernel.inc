@@ -87,7 +87,8 @@ void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std:
     if (mem_clobber) mt.havoc_all(cur);
     // --pir-kernel-current: a %gs read of the running thread (Linux current_task / pcpu_hot, FreeBSD pc_curthread at 0)
     bool current_read = false;
-    if (opt.kernel_current && in.asm_text.find("%gs:") != std::string::npos && n_direct == 1 && written.empty() && !in.result.empty()) {
+    if (opt.kernel_current && target_x86_64(m) && in.asm_text.find("%gs:") != std::string::npos && n_direct == 1 &&
+        written.empty() && !in.result.empty()) {
         for (auto& o : in.ops) {
             if (o.v.kind == ir::Value::Global &&
                 (o.v.name == "current_task" || o.v.name == "const_current_task" || o.v.name == "pcpu_hot"))

@@ -1091,7 +1091,27 @@ std::optional<z3::expr> SymMem::word_split(uint64_t a, unsigned n, std::size_t u
     return w;
 }
 
-SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
+z3::expr SymMem::bswap(const z3::expr& e, int depth) {
+    const unsigned w = e.get_sort().bv_size();
+    if (w <= 8) return e;
+    if (auto it = bswap_src_.find(e.id()); it != bswap_src_.end()) return it->second;
+    uint64_t k = 0;
+    if (w <= 64 && e.is_numeral() && e.is_numeral_u64(k)) {
+        uint64_t r = 0;
+        for (unsigned i = 0; i < w / 8; ++i) r |= ((k >> (8 * i)) & 0xff) << (8 * (w / 8 - 1 - i));
+        return bv(r, w);
+    }
+    if (depth < 16 && e.is_app() && e.decl().decl_kind() == Z3_OP_ITE)
+        return z3::ite(e.arg(0), bswap(e.arg(1), depth + 1), bswap(e.arg(2), depth + 1));
+    z3::expr r = e.extract(7, 0);
+    for (unsigned i = 1; i < w / 8; ++i) r = z3::concat(r, e.extract(8 * i + 7, 8 * i));
+    bswap_keep_.push_back(e);
+    bswap_keep_.push_back(r);
+    bswap_src_.emplace(r.id(), e);
+    return r;
+}
+
+SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag, bool be) {
     static const bool tr_on = prism::settings::mem_trace().is_set();
     uint64_t tr_r = tr_on ? membudget::rss_mb() : 0;
     auto tr = [&](const char* what) {
@@ -1116,6 +1136,7 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
             if (ws.size() == av->size()) {
                 z3::expr r = ws.back();
                 for (std::size_t i = ws.size() - 1; i-- > 0;) r = z3::ite(av->at(i).guard, ws.at(i), r);
+                if (be) r = bswap(r);
                 if (8 * n > width) r = r.extract(width - 1, 0);
                 word = r;
             }
@@ -1144,7 +1165,7 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
             tagbad = tagbad || (t != bv(0, 4) && t != bv(tag, 4));
         }
     }
-    auto v = *val;
+    auto v = be ? bswap(*val) : *val;
     if (8 * n > width) v = v.extract(width - 1, 0);
     if (word) {
         v = *word;
@@ -1156,7 +1177,7 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
     return Loaded{v, z3::ite(uninit, bv(1, 1), bv(0, 1)), z3::ite(tagbad, bv(1, 1), bv(0, 1)), *mask};
 }
 
-SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned width) {
+SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned width, bool be) {
     unsigned n = (width + 7) / 8;
     std::optional<z3::expr> val;
     z3::expr uninit = c_.bool_val(false);
@@ -1168,18 +1189,19 @@ SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned w
         else val = z3::concat(byte, *val);
         uninit = uninit || cell.extract(kCellInit, kCellInit) == bv(0, 1);
     }
-    auto v = *val;
+    auto v = be ? bswap(*val) : *val;
     if (8 * n > width) v = v.extract(width - 1, 0);
     auto one = z3::ite(uninit, bv(1, 1), bv(0, 1));
     return Loaded{v, one, bv(0, 1), one};
 }
 
 void SymMem::store(const z3::expr& guard, const z3::expr& ptr, const z3::expr& val, unsigned width,
-                   const z3::expr& init, unsigned tag) {
+                   const z3::expr& init, unsigned tag, bool be) {
     materialize_vs(ptr);
     unsigned n = (width + 7) / 8;
     auto ko = known(ptr);
     auto wide = 8 * n > width ? z3::zext(val, 8 * n - width) : val;
+    if (be) wide = bswap(wide);  // address order: the most significant byte first
     // init: one bit for all bytes, or one bit per byte
     auto init_k = [&](unsigned k) { return init.get_sort().bv_size() == 1 ? init : init.extract(k, k); };
     if (enc_ == MemEncoding::Array) {

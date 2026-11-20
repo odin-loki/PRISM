@@ -1,7 +1,7 @@
 // --pir-header-fns (docs/PIR.md "Header functions"): a stub unit that includes a header gets the header functions
 // PRISM_PIR_ONLY names checked in it; other header code stays skipped. Folded UB in a header function keeps it from a
 // proof, and the unit's own folded-UB diagnostics are never placed in a header function that has an instruction on the
-// same line number. A big-endian target is not checked.
+// same line number. A big-endian target is checked as big-endian (test_pir_targets.cpp).
 #include <doctest/doctest.h>
 #ifdef ERROR
 #  undef ERROR
@@ -151,28 +151,26 @@ TEST_CASE("pir header fns: folded UB in a header function is never a proof; the 
                   (n.fn["unit_fold"].status + ": " + n.fn["unit_fold"].message));
 }
 
-TEST_CASE("pir: a big-endian target is not checked") {
+TEST_CASE("pir: a big-endian target is checked as big-endian (no longer NOTRUN)") {
     if (skip_without_frontend()) return;
-    write("be.c", "int be_fn(int x) { return x; }\n");
+    write("be.c", "int be_fn(int x) { return x; }
+");
     write("be_cc.json", "[{\"directory\": \"" + kDir.generic_string() + "\", \"file\": \"" + (kDir / "be.c").generic_string() +
                             "\", \"arguments\": [\"clang\", \"--target=s390x-linux-gnu\", \"-c\", \"" +
                             (kDir / "be.c").generic_string() + "\"]}]");
     auto cfg = prism::default_config();
     cfg.compile_commands = kDir / "be_cc.json";
     auto g = run("be.c", false, "", cfg);
-    bool notrun = false;
     std::string msgs;
-    for (auto& f : g.unit) {
-        msgs += f.status + ": " + f.message + "\n";
-        if (f.status == L::NOTRUN && f.message.find("big-endian") != std::string::npos) notrun = true;
-    }
-    if (!notrun && msgs.find("big-endian") == std::string::npos && g.fn.empty() && !g.unit.empty() &&
-        g.unit.front().message.find("front end") != std::string::npos) {
+    for (auto& f : g.unit) msgs += f.status + ": " + f.message + "
+";
+    if (g.fn.empty() && msgs.find("does not compile") != std::string::npos) {
         MESSAGE(("clang has no s390x target here: " + msgs));
         return;
     }
-    CHECK_MESSAGE(notrun, msgs);
-    CHECK_FALSE(g.fn.contains("be_fn"));
+    REQUIRE_MESSAGE(g.fn.contains("be_fn"), msgs);
+    CHECK_MESSAGE(g.fn["be_fn"].status == L::PROVED, g.fn["be_fn"].status + ": " + g.fn["be_fn"].message);
+    CHECK(extra(g.fn["be_fn"], "target").starts_with("s390x"));
     fs::remove_all(kDir);
 }
 

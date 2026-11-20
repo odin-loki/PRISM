@@ -2533,7 +2533,7 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     // Int: two's complement bits; Fp: IEEE bits (libc_format.cpp tells them apart by the IR type)
     for (auto& o : in.ops)
         lits.push_back(o.v.kind == ir::Value::Int || o.v.kind == ir::Value::Fp ? std::optional<uint64_t>(o.v.bits) : std::nullopt);
-    auto plan = pirmem::plan_format(n, fmt, tys, lits);
+    auto plan = pirmem::plan_format(n, fmt, tys, lits, target_long_double(m), target_x86(m));
     if (!plan.handled) return false;
     if (!plan.unencoded.empty()) throw Unenc{plan.unencoded};
     std::vector<Arg> args;

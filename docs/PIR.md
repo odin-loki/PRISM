@@ -64,8 +64,11 @@ changing only the language level and ABI flags, never a check:
    `compile_commands.json` (`arguments` or `command`; the command text is split
    by PRISM, no shell runs). Taken: `-I -isystem -iquote -idirafter -include`
    (relative paths against the entry's `directory`), `-D`, `-U`, the C `-std=`
-   (the C++ year for C++ units), `--target=` (LP64 targets only: the memory
-   model assumes LP64), `-nostdinc`, `-ffreestanding`, `-fshort-wchar`,
+   (the C++ year for C++ units), `--target=` / `-target T` (any target; see
+   "Targets" below; for a target other than x86-64 also its ABI flags `-mabi=`
+   `-EB` `-EL` `-mbig-endian` `-mlittle-endian` `-march=` `-mcpu=` `-mthumb`
+   `-marm` `-mfloat-abi=` `-mfpu=` `-msoft-float` `-mhard-float` `-m31`
+   `-mlong-double-N`; `-m32` / `-m16` / `-mx32` always), `-nostdinc`, `-ffreestanding`, `-fshort-wchar`,
    `-funsigned-char`, `-fsigned-char`, `-fno-common`, `-fms-extensions`,
    `-fplan9-extensions`, `-fno-builtin[-*]`, `-fstrict-flex-arrays=N`,
    `-mno-sse/-mno-sse2/-mno-mmx/-mno-3dnow/-mno-avx/-mno-sse4a/-mno-80387`,
@@ -583,9 +586,73 @@ line is the header's. Every other function keeps the rule above.
 - The harness discharge does not apply: the row stands for the header
   function in every unit that includes it, and other units call it too.
 
-A big-endian target (datalayout component `E`) is not checked at all: the
-memory model assembles multi-byte values little-endian. The unit gets one
-`NOTRUN` row that says so.
+A big-endian target is checked as big-endian (section "Targets").
+
+## Targets
+
+A unit is checked for the target it is built for. With `--compile-commands`,
+the entry's `--target` (and, for a target other than x86-64, the flags that
+change its ABI, byte order or instruction set) is kept, so clang lowers the
+unit as the build did: `--target=mipsel-linux-gnu -mabi=64 -EB` (the Linux
+kfrag form) is big-endian mips64 n64, not little-endian mips32. Before this,
+every target that was not LP64 was dropped and the unit lowered as x86-64.
+Everything below is taken from the IR, never assumed:
+
+- **Pointers, `long`, `size_t`.** The datalayout's address-space-0 pointer
+  size picks the pointer model (`PtrModel`, pir.hpp): 64 bits LP64, 32 bits
+  ILP32 (object id in bits 31..22, offset in bits 21..0: an object of 2 MiB or
+  more, or more than 1023 objects, is UNKNOWN, never a proof). `long` and every
+  other integer have the widths the IR gives them. Any other pointer size (avr,
+  msp430: 16 bits) or a datalayout with non-integral address spaces is `NOTRUN`
+  for the unit with the reason ("target ...: 16-bit pointers ...; not checked").
+- **Layout.** `Layout` (translate_mem.cpp) reads the `i`, `f`, `v`, `p` and `a`
+  specs of the datalayout and uses LLVM's defaults where the string is silent
+  (i64 ABI alignment 4, no i128 entry, f64 8, f128 16, others by natural size),
+  as clang's code generator laid the IR out: m68k aligns `int` and `long long`
+  to 2 and 4, i386 aligns `double` and `long double` to 4 (`f64:32 f80:32`,
+  `long double` is 12 bytes). IR without a datalayout (hand-written) keeps the
+  x86-64 layout.
+- **Byte order.** A datalayout with `E` (s390x, sparc, big-endian powerpc,
+  mips, m68k, `-mbig-endian` arm) sets `PtrModel::big`. Every load and store of
+  a scalar of more than one byte (integers, `float`/`double`, pointers, and the
+  stores PIR makes itself: initialisers, harness pointers) is `Stmt::be`: the
+  most significant byte is at the lowest address, in the solver encoding
+  (`SymMem::load/store`), the concrete interpreter and the PIR text (`load ...
+  be`). Byte-level memory (memcpy, memset, havoc, the uninitialised-byte masks)
+  is unchanged. A first-class aggregate or vector value in memory, and an iN
+  with N not a multiple of 8 wider than a byte, are UNENCODED on a big-endian
+  target (one bit-vector cannot hold per-field byte order). A value stored and
+  loaded again as one word keeps its term (`bswap(bswap(x))` is `x`), so a
+  pointer read back from memory keeps its value set.
+- **Library and kernel models** are lowered for the unit's own triple, once
+  per triple and datalayout and cached on disk under their own key
+  (`build_models(fe, timeout, triple)`); models whose datalayout is not the
+  unit's are never linked, and the library calls stay UNENCODED with the reason.
+- **`va_list`.** clang lowers `va_arg` for the target (arm AAPCS `{ ptr }`,
+  i386 / mips `char *`, ppc32 `{ i8, i8, i16, ptr, ptr }`), and PIR checks those
+  loads and stores like any other; a variadic definition and the `v*printf`
+  family stay UNENCODED as on x86-64.
+- **Inline assembly.** The exact x86-64 instruction semantics
+  (`translate_asm.inc`) and the `%gs` `current` read apply only to an x86-64
+  target. On any other target an asm is the `--kernel-api` havoc (its outputs
+  and the memory it may write are arbitrary, an assumption) or UNENCODED.
+- **printf.** `%L` conversions take the target's `long double` type
+  (`target_long_double`: `x86_fp80`, `fp128`, `ppc_fp128`); where `long double`
+  is `double` (arm, mips32) the C type cannot be checked from the IR and the
+  call is UNENCODED. The exact `__prism_fmtv` route (glibc's x86 digits) is used
+  on x86 targets only.
+- **Not on other targets.** Lean certificates and the Lean export are LP64
+  little-endian only (an ILP32 or big-endian proof is the solver's, never
+  `PROVED-CERTIFIED`); translation validation runs the IR with `lli` on the
+  host, so a unit for another target gets `tv: NOTRUN (target ... is not the
+  host's ...)`.
+
+Every row of a unit lowered for a target other than x86-64 carries `target`
+(the IR triple) in `--jsonl` and in `extra.target`, and the `front_end_flags`
+note lists the target flags taken. Test: `tests/cpp/test_pir_targets.cpp` (the
+same source as x86-64, i386, arm, mips, mips64 from the kfrag form, m68k,
+s390x and powerpc64; truncation, `sizeof(void *)`, byte order of stored,
+initialised and assembled words, and m68k / i386 layout).
 
 ## Lean coverage
 

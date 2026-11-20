@@ -78,9 +78,10 @@ public:
         z3::expr tagbad;  // bv1
         z3::expr mask;    // bv<bytes>: bit k = byte k uninitialised
     };
-    Loaded load(const z3::expr& ptr, unsigned width, unsigned tag);
+    // be: big-endian byte order of the value (Stmt::be); the mask stays in address order
+    Loaded load(const z3::expr& ptr, unsigned width, unsigned tag, bool be = false);
     void store(const z3::expr& guard, const z3::expr& ptr, const z3::expr& val, unsigned width,
-               const z3::expr& init, unsigned tag);
+               const z3::expr& init, unsigned tag, bool be = false);
     void copy(const z3::expr& guard, const z3::expr& dst, const z3::expr& src, const z3::expr& len);
     void set(const z3::expr& guard, const z3::expr& dst, const z3::expr& byte, const z3::expr& len);
 
@@ -96,7 +97,7 @@ public:
         std::optional<z3::expr> arr;       // Array: the array at the point
     };
     Mark mark() const { return Mark{log_.size(), arr_}; }
-    Loaded load_exact(const Mark& m, const z3::expr& ptr, unsigned width);
+    Loaded load_exact(const Mark& m, const z3::expr& ptr, unsigned width, bool be = false);
 
     // k-induction footprint havoc (docs/PIR.md "k-induction with memory"):
     // every byte of each listed object (all = every object allocated so far
@@ -215,6 +216,11 @@ private:
     std::optional<std::vector<uint64_t>> objs_of(const z3::expr& p) const;
 
     z3::expr bv(uint64_t v, unsigned w) { return c_.bv_val(v, w); }
+    // byte order reversed (big-endian loads and stores). bswap(bswap(x)) is x and the swap goes through ite
+    // arms, so a value stored and loaded again as one word keeps its term (and value set).
+    z3::expr bswap(const z3::expr& e, int depth = 0);
+    std::unordered_map<unsigned, z3::expr> bswap_src_;  // ast id of a bswap(x) result -> x
+    std::vector<z3::expr> bswap_keep_;
     z3::expr objid(const z3::expr& p) { return p.extract(ptr_w() - 1, obj_shift()); }
     z3::expr off(const z3::expr& p) { return z3::zext(p.extract(obj_shift() - 1, 0), ptr_w() - obj_shift()); }
     std::optional<uint64_t> const_obj(const z3::expr& p);

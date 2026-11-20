@@ -1403,6 +1403,10 @@ LeanCoverage lean_coverage(const ir::Module& m, const ir::Function& f, const Tra
         c.reason = "ILP32 task (the Lean model is LP64 only)";
         return c;
     }
+    if (t.fn->ptr.big) {
+        c.reason = "big-endian target (the Lean model is little-endian only)";
+        return c;
+    }
     std::string why;
     try {
         (void)pair_text(m, f, opt, t, &why);

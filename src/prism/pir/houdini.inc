@@ -1083,7 +1083,7 @@ HoudiniOut Houdini::run() {
             if (off >= 0) a = a + e.lookup(Arg::v(off, ptr_w()), node);
             return a + scale;
         };
-        auto ld = [&](int p, int off) { return e.M().load_exact(*st.mem, ptr(p, off), 8 * k.eb); };
+        auto ld = [&](int p, int off) { return e.M().load_exact(*st.mem, ptr(p, off), 8 * k.eb, ptr_model().big && k.eb > 1); };
         z3::expr body = c.bool_val(true);
         switch (k.kind) {
             case InvCand::MemNZ: body = ld(k.p, -1).val != e.bv(0, 8 * k.eb); break;
@@ -1099,7 +1099,7 @@ HoudiniOut Houdini::run() {
             }
             case InvCand::MemFrame: {
                 auto now = ld(k.p, -1);
-                auto was = e.M().load_exact(CL.entry_mem, ptr(k.p, -1), 8 * k.eb);
+                auto was = e.M().load_exact(CL.entry_mem, ptr(k.p, -1), 8 * k.eb, ptr_model().big && k.eb > 1);
                 body = now.val == was.val && now.uninit == was.uninit;
                 break;
             }

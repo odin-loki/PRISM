@@ -387,7 +387,7 @@ struct Encoding {
             case Stmt::Revive: M().revive(r, arg(0)); break;
             case Stmt::Load: {
                 auto ptr = arg(0);
-                auto ld = M().load(ptr, fn.vars.at(static_cast<std::size_t>(s.dst)).width, s.tag);
+                auto ld = M().load(ptr, fn.vars.at(static_cast<std::size_t>(s.dst)).width, s.tag, s.be);
                 m.insert_or_assign(s.dst, ld.val);
                 if (s.dst2 >= 0)
                     m.insert_or_assign(s.dst2, fn.vars.at(static_cast<std::size_t>(s.dst2)).width == 1 ? ld.uninit : ld.mask);
@@ -399,7 +399,7 @@ struct Encoding {
                 auto& in = s.args.at(2);
                 bool inits = in.is_const && in.bits == wmask(in.width);
                 writes.push_back(WriteInst{nodes.at(static_cast<std::size_t>(id)).block, M().known(p), inits, chain_of(s.args.at(0))});
-                M().store(r, p, arg(1), s.args.at(1).width, arg(2), s.tag);
+                M().store(r, p, arg(1), s.args.at(1).width, arg(2), s.tag, s.be);
                 break;
             }
             case Stmt::MemCpy: {
@@ -1707,7 +1707,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
     // Lean certificates are LP64-only (PrismSem Memory.lean: BitVec 64
     // pointers): an ILP32 proof is the solver's, never PROVED-CERTIFIED.
     CheckOptions opt_ilp = opt_in;
-    if (fn.ptr.w != 64) opt_ilp.certified = false;
+    if (fn.ptr.w != 64 || fn.ptr.big) opt_ilp.certified = false;  // big endian: Memory.lean is little-endian
     const CheckOptions& opt = opt_ilp;
     const EncodeOptions& eo = opt.encode;
     Verdict v;
@@ -1764,7 +1764,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
     VcBook book;
     auto finish = [&](Verdict& r) -> Verdict {
         r.extra["solver"] = book.summary();
-        r.extra["certified_mode"] = opt.certified ? "on" : fn.ptr.w != 64 && opt_in.certified ? "off (ILP32: certificates are LP64-only)" : "off";
+        r.extra["certified_mode"] = opt.certified                                ? "on"
+                                    : fn.ptr.w != 64 && opt_in.certified ? "off (ILP32: certificates are LP64-only)"
+                                    : fn.ptr.big && opt_in.certified     ? "off (big-endian: certificates are little-endian only)"
+                                                                         : "off";
         return r;
     };
     // Loop invariants (houdini.inc): tried when k-induction does not

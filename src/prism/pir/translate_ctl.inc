@@ -972,7 +972,9 @@ void Tr::asm_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
     if (it == opt.asm_contracts.end()) {
         // a stated contract wins; otherwise --kernel-api: conservative havoc (translate_kernel.inc)
         if (!opt.kernel_api.empty()) {
-            if (asm_exact(fr, in, cur, line)) return;  // exact instruction semantics (translate_asm.inc)
+            // exact x86-64 instruction semantics (translate_asm.inc), only for an x86-64 target: on any other
+            // target the template is another instruction set, and the asm is havocked below
+            if (target_x86_64(m) && asm_exact(fr, in, cur, line)) return;
             asm_havoc(fr, in, cur, line);
             return;
         }

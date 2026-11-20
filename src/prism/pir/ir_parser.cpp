@@ -1606,6 +1606,12 @@ static Module parse_module_impl(std::string_view text, bool kernel_atomics) {
             if (a != std::string_view::npos && b > a) m.datalayout = std::string(line.substr(a + 1, b - a - 1));
             continue;
         }
+        if (line.starts_with("target triple = \"")) {
+            auto a = line.find('"');
+            auto b = line.rfind('"');
+            if (a != std::string_view::npos && b > a) m.triple = std::string(line.substr(a + 1, b - a - 1));
+            continue;
+        }
         if (line.starts_with("declare ")) {
             auto toks = lex(line);
             for (auto& t : toks)
