@@ -95,6 +95,10 @@ struct CubeStats {
     std::size_t leaves = 0, closed_solver = 0, closed_core = 0, open = 0, splits = 0, max_depth = 0;
     std::size_t solver_calls = 0, cores = 0;
     bool cover_checked = false;  // the leaves were checked to cover the space
+    // how an UNSAT answer was reached (empty when it is not UNSAT): "tree" (every leaf closed, the leaves cover the
+    // space), "root_unsat" (a leaf's failed assumptions were empty: the CNF alone is unsat; leaves may still be open),
+    // "empty_clause" (the CNF has an empty clause)
+    std::string unsat_by;
     double blast_s = 0, load_s = 0, split_s = 0, conquer_s = 0, cover_s = 0, gpu_s = 0, wall_s = 0;
     std::size_t gpu_calls = 0;
     std::string gpu;             // GPU walker status ("off", "cuda: ...", "not built")

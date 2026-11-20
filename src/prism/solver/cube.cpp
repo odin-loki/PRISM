@@ -277,6 +277,7 @@ CubeCnfAnswer cube_solve_cnf(const Cnf& cnf, const CubeOptions& co_in, std::uint
         if (cl.empty()) {
             res.kind = CubeCnfAnswer::Unsat;  // the empty cube, closed by the empty clause
             res.by = "cnf-empty-clause";
+            stats.unsat_by = "empty_clause";
             stats.leaves = 1;
             stats.cover_checked = true;
             notes.push_back("cube: the CNF has an empty clause");
@@ -673,6 +674,9 @@ CubeCnfAnswer cube_solve_cnf(const Cnf& cnf, const CubeOptions& co_in, std::uint
         // an empty core: the CNF alone is unsat; the partition is {empty cube}
         res.kind = CubeCnfAnswer::Unsat;
         res.by = "cadical, empty core";
+        stats.unsat_by = "root_unsat";
+        notes.push_back("cube: by=root_unsat (an empty core: the CNF alone is unsat; " + std::to_string(open) +
+                        " leaves still open)");
         stats.cover_checked = cubes_cover({std::vector<int>{}});
         return finish(res);
     }
@@ -701,6 +705,8 @@ CubeCnfAnswer cube_solve_cnf(const Cnf& cnf, const CubeOptions& co_in, std::uint
     stats.cover_checked = true;
     res.kind = CubeCnfAnswer::Unsat;
     res.by = "cadical";
+    stats.unsat_by = "tree";
+    notes.push_back("cube: by=tree");
     std::snprintf(buf, sizeof buf, "cube: %zu leaf cubes cover the space (checked by Z3 in %.2fs); every leaf UNSAT",
                   leaves.size(), stats.cover_s);
     notes.push_back(buf);
@@ -768,6 +774,7 @@ SolveResult cube_and_conquer(z3::context& c, const z3::expr& formula, const Solv
             // closed by the empty clause
             res.kind = Kind::Unsat;
             res.winner = "cube(cnf-empty-clause)";
+            res.cube.unsat_by = "empty_clause";
             res.cube.leaves = 1;
             res.cube.cover_checked = true;
             return finish("cube: the CNF has an empty clause");

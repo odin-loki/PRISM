@@ -93,9 +93,26 @@ TEST_CASE("cube: unsat by a closed tree whose leaves cover the space") {
     MESSAGE(r.note);
     REQUIRE(r.kind == ps::SolveResult::Unsat);
     CHECK(r.cube.cover_checked);
-    CHECK(r.cube.open == 0);
-    CHECK(r.cube.leaves > 1);  // it really split
-    CHECK(r.cube.closed_solver + r.cube.closed_core == r.cube.leaves);
+    // Two ways to UNSAT, each checked in full; any other way is a failure:
+    //   tree:       every leaf is closed and the leaves cover the space
+    //   root_unsat: a leaf's failed assumptions were empty, so the CNF alone is unsat (leaves may still be open,
+    //               depending on thread timing); that the formula alone is unsat is checked by Z3 independently
+    CAPTURE(r.cube.unsat_by);
+    if (r.cube.unsat_by == "tree") {
+        CHECK(r.cube.open == 0);
+        CHECK(r.cube.leaves > 1);  // it really split
+        CHECK(r.cube.closed_solver + r.cube.closed_core == r.cube.leaves);
+        CHECK(r.note.find("by=tree") != std::string::npos);
+    } else if (r.cube.unsat_by == "root_unsat") {
+        CHECK(r.note.find("by=root_unsat") != std::string::npos);
+        CHECK(r.note.find("empty core") != std::string::npos);
+        z3::context c2;
+        z3::solver alone(c2);
+        alone.add(factor(c2, 65521));
+        CHECK(alone.check() == z3::unsat);
+    } else {
+        FAIL("UNSAT reached neither by a closed tree nor by an empty core: " << r.cube.unsat_by);
+    }
 }
 
 TEST_CASE("cube: a dropped cube never gives unsat") {
