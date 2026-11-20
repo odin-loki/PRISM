@@ -1,0 +1,1477 @@
+From 2fe38274dae1669beb56b401751f69e9f995ecb5 Mon Sep 17 00:00:00 2001
+From: Odin Loch <26472949+odin-loki@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 16:25:17 +1100
+Subject: [PATCH] WIP pir-targets: real --target data layout for
+ ILP32/big-endian (unbuilt, untested; agent stopped mid-work)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt                     |   1 +
+ docs/PIR.md                        |  77 ++++++++-
+ include/prism/pir.hpp              |  30 +++-
+ src/prism/pir/encode.cpp           |  11 +-
+ src/prism/pir/export_lean.cpp      |   4 +
+ src/prism/pir/houdini.inc          |   4 +-
+ src/prism/pir/ir_parser.cpp        |   6 +
+ src/prism/pir/jsonl.cpp            |   1 +
+ src/prism/pir/libc_format.cpp      |  17 +-
+ src/prism/pir/libc_models.cpp      |  20 ++-
+ src/prism/pir/memory.cpp           |  32 +++-
+ src/prism/pir/memory.hpp           |  12 +-
+ src/prism/pir/pir.cpp              |  84 ++++++++--
+ src/prism/pir/stage.cpp            | 145 +++++++++++++----
+ src/prism/pir/translate.cpp        |   2 +-
+ src/prism/pir/translate_ctl.inc    |   4 +-
+ src/prism/pir/translate_kernel.inc |   3 +-
+ src/prism/pir/translate_mem.cpp    |  76 ++++++++-
+ src/prism/pir/translate_mem.hpp    |  15 +-
+ tests/cpp/test_pir_header_fns.cpp  |  22 ++-
+ tests/cpp/test_pir_targets.cpp     | 253 +++++++++++++++++++++++++++++
+ 21 files changed, 722 insertions(+), 97 deletions(-)
+ create mode 100644 tests/cpp/test_pir_targets.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a3346ac..2bb566e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -849,6 +849,7 @@ if(PRISM_TESTS)
+     tests/cpp/test_pir_harness.cpp
+     tests/cpp/test_pir_harness2.cpp
+     tests/cpp/test_pir_header_fns.cpp
++    tests/cpp/test_pir_targets.cpp
+     tests/cpp/test_ai_assist.cpp
+     tests/cpp/test_triage_status.cpp
+     tests/cpp/test_pbsd.cpp
+diff --git a/docs/PIR.md b/docs/PIR.md
+index 0ad7144..53b8b3b 100644
+--- a/docs/PIR.md
++++ b/docs/PIR.md
+@@ -64,8 +64,11 @@ changing only the language level and ABI flags, never a check:
+    `compile_commands.json` (`arguments` or `command`; the command text is split
+    by PRISM, no shell runs). Taken: `-I -isystem -iquote -idirafter -include`
+    (relative paths against the entry's `directory`), `-D`, `-U`, the C `-std=`
+-   (the C++ year for C++ units), `--target=` (LP64 targets only: the memory
+-   model assumes LP64), `-nostdinc`, `-ffreestanding`, `-fshort-wchar`,
++   (the C++ year for C++ units), `--target=` / `-target T` (any target; see
++   "Targets" below; for a target other than x86-64 also its ABI flags `-mabi=`
++   `-EB` `-EL` `-mbig-endian` `-mlittle-endian` `-march=` `-mcpu=` `-mthumb`
++   `-marm` `-mfloat-abi=` `-mfpu=` `-msoft-float` `-mhard-float` `-m31`
++   `-mlong-double-N`; `-m32` / `-m16` / `-mx32` always), `-nostdinc`, `-ffreestanding`, `-fshort-wchar`,
+    `-funsigned-char`, `-fsigned-char`, `-fno-common`, `-fms-extensions`,
+    `-fplan9-extensions`, `-fno-builtin[-*]`, `-fstrict-flex-arrays=N`,
+    `-mno-sse/-mno-sse2/-mno-mmx/-mno-3dnow/-mno-avx/-mno-sse4a/-mno-80387`,
+@@ -583,9 +586,73 @@ line is the header's. Every other function keeps the rule above.
+ - The harness discharge does not apply: the row stands for the header
+   function in every unit that includes it, and other units call it too.
+ 
+-A big-endian target (datalayout component `E`) is not checked at all: the
+-memory model assembles multi-byte values little-endian. The unit gets one
+-`NOTRUN` row that says so.
++A big-endian target is checked as big-endian (section "Targets").
++
++## Targets
++
++A unit is checked for the target it is built for. With `--compile-commands`,
++the entry's `--target` (and, for a target other than x86-64, the flags that
++change its ABI, byte order or instruction set) is kept, so clang lowers the
++unit as the build did: `--target=mipsel-linux-gnu -mabi=64 -EB` (the Linux
++kfrag form) is big-endian mips64 n64, not little-endian mips32. Before this,
++every target that was not LP64 was dropped and the unit lowered as x86-64.
++Everything below is taken from the IR, never assumed:
++
++- **Pointers, `long`, `size_t`.** The datalayout's address-space-0 pointer
++  size picks the pointer model (`PtrModel`, pir.hpp): 64 bits LP64, 32 bits
++  ILP32 (object id in bits 31..22, offset in bits 21..0: an object of 2 MiB or
++  more, or more than 1023 objects, is UNKNOWN, never a proof). `long` and every
++  other integer have the widths the IR gives them. Any other pointer size (avr,
++  msp430: 16 bits) or a datalayout with non-integral address spaces is `NOTRUN`
++  for the unit with the reason ("target ...: 16-bit pointers ...; not checked").
++- **Layout.** `Layout` (translate_mem.cpp) reads the `i`, `f`, `v`, `p` and `a`
++  specs of the datalayout and uses LLVM's defaults where the string is silent
++  (i64 ABI alignment 4, no i128 entry, f64 8, f128 16, others by natural size),
++  as clang's code generator laid the IR out: m68k aligns `int` and `long long`
++  to 2 and 4, i386 aligns `double` and `long double` to 4 (`f64:32 f80:32`,
++  `long double` is 12 bytes). IR without a datalayout (hand-written) keeps the
++  x86-64 layout.
++- **Byte order.** A datalayout with `E` (s390x, sparc, big-endian powerpc,
++  mips, m68k, `-mbig-endian` arm) sets `PtrModel::big`. Every load and store of
++  a scalar of more than one byte (integers, `float`/`double`, pointers, and the
++  stores PIR makes itself: initialisers, harness pointers) is `Stmt::be`: the
++  most significant byte is at the lowest address, in the solver encoding
++  (`SymMem::load/store`), the concrete interpreter and the PIR text (`load ...
++  be`). Byte-level memory (memcpy, memset, havoc, the uninitialised-byte masks)
++  is unchanged. A first-class aggregate or vector value in memory, and an iN
++  with N not a multiple of 8 wider than a byte, are UNENCODED on a big-endian
++  target (one bit-vector cannot hold per-field byte order). A value stored and
++  loaded again as one word keeps its term (`bswap(bswap(x))` is `x`), so a
++  pointer read back from memory keeps its value set.
++- **Library and kernel models** are lowered for the unit's own triple, once
++  per triple and datalayout and cached on disk under their own key
++  (`build_models(fe, timeout, triple)`); models whose datalayout is not the
++  unit's are never linked, and the library calls stay UNENCODED with the reason.
++- **`va_list`.** clang lowers `va_arg` for the target (arm AAPCS `{ ptr }`,
++  i386 / mips `char *`, ppc32 `{ i8, i8, i16, ptr, ptr }`), and PIR checks those
++  loads and stores like any other; a variadic definition and the `v*printf`
++  family stay UNENCODED as on x86-64.
++- **Inline assembly.** The exact x86-64 instruction semantics
++  (`translate_asm.inc`) and the `%gs` `current` read apply only to an x86-64
++  target. On any other target an asm is the `--kernel-api` havoc (its outputs
++  and the memory it may write are arbitrary, an assumption) or UNENCODED.
++- **printf.** `%L` conversions take the target's `long double` type
++  (`target_long_double`: `x86_fp80`, `fp128`, `ppc_fp128`); where `long double`
++  is `double` (arm, mips32) the C type cannot be checked from the IR and the
++  call is UNENCODED. The exact `__prism_fmtv` route (glibc's x86 digits) is used
++  on x86 targets only.
++- **Not on other targets.** Lean certificates and the Lean export are LP64
++  little-endian only (an ILP32 or big-endian proof is the solver's, never
++  `PROVED-CERTIFIED`); translation validation runs the IR with `lli` on the
++  host, so a unit for another target gets `tv: NOTRUN (target ... is not the
++  host's ...)`.
++
++Every row of a unit lowered for a target other than x86-64 carries `target`
++(the IR triple) in `--jsonl` and in `extra.target`, and the `front_end_flags`
++note lists the target flags taken. Test: `tests/cpp/test_pir_targets.cpp` (the
++same source as x86-64, i386, arm, mips, mips64 from the kfrag form, m68k,
++s390x and powerpc64; truncation, `sizeof(void *)`, byte order of stored,
++initialised and assembled words, and m68k / i386 layout).
+ 
+ ## Lean coverage
+ 
+diff --git a/include/prism/pir.hpp b/include/prism/pir.hpp
+index 7198fc3..4041352 100644
+--- a/include/prism/pir.hpp
++++ b/include/prism/pir.hpp
+@@ -158,6 +158,7 @@ struct Global {
+ struct Module {
+     std::vector<Global> globals;
+     std::string datalayout;                    // target datalayout string
++    std::string triple;                        // target triple ("" when the IR has none)
+     std::map<std::string, Type> types;         // named struct types ("struct.S" -> body; opaque: kind Other)
+     std::vector<Function> functions;           // definitions only
+     std::vector<std::string> declarations;      // declared symbol names
+@@ -237,6 +238,9 @@ struct PtrModel {
+     uint64_t max_obj_size;   // exclusive bound on an object's size
+     uint64_t max_objects;    // ids [1, fn_obj_base) allocations, [fn_obj_base, max_objects) functions
+     uint64_t fn_obj_base;
++    // Big-endian target (datalayout component "E"): multi-byte scalar loads and
++    // stores carry Stmt::be; byte-level memory (memcpy, memset, havoc) is the same.
++    bool big = false;
+     uint64_t off_mask() const { return (uint64_t{1} << obj_shift) - 1; }
+     uint64_t make(uint64_t obj, uint64_t off) const { return (obj << obj_shift) | (off & off_mask()); }
+     uint64_t obj_of(uint64_t p) const { return p >> obj_shift; }
+@@ -287,7 +291,8 @@ struct Stmt {
+     // Memory statements (docs/PIR.md "Memory model"):
+     //   Alloc        dst := fresh object; args [size i64]; mkind, init, align
+     //   Free         args [ptr]            object ends its lifetime (checks are separate)
+-    //   Load         dst := bytes at args[0] (width of dst, little endian);
++    //   Load         dst := bytes at args[0] (width of dst, little endian;
++    //                big endian when `be`);
+     //                dst2 := i1: some loaded byte is uninitialised, or iN
+     //                (N = bytes): bit k = byte k uninitialised (raw copies);
+     //                dst3 (i1) := effective-type mismatch (strict aliasing)
+@@ -329,6 +334,9 @@ struct Stmt {
+     int init = 0;              // Alloc: 0 uninitialised, 1 zero-filled, 2 initialised with arbitrary bytes
+     unsigned align = 1;        // Alloc: base alignment
+     unsigned tag = 0;          // Load/Store: effective-type tag (strict aliasing), 0 = untyped
++    // Load/Store of a multi-byte scalar on a big-endian target (PtrModel::big): the value's most significant
++    // byte is at the lowest address. The shadows and the per-byte init mask stay in address order (bit k = byte k).
++    bool be = false;
+     int dst2 = -1, dst3 = -1;  // Load shadows
+     bool ptr_arith = false;    // Assign add/copy/select: result stays in args[0]'s object (checked)
+ };
+@@ -594,8 +602,23 @@ PRISM_API void mine_field_stores(const ir::Module& m, const std::string& unit, s
+ // Reads an --ops-table file (format in docs/PIR.md). On failure returns {} and sets error.
+ PRISM_API std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error);
+ 
+-// LP64 unless the module's datalayout has 32-bit pointers (ILP32).
++// LP64 unless the module's datalayout has 32-bit pointers (ILP32); `big` from
++// the datalayout's "E" component.
+ PRISM_API PtrModel ptr_model_of(const ir::Module& m);
++// Target of a lowered module (docs/PIR.md "Targets"): the triple's architecture
++// ("x86_64", "armv7", "mips", ...; "" when the IR has no triple, which PIR
++// reads as the host's x86-64), and why PIR cannot check the module ("" when it
++// can: 32- or 64-bit integral pointers in address space 0).
++PRISM_API std::string target_arch(const ir::Module& m);
++PRISM_API std::string target_unsupported(const ir::Module& m);
++// x86-64 (or no triple): the x86-64 inline-asm semantics, the %gs `current`
++// read and the exact printf model apply only there.
++PRISM_API bool target_x86_64(const ir::Module& m);
++// i386 or x86-64 (or no triple): lli on this host runs the IR (translation validation).
++PRISM_API bool target_x86(const ir::Module& m);
++// The IR type of C `long double` on the module's target ("x86_fp80", "fp128",
++// "ppc_fp128", "double"; "" when unknown).
++PRISM_API std::string target_long_double(const ir::Module& m);
+ PRISM_API Translation translate(const ir::Module& m, const ir::Function& f,
+                                 const TranslateOptions& opt = {});
+ PRISM_API std::string to_text(const Function& fn);
+@@ -860,6 +883,9 @@ struct ModelLibrary {
+ };
+ // Lower the embedded models with the same clang/opt pipeline (once per run).
+ PRISM_API ModelLibrary build_models(const Frontend& fe, double timeout_s);
++// The same, lowered for `triple` ("" = the run's frontend target): the models
++// of a unit compiled for its own target (--compile-commands --target=...).
++PRISM_API ModelLibrary build_models(const Frontend& fe, double timeout_s, const std::string& triple);
+ // Link into m every model function m declares but does not define
+ // (transitively, with the globals they use). Returns the linked names.
+ // kernel_api "linux" / "freebsd" also links the kernel API specs of that kernel
+diff --git a/src/prism/pir/encode.cpp b/src/prism/pir/encode.cpp
+index 3295c67..e5ec122 100644
+--- a/src/prism/pir/encode.cpp
++++ b/src/prism/pir/encode.cpp
+@@ -387,7 +387,7 @@ struct Encoding {
+             case Stmt::Revive: M().revive(r, arg(0)); break;
+             case Stmt::Load: {
+                 auto ptr = arg(0);
+-                auto ld = M().load(ptr, fn.vars.at(static_cast<std::size_t>(s.dst)).width, s.tag);
++                auto ld = M().load(ptr, fn.vars.at(static_cast<std::size_t>(s.dst)).width, s.tag, s.be);
+                 m.insert_or_assign(s.dst, ld.val);
+                 if (s.dst2 >= 0)
+                     m.insert_or_assign(s.dst2, fn.vars.at(static_cast<std::size_t>(s.dst2)).width == 1 ? ld.uninit : ld.mask);
+@@ -399,7 +399,7 @@ struct Encoding {
+                 auto& in = s.args.at(2);
+                 bool inits = in.is_const && in.bits == wmask(in.width);
+                 writes.push_back(WriteInst{nodes.at(static_cast<std::size_t>(id)).block, M().known(p), inits, chain_of(s.args.at(0))});
+-                M().store(r, p, arg(1), s.args.at(1).width, arg(2), s.tag);
++                M().store(r, p, arg(1), s.args.at(1).width, arg(2), s.tag, s.be);
+                 break;
+             }
+             case Stmt::MemCpy: {
+@@ -1707,7 +1707,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
+     // Lean certificates are LP64-only (PrismSem Memory.lean: BitVec 64
+     // pointers): an ILP32 proof is the solver's, never PROVED-CERTIFIED.
+     CheckOptions opt_ilp = opt_in;
+-    if (fn.ptr.w != 64) opt_ilp.certified = false;
++    if (fn.ptr.w != 64 || fn.ptr.big) opt_ilp.certified = false;  // big endian: Memory.lean is little-endian
+     const CheckOptions& opt = opt_ilp;
+     const EncodeOptions& eo = opt.encode;
+     Verdict v;
+@@ -1764,7 +1764,10 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in) {
+     VcBook book;
+     auto finish = [&](Verdict& r) -> Verdict {
+         r.extra["solver"] = book.summary();
+-        r.extra["certified_mode"] = opt.certified ? "on" : fn.ptr.w != 64 && opt_in.certified ? "off (ILP32: certificates are LP64-only)" : "off";
++        r.extra["certified_mode"] = opt.certified                                ? "on"
++                                    : fn.ptr.w != 64 && opt_in.certified ? "off (ILP32: certificates are LP64-only)"
++                                    : fn.ptr.big && opt_in.certified     ? "off (big-endian: certificates are little-endian only)"
++                                                                         : "off";
+         return r;
+     };
+     // Loop invariants (houdini.inc): tried when k-induction does not
+diff --git a/src/prism/pir/export_lean.cpp b/src/prism/pir/export_lean.cpp
+index 2c359ac..8341616 100644
+--- a/src/prism/pir/export_lean.cpp
++++ b/src/prism/pir/export_lean.cpp
+@@ -1403,6 +1403,10 @@ LeanCoverage lean_coverage(const ir::Module& m, const ir::Function& f, const Tra
+         c.reason = "ILP32 task (the Lean model is LP64 only)";
+         return c;
+     }
++    if (t.fn->ptr.big) {
++        c.reason = "big-endian target (the Lean model is little-endian only)";
++        return c;
++    }
+     std::string why;
+     try {
+         (void)pair_text(m, f, opt, t, &why);
+diff --git a/src/prism/pir/houdini.inc b/src/prism/pir/houdini.inc
+index 310384f..89d95b6 100644
+--- a/src/prism/pir/houdini.inc
++++ b/src/prism/pir/houdini.inc
+@@ -1083,7 +1083,7 @@ HoudiniOut Houdini::run() {
+             if (off >= 0) a = a + e.lookup(Arg::v(off, ptr_w()), node);
+             return a + scale;
+         };
+-        auto ld = [&](int p, int off) { return e.M().load_exact(*st.mem, ptr(p, off), 8 * k.eb); };
++        auto ld = [&](int p, int off) { return e.M().load_exact(*st.mem, ptr(p, off), 8 * k.eb, ptr_model().big && k.eb > 1); };
+         z3::expr body = c.bool_val(true);
+         switch (k.kind) {
+             case InvCand::MemNZ: body = ld(k.p, -1).val != e.bv(0, 8 * k.eb); break;
+@@ -1099,7 +1099,7 @@ HoudiniOut Houdini::run() {
+             }
+             case InvCand::MemFrame: {
+                 auto now = ld(k.p, -1);
+-                auto was = e.M().load_exact(CL.entry_mem, ptr(k.p, -1), 8 * k.eb);
++                auto was = e.M().load_exact(CL.entry_mem, ptr(k.p, -1), 8 * k.eb, ptr_model().big && k.eb > 1);
+                 body = now.val == was.val && now.uninit == was.uninit;
+                 break;
+             }
+diff --git a/src/prism/pir/ir_parser.cpp b/src/prism/pir/ir_parser.cpp
+index 10cb227..42c9cf7 100644
+--- a/src/prism/pir/ir_parser.cpp
++++ b/src/prism/pir/ir_parser.cpp
+@@ -1606,6 +1606,12 @@ static Module parse_module_impl(std::string_view text, bool kernel_atomics) {
+             if (a != std::string_view::npos && b > a) m.datalayout = std::string(line.substr(a + 1, b - a - 1));
+             continue;
+         }
++        if (line.starts_with("target triple = \"")) {
++            auto a = line.find('"');
++            auto b = line.rfind('"');
++            if (a != std::string_view::npos && b > a) m.triple = std::string(line.substr(a + 1, b - a - 1));
++            continue;
++        }
+         if (line.starts_with("declare ")) {
+             auto toks = lex(line);
+             for (auto& t : toks)
+diff --git a/src/prism/pir/jsonl.cpp b/src/prism/pir/jsonl.cpp
+index bcba1b0..aaafc76 100644
+--- a/src/prism/pir/jsonl.cpp
++++ b/src/prism/pir/jsonl.cpp
+@@ -113,6 +113,7 @@ json jsonl_record(const Finding& f, const Config& cfg) {
+     r["verdict"] = f.status;
+     // --pir-header-fns: the function's own file (its start line is that file's)
+     if (auto s = get(f, "header_file"); !s.empty()) r["header_file"] = s;
++    if (auto s = get(f, "target"); !s.empty()) r["target"] = s;  // the triple the unit was lowered for (docs/PIR.md "Targets")
+     const std::string lvl = proof_level(f);
+     r["level"] = lvl.empty() ? json(nullptr) : json(lvl);
+     const bool mem = hit_memory_limit(f);
+diff --git a/src/prism/pir/libc_format.cpp b/src/prism/pir/libc_format.cpp
+index 30f7455..b3c9b78 100644
+--- a/src/prism/pir/libc_format.cpp
++++ b/src/prism/pir/libc_format.cpp
+@@ -41,7 +41,8 @@ bool is_format_function(const std::string& callee) {
+ }
+ 
+ FormatPlan plan_format(const std::string& callee, const std::optional<std::string>& fmt,
+-                       const std::vector<ir::Type>& args, const std::vector<std::optional<uint64_t>>& consts) {
++                       const std::vector<ir::Type>& args, const std::vector<std::optional<uint64_t>>& consts,
++                       const std::string& long_double, bool exact_ok) {
+     FormatPlan p;
+     if (!is_format_function(callee)) return p;
+     p.handled = true;
+@@ -196,8 +197,16 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
+             case 'a':
+             case 'A': {
+                 bool ld = lenmod == "L";
++                if (ld && (long_double.empty() || long_double == "double")) {
++                    // long double is double on this target (or unknown): the IR type cannot tell a long double
++                    // argument from a double one, so the C type rule of %L cannot be checked
++                    p.unencoded = "UNENCODED: call @" + callee + " with a %L conversion (long double is " +
++                                  (long_double.empty() ? std::string("of unknown format") : std::string("double")) +
++                                  " on this target: the argument's C type is not visible in the IR)";
++                    return p;
++                }
+                 take(ld ? "long double" : "double", conv, [&](const ir::Type& t) {
+-                    return t.kind == ir::Type::Float && t.text == (ld ? "x86_fp80" : "double");
++                    return t.kind == ir::Type::Float && t.text == (ld ? long_double : std::string("double"));
+                 });
+                 m = (c == 'f' || c == 'F') ? (ld ? 4950 : 330) + prec : 32 + prec;
+                 if (next > 0 && !(next - 1 < consts.size() && consts.at(next - 1))) {
+@@ -232,7 +241,9 @@ FormatPlan plan_format(const std::string& callee, const std::optional<std::strin
+     // the symbolic value) instead of havoc bytes.
+     // Session 11: any number of conversions (ints, chars, strings,
+     // pointers, doubles, '*' width/precision) via __prism_fmtv.
+-    if (p.buf_arg >= 0 && (float_arg >= 0 || loc_dep) && !float_star) p.exact_double_arg = float_arg >= 0 ? float_arg : 0;
++    // exact_ok: only where the __prism_fmtv model renders what the target's libc prints (x86: glibc, x87 long double)
++    if (exact_ok && p.buf_arg >= 0 && (float_arg >= 0 || loc_dep) && !float_star)
++        p.exact_double_arg = float_arg >= 0 ? float_arg : 0;
+     if (p.buf_arg >= 0 && p.size_arg < 0) {
+         if (!bounded && p.exact_double_arg < 0) {
+             p.unencoded = "UNENCODED: " + callee + " with %s or '*' (output length not bounded by the format)";
+diff --git a/src/prism/pir/libc_models.cpp b/src/prism/pir/libc_models.cpp
+index d550215..e218c82 100644
+--- a/src/prism/pir/libc_models.cpp
++++ b/src/prism/pir/libc_models.cpp
+@@ -186,11 +186,11 @@ fs::path model_cache_root() {
+ 
+ // One model file through clang -> opt; "" on success, else why not.
+ std::string lower_model(const Frontend& fe, const fs::path& dir, const std::string& name, double timeout_s,
+-                        std::string& ll) {
++                        std::string& ll, const std::vector<std::string>& target_flags) {
+     auto src = dir / ("prism_model_" + name);
+     auto o0 = dir / (name + ".o0.ll"), o1 = dir / (name + ".ll");
+     std::vector<std::string> argv{fe.clang->string(), "-S"};
+-    for (auto& t : frontend_target_flags()) argv.push_back(t);
++    for (auto& t : target_flags) argv.push_back(t);
+     argv.insert(argv.end(), {"-emit-llvm", "-O0", "-Xclang", "-disable-O0-optnone", "-fno-builtin", "-ffreestanding",
+                              "-fno-discard-value-names", "-gline-tables-only", "-std=c++23", "-w", "-o", o0.string(),
+                              src.string()});
+@@ -253,19 +253,27 @@ bool try_load_model_cache(const fs::path& cache, std::vector<std::pair<std::stri
+ // runs on a loaded machine) do not lower the models again. A clang/opt that
+ // times out is retried once with twice the time; if the models still cannot
+ // be built, lib.error says why and the pir stage records it (never silent).
+-ModelLibrary build_models(const Frontend& fe, double timeout_s) {
++ModelLibrary build_models(const Frontend& fe, double timeout_s) { return build_models(fe, timeout_s, ""); }
++
++// triple: "" = the run's frontend target (frontend_target_flags); else the
++// models are lowered with --target=<triple> (a unit lowered for its own
++// target, docs/PIR.md "Targets"), cached under their own key.
++ModelLibrary build_models(const Frontend& fe, double timeout_s, const std::string& triple) {
+     ModelLibrary lib;
+     if (!fe.clang || !fe.opt) {
+         lib.error = "clang/opt not found";
+         return lib;
+     }
++    const std::vector<std::string> tflags =
++        triple.empty() ? frontend_target_flags() : std::vector<std::string>{"--target=" + triple};
+ #ifdef _WIN32
+     std::string key_text = "prism-pir-models-v5\n" + fe.version + "\n" + fe.clang->string() + "\n" +
+                            fe.opt->string() + "\n" + lp64_target_triple() + "\n";
+ #else
+     std::string key_text = "prism-pir-models-v5\n" + fe.version + "\n" + fe.clang->string() + "\n" + fe.opt->string();
+ #endif
+-    if (frontend_ilp32()) key_text += std::string("\n") + ilp32_target_triple() + "\n";
++    if (!triple.empty()) key_text += "\ntarget " + triple + "\n";
++    else if (frontend_ilp32()) key_text += std::string("\n") + ilp32_target_triple() + "\n";
+     for (auto& [name, text] : model_sources())
+         if (!name.starts_with("cxx/")) key_text += "\n--" + name + "\n" + text;
+     std::error_code ec;
+@@ -309,9 +317,9 @@ ModelLibrary build_models(const Frontend& fe, double timeout_s) {
+         for (auto& [name, text] : model_sources()) {
+             if (!is_lowered_libc_model(name)) continue;
+             std::string ll;
+-            auto err = lower_model(fe, dir, name, timeout_s, ll);
++            auto err = lower_model(fe, dir, name, timeout_s, ll, tflags);
+             if (!err.empty() && err.find("timed out") != std::string::npos)
+-                err = lower_model(fe, dir, name, 2 * timeout_s, ll);  // a loaded machine: once more
++                err = lower_model(fe, dir, name, 2 * timeout_s, ll, tflags);  // a loaded machine: once more
+             if (!err.empty()) {
+                 lib.error = err;
+                 break;
+diff --git a/src/prism/pir/memory.cpp b/src/prism/pir/memory.cpp
+index b2cfe33..4a00e9d 100644
+--- a/src/prism/pir/memory.cpp
++++ b/src/prism/pir/memory.cpp
+@@ -1091,7 +1091,27 @@ std::optional<z3::expr> SymMem::word_split(uint64_t a, unsigned n, std::size_t u
+     return w;
+ }
+ 
+-SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
++z3::expr SymMem::bswap(const z3::expr& e, int depth) {
++    const unsigned w = e.get_sort().bv_size();
++    if (w <= 8) return e;
++    if (auto it = bswap_src_.find(e.id()); it != bswap_src_.end()) return it->second;
++    uint64_t k = 0;
++    if (w <= 64 && e.is_numeral() && e.is_numeral_u64(k)) {
++        uint64_t r = 0;
++        for (unsigned i = 0; i < w / 8; ++i) r |= ((k >> (8 * i)) & 0xff) << (8 * (w / 8 - 1 - i));
++        return bv(r, w);
++    }
++    if (depth < 16 && e.is_app() && e.decl().decl_kind() == Z3_OP_ITE)
++        return z3::ite(e.arg(0), bswap(e.arg(1), depth + 1), bswap(e.arg(2), depth + 1));
++    z3::expr r = e.extract(7, 0);
++    for (unsigned i = 1; i < w / 8; ++i) r = z3::concat(r, e.extract(8 * i + 7, 8 * i));
++    bswap_keep_.push_back(e);
++    bswap_keep_.push_back(r);
++    bswap_src_.emplace(r.id(), e);
++    return r;
++}
++
++SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag, bool be) {
+     static const bool tr_on = prism::settings::mem_trace().is_set();
+     uint64_t tr_r = tr_on ? membudget::rss_mb() : 0;
+     auto tr = [&](const char* what) {
+@@ -1116,6 +1136,7 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
+             if (ws.size() == av->size()) {
+                 z3::expr r = ws.back();
+                 for (std::size_t i = ws.size() - 1; i-- > 0;) r = z3::ite(av->at(i).guard, ws.at(i), r);
++                if (be) r = bswap(r);
+                 if (8 * n > width) r = r.extract(width - 1, 0);
+                 word = r;
+             }
+@@ -1144,7 +1165,7 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
+             tagbad = tagbad || (t != bv(0, 4) && t != bv(tag, 4));
+         }
+     }
+-    auto v = *val;
++    auto v = be ? bswap(*val) : *val;
+     if (8 * n > width) v = v.extract(width - 1, 0);
+     if (word) {
+         v = *word;
+@@ -1156,7 +1177,7 @@ SymMem::Loaded SymMem::load(const z3::expr& ptr, unsigned width, unsigned tag) {
+     return Loaded{v, z3::ite(uninit, bv(1, 1), bv(0, 1)), z3::ite(tagbad, bv(1, 1), bv(0, 1)), *mask};
+ }
+ 
+-SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned width) {
++SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned width, bool be) {
+     unsigned n = (width + 7) / 8;
+     std::optional<z3::expr> val;
+     z3::expr uninit = c_.bool_val(false);
+@@ -1168,18 +1189,19 @@ SymMem::Loaded SymMem::load_exact(const Mark& m, const z3::expr& ptr, unsigned w
+         else val = z3::concat(byte, *val);
+         uninit = uninit || cell.extract(kCellInit, kCellInit) == bv(0, 1);
+     }
+-    auto v = *val;
++    auto v = be ? bswap(*val) : *val;
+     if (8 * n > width) v = v.extract(width - 1, 0);
+     auto one = z3::ite(uninit, bv(1, 1), bv(0, 1));
+     return Loaded{v, one, bv(0, 1), one};
+ }
+ 
+ void SymMem::store(const z3::expr& guard, const z3::expr& ptr, const z3::expr& val, unsigned width,
+-                   const z3::expr& init, unsigned tag) {
++                   const z3::expr& init, unsigned tag, bool be) {
+     materialize_vs(ptr);
+     unsigned n = (width + 7) / 8;
+     auto ko = known(ptr);
+     auto wide = 8 * n > width ? z3::zext(val, 8 * n - width) : val;
++    if (be) wide = bswap(wide);  // address order: the most significant byte first
+     // init: one bit for all bytes, or one bit per byte
+     auto init_k = [&](unsigned k) { return init.get_sort().bv_size() == 1 ? init : init.extract(k, k); };
+     if (enc_ == MemEncoding::Array) {
+diff --git a/src/prism/pir/memory.hpp b/src/prism/pir/memory.hpp
+index ce60067..d577db8 100644
+--- a/src/prism/pir/memory.hpp
++++ b/src/prism/pir/memory.hpp
+@@ -78,9 +78,10 @@ public:
+         z3::expr tagbad;  // bv1
+         z3::expr mask;    // bv<bytes>: bit k = byte k uninitialised
+     };
+-    Loaded load(const z3::expr& ptr, unsigned width, unsigned tag);
++    // be: big-endian byte order of the value (Stmt::be); the mask stays in address order
++    Loaded load(const z3::expr& ptr, unsigned width, unsigned tag, bool be = false);
+     void store(const z3::expr& guard, const z3::expr& ptr, const z3::expr& val, unsigned width,
+-               const z3::expr& init, unsigned tag);
++               const z3::expr& init, unsigned tag, bool be = false);
+     void copy(const z3::expr& guard, const z3::expr& dst, const z3::expr& src, const z3::expr& len);
+     void set(const z3::expr& guard, const z3::expr& dst, const z3::expr& byte, const z3::expr& len);
+ 
+@@ -96,7 +97,7 @@ public:
+         std::optional<z3::expr> arr;       // Array: the array at the point
+     };
+     Mark mark() const { return Mark{log_.size(), arr_}; }
+-    Loaded load_exact(const Mark& m, const z3::expr& ptr, unsigned width);
++    Loaded load_exact(const Mark& m, const z3::expr& ptr, unsigned width, bool be = false);
+ 
+     // k-induction footprint havoc (docs/PIR.md "k-induction with memory"):
+     // every byte of each listed object (all = every object allocated so far
+@@ -215,6 +216,11 @@ private:
+     std::optional<std::vector<uint64_t>> objs_of(const z3::expr& p) const;
+ 
+     z3::expr bv(uint64_t v, unsigned w) { return c_.bv_val(v, w); }
++    // byte order reversed (big-endian loads and stores). bswap(bswap(x)) is x and the swap goes through ite
++    // arms, so a value stored and loaded again as one word keeps its term (and value set).
++    z3::expr bswap(const z3::expr& e, int depth = 0);
++    std::unordered_map<unsigned, z3::expr> bswap_src_;  // ast id of a bswap(x) result -> x
++    std::vector<z3::expr> bswap_keep_;
+     z3::expr objid(const z3::expr& p) { return p.extract(ptr_w() - 1, obj_shift()); }
+     z3::expr off(const z3::expr& p) { return z3::zext(p.extract(obj_shift() - 1, 0), ptr_w() - obj_shift()); }
+     std::optional<uint64_t> const_obj(const z3::expr& p);
+diff --git a/src/prism/pir/pir.cpp b/src/prism/pir/pir.cpp
+index b05bcf2..dbf6985 100644
+--- a/src/prism/pir/pir.cpp
++++ b/src/prism/pir/pir.cpp
+@@ -19,18 +19,80 @@ thread_local PtrModel g_ptr_model = kLP64;
+ const PtrModel& ptr_model() { return g_ptr_model; }
+ PtrModelScope::PtrModelScope(const PtrModel& m) : prev_(g_ptr_model) { g_ptr_model = m; }
+ PtrModelScope::~PtrModelScope() { g_ptr_model = prev_; }
+-PtrModel ptr_model_of(const ir::Module& m) {
+-    // datalayout pointer spec "p:32:32" / "p0:32:32..." (default LP64)
+-    const std::string& dl = m.datalayout;
++namespace {
++std::vector<std::string> dl_specs(const std::string& dl) {
++    std::vector<std::string> out;
+     std::size_t pos = 0;
+-    while (pos <= dl.size()) {
++    while (pos < dl.size()) {
+         auto e = dl.find('-', pos);
+         if (e == std::string::npos) e = dl.size();
+-        std::string spec = dl.substr(pos, e - pos);
++        out.push_back(dl.substr(pos, e - pos));
+         pos = e + 1;
+-        if (spec.starts_with("p:32") || spec.starts_with("p0:32")) return kILP32;
+     }
+-    return kLP64;
++    return out;
++}
++// address-space-0 pointer size in bits from the datalayout (LLVM default 64)
++unsigned dl_ptr_bits(const std::string& dl) {
++    for (auto& spec : dl_specs(dl)) {
++        std::string_view v;
++        if (spec.starts_with("p:")) v = std::string_view(spec).substr(2);
++        else if (spec.starts_with("p0:")) v = std::string_view(spec).substr(3);
++        else continue;
++        unsigned bits = 0;
++        for (char c : v) {
++            if (c < '0' || c > '9') break;
++            bits = bits * 10 + static_cast<unsigned>(c - '0');
++        }
++        return bits;
++    }
++    return 64;
++}
++}  // namespace
++
++PtrModel ptr_model_of(const ir::Module& m) {
++    // datalayout pointer spec "p:32:32" / "p0:32:32..." (default LP64); "E": big endian
++    PtrModel r = dl_ptr_bits(m.datalayout) == 32 ? kILP32 : kLP64;
++    for (auto& spec : dl_specs(m.datalayout))
++        if (spec == "E") r.big = true;
++    return r;
++}
++
++std::string target_arch(const ir::Module& m) { return m.triple.substr(0, m.triple.find('-')); }
++
++bool target_x86_64(const ir::Module& m) {
++    const auto a = target_arch(m);
++    return a.empty() || a == "x86_64" || a == "amd64";
++}
++
++bool target_x86(const ir::Module& m) {
++    const auto a = target_arch(m);
++    return target_x86_64(m) || a == "i386" || a == "i486" || a == "i586" || a == "i686";
++}
++
++std::string target_unsupported(const ir::Module& m) {
++    const unsigned pb = dl_ptr_bits(m.datalayout);
++    if (pb != 32 && pb != 64)
++        return std::to_string(pb) + "-bit pointers (datalayout \"" + m.datalayout +
++               "\"): PIR's pointer model has 32- and 64-bit pointers only";
++    for (auto& spec : dl_specs(m.datalayout))
++        if (spec.starts_with("ni:"))
++            return "non-integral pointer address spaces (datalayout \"" + m.datalayout + "\") are not modelled";
++    return {};
++}
++
++std::string target_long_double(const ir::Module& m) {
++    const auto a = target_arch(m);
++    const auto& t = m.triple;
++    if (target_x86(m) || a == "m68k") return "x86_fp80";
++    if (a == "aarch64" || a == "aarch64_be" || a == "arm64" || a == "riscv64" || a == "riscv32" || a == "s390x" ||
++        a == "loongarch64" || a == "sparcv9" || a == "sparc64" || a == "mips64" || a == "mips64el")
++        return "fp128";
++    if (a == "powerpc" || a == "powerpc64" || a == "powerpc64le" || a == "ppc" || a == "ppc64" || a == "ppc64le")
++        return t.find("musl") != std::string::npos ? "double" : "ppc_fp128";
++    if (a.starts_with("arm") || a.starts_with("thumb") || a == "mips" || a == "mipsel" || a == "hexagon" ||
++        a == "loongarch32")
++        return "double";
++    return {};
+ }
+ 
+ using prism::i128;
+@@ -175,8 +237,8 @@ std::string mem_stmt_text(const Function& fn, const Stmt& s) {
+         case Stmt::Free: return "free " + args;
+         case Stmt::Load:
+             return var_text(fn, s.dst) + ", " + var_text(fn, s.dst2) + ", " + var_text(fn, s.dst3) + " = load " + args +
+-                   (s.tag ? " tag " + std::to_string(s.tag) : "");
+-        case Stmt::Store: return "store " + args + (s.tag ? " tag " + std::to_string(s.tag) : "");
++                   (s.tag ? " tag " + std::to_string(s.tag) : "") + (s.be ? " be" : "");
++        case Stmt::Store: return "store " + args + (s.tag ? " tag " + std::to_string(s.tag) : "") + (s.be ? " be" : "");
+         case Stmt::MemCpy: return "memcpy " + args;
+         case Stmt::MemSet: return "memset " + args;
+         case Stmt::StackSave: return var_text(fn, s.dst) + " = stacksave";
+@@ -583,7 +645,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
+                         bool uninit = false, t = tainted(s.args.at(0)) || mem_taint, tagbad = false;
+                         for (unsigned k = 0; k < n; ++k) {
+                             auto c = M.read(A(0) + k);
+-                            v |= static_cast<uint64_t>(c.val) << (8 * k);
++                            v |= static_cast<uint64_t>(c.val) << (8 * (s.be ? n - 1 - k : k));
+                             if (!c.init) umask |= uint64_t{1} << k;
+                             uninit = uninit || !c.init;
+                             t = t || c.taint;
+@@ -603,7 +665,7 @@ InterpResult interpret(const Function& fn, const std::vector<uint64_t>& args, ui
+                         if (tainted(s.args.at(0))) mem_taint = true;
+                         const bool per_byte = s.args.at(2).width > 1;
+                         for (unsigned k = 0; k < n; ++k)
+-                            M.write(A(0) + k, mem::ConcMem::Cell{static_cast<uint8_t>(v >> (8 * k)),
++                            M.write(A(0) + k, mem::ConcMem::Cell{static_cast<uint8_t>(v >> (8 * (s.be ? n - 1 - k : k))),
+                                                                  ((A(2) >> (per_byte ? k : 0)) & 1) != 0,
+                                                                  static_cast<uint8_t>(s.tag), t});
+                         break;
+diff --git a/src/prism/pir/stage.cpp b/src/prism/pir/stage.cpp
+index 555b29a..f3d5251 100644
+--- a/src/prism/pir/stage.cpp
++++ b/src/prism/pir/stage.cpp
+@@ -808,12 +808,20 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semant
+         fs::path q(p);
+         return (q.is_relative() ? e.directory / q : q).lexically_normal().string();
+     };
+-    auto lp64_target = [](std::string_view t) {
+-        const auto arch = t.substr(0, t.find('-'));
+-        for (std::string_view a : {"x86_64", "aarch64", "arm64", "riscv64", "powerpc64", "powerpc64le", "ppc64",
+-                                   "ppc64le", "s390x", "loongarch64", "mips64"})
+-            if (arch == a) return true;
+-        return false;
++    // The unit's target (docs/PIR.md "Targets"): its --target (or -target T) and,
++    // for a target other than x86-64, the flags that change that target's ABI,
++    // byte order or instruction set (`--target=mipsel-linux-gnu -mabi=64 -EB`
++    // is big-endian mips64). -m32 / -m16 / -mx32 always: they switch x86-64 to
++    // a 32-bit target. PIR takes pointer width, byte order and layout from the
++    // IR this produces (pir.hpp ptr_model_of, Layout).
++    std::string target;
++    std::vector<std::string> abi;
++    auto abi_flag = [](const std::string& x) {
++        static const std::set<std::string> exact{"-EB", "-EL", "-mbig-endian", "-mlittle-endian", "-mthumb", "-marm",
++                                                 "-msoft-float", "-mhard-float", "-m31", "-mlong-double-64",
++                                                 "-mlong-double-80", "-mlong-double-128"};
++        return exact.count(x) || x.starts_with("-mabi=") || x.starts_with("-march=") || x.starts_with("-mcpu=") ||
++               x.starts_with("-mfloat-abi=") || x.starts_with("-mfpu=");
+     };
+     static const std::set<std::string> kExact{
+         "-nostdinc", "-ffreestanding", "-fshort-wchar", "-funsigned-char", "-fsigned-char", "-fno-common",
+@@ -849,8 +857,13 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semant
+                 std_taken = x;
+             }
+         } else if (x.starts_with("--target=")) {
+-            if (lp64_target(std::string_view(x).substr(9))) out.flags.push_back(x);
+-            else dropped.push_back(x + " (not an LP64 target: PIR's memory model assumes LP64)");
++            target = x.substr(9);
++        } else if (x == "-target" && has_next) {
++            target = a[++i];
++        } else if (x == "-m32" || x == "-m16" || x == "-mx32") {
++            out.flags.push_back(x);
++        } else if (abi_flag(x)) {
++            abi.push_back(x);
+         } else if (kExact.count(x) || x.starts_with("-fno-builtin-") || x.starts_with("-fstrict-flex-arrays=")) {
+             out.flags.push_back(x);
+         } else if (x == "-w" || x.starts_with("-W")) {
+@@ -864,8 +877,19 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semant
+             dropped.push_back(x);
+         }
+     }
++    bool other_target = false;
++    if (!target.empty()) {
++        out.flags.push_back("--target=" + target);
++        const std::string arch = target.substr(0, target.find('-'));
++        other_target = arch != "x86_64" && arch != "amd64";
++        if (other_target) out.flags.insert(out.flags.end(), abi.begin(), abi.end());
++    }
+     if (pre) out.main_file = e.file;
+     out.note = "compile_commands.json entry " + e.file.string();
++    if (other_target) {
++        out.note += "; target --target=" + target;
++        for (auto& f : abi) out.note += " " + f;
++    }
+     if (!std_taken.empty()) out.note += "; " + std_taken;
+     if (pre) out.note += "; preprocessed unit: only language and ABI flags taken";
+     if (out.wrapv)
+@@ -2078,6 +2102,14 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
+     };
+     std::vector<Case> cases;
+     std::vector<std::size_t> todo;
++    // lli runs the IR on this (x86) host: a unit lowered for another target is not run (its datalayout, byte order
++    // and calling convention are not the host's)
++    ir::Module tmod;
++    if (auto tp = ir.find("\ntarget triple = \""); tp != std::string::npos) {
++        tp += 18;
++        tmod.triple = ir.substr(tp, ir.find('"', tp) - tp);
++    }
++    const bool host_target = target_x86(tmod);
+     for (std::size_t i = 0; i < recs.size(); ++i) {
+         auto& r = recs.at(i);
+         if (!r.fn) continue;
+@@ -2085,6 +2117,10 @@ void validate(std::vector<FnRec>& recs, const std::string& ir, const Frontend& f
+         if (!(st == laws::FAILED || st == laws::PROVED || st == laws::PROVED_CERTIFIED ||
+               st == laws::PROVED_UNBOUNDED || st == laws::BOUNDED || st == laws::PROVED_ASSUMING))
+             continue;
++        if (!host_target) {
++            r.f.extra["tv"] = "NOTRUN (target " + tmod.triple + " is not the host's: lli cannot run its IR here)";
++            continue;
++        }
+         if (!cfg.allow_exec) {
+             r.f.extra["tv"] = "NOTRUN (needs --allow-exec)";
+             r.f.extra["exec"] = std::string(laws::NOTRUN);
+@@ -3082,8 +3118,47 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
+     }
+ }
+ 
++// Library models per target (docs/PIR.md "Targets"): the run's own, lowered
++// once before the units, and for a unit compiled for another target (its
++// --compile-commands --target and ABI flags) the models lowered for that
++// unit's triple, once per triple and datalayout. Models whose datalayout is
++// not the unit's are never linked (their size_t, long and pointers would not
++// be the unit's): the library calls stay UNENCODED and the rows say why.
++class TargetModels {
++public:
++    TargetModels(const Frontend& fe, double timeout_s, ModelLibrary base)
++        : fe_(fe), timeout_s_(timeout_s), base_(std::move(base)) {}
++    const ModelLibrary& base() const { return base_; }
++    const ModelLibrary& for_module(const ir::Module& m) {
++        if (base_.units.empty() || m.triple.empty() ||
++            (base_.units.front().triple == m.triple && base_.units.front().datalayout == m.datalayout))
++            return base_;
++        std::lock_guard<std::mutex> lock(mu_);
++        auto& slot = by_target_[m.triple + "\n" + m.datalayout];
++        if (!slot) {
++            slot = std::make_unique<ModelLibrary>(build_models(fe_, timeout_s_, m.triple));
++            for (const auto& mu : slot->units)
++                if (slot->error.empty() && mu.datalayout != m.datalayout)
++                    slot->error = "the models lowered for " + m.triple + " have datalayout \"" + mu.datalayout +
++                                  "\", the unit \"" + m.datalayout + "\" (ABI flags the triple does not carry)";
++            if (!slot->error.empty()) {
++                slot->units.clear();
++                slot->unit_names.clear();
++            }
++        }
++        return *slot;
++    }
++
++private:
++    const Frontend& fe_;
++    double timeout_s_;
++    ModelLibrary base_;
++    std::mutex mu_;
++    std::map<std::string, std::unique_ptr<ModelLibrary>> by_target_;
++};
++
+ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lowered& low,
+-                  const ModelLibrary& models, const std::shared_ptr<HoudiniBudget>& budget) {
++                  TargetModels& tmodels, const std::shared_ptr<HoudiniBudget>& budget) {
+     Analyzed res;
+     auto& out = res.out;
+     auto& recs = res.recs;
+@@ -3125,27 +3200,20 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
+     res.mod = std::make_unique<ir::Module>(cfg.pir_kernel_api.empty() ? ir::parse_module(*ir)
+                                                                        : ir::parse_module_kernel(*ir));
+     auto& mod = *res.mod;
+-    // A big-endian target (datalayout component "E": s390x, sparc64, big-endian powerpc64 / mips64): PIR's memory model
+-    // assembles a multi-byte load little-endian (docs/PIR.md "Memory model"), so a byte-level view of a wider value
+-    // (unions, casts, memcpy into a struct) would be the wrong value. Not checked rather than checked wrongly (Law 7).
+-    {
+-        bool big = false;
+-        std::string comp;
+-        for (char ch : mod.datalayout + "-") {
+-            if (ch == '-') { big = big || comp == "E"; comp.clear(); }
+-            else comp += ch;
+-        }
+-        if (big) {
+-            auto f = base_finding(u);
+-            f.status = std::string(laws::NOTRUN);
+-            f.strength = std::string(laws::STRENGTH_SOME);
+-            f.message = "big-endian target (datalayout \"" + mod.datalayout +
+-                        "\"): PIR's memory model is little-endian; not checked";
+-            f.extra["frontend"] = fe.version;
+-            out.push_back(std::move(f));
+-            return res;
+-        }
++    // The unit's own target (docs/PIR.md "Targets"): pointer width, byte order
++    // and layout come from the IR's datalayout and triple. A target PIR cannot
++    // model is not checked rather than checked as another one (Law 7).
++    if (auto why = target_unsupported(mod); !why.empty()) {
++        auto f = base_finding(u);
++        f.status = std::string(laws::NOTRUN);
++        f.strength = std::string(laws::STRENGTH_SOME);
++        f.message = "target " + (mod.triple.empty() ? std::string("(no triple)") : mod.triple) + ": " + why + "; not checked";
++        f.extra["frontend"] = fe.version;
++        f.extra["target"] = mod.triple;
++        out.push_back(std::move(f));
++        return res;
+     }
++    const ModelLibrary& models = tmodels.for_module(mod);
+     // library operational models for what the unit declares (docs/PIR.md "Library models")
+     link_models(mod, models, cfg.pir_kernel_api);
+     TranslateOptions topt;
+@@ -3262,7 +3330,8 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
+             f.extra["lean_supported"] = lc.supported ? "yes" : "no";
+             if (!lc.supported) f.extra["lean_reason"] = lc.reason;
+         }
+-        if (!tr.fn || tr.fn->ptr.w == 64) export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);  // Lean: LP64 only
++        if (!tr.fn || (tr.fn->ptr.w == 64 && !tr.fn->ptr.big))
++            export_lean_pair(cfg.out, unit_name, mod, irf, fopt, tr);  // Lean: LP64 little-endian only
+         for (int k : tr.folded_used) used_folded.insert(k);
+         if (export_only) {
+             // `prism-qa pir-lean-check` needs the translation, not the model
+@@ -3587,7 +3656,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
+     // library models: lowered once per run (process phase) and cached across
+     // runs; their own time limit, well above the per-unit one: they are
+     // PRISM's code, and every library call of every unit depends on them
+-    auto models = build_models(fe, std::max(120.0, 4 * cfg.timeout));
++    TargetModels tmodels(fe, std::max(120.0, 4 * cfg.timeout), build_models(fe, std::max(120.0, 4 * cfg.timeout)));
++    const ModelLibrary& models = tmodels.base();
+     // C++ library model headers (docs/PIR.md "C++ library models"): written
+     // once per run; without them C++ units use the platform library, and
+     // every C++ function says which one it was checked against.
+@@ -3633,6 +3703,17 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
+             for (auto& f : per.at(i)) f.extra["cxx_models"] = low.at(i).cxx_models;
+         if (!low.at(i).cc_note.empty())
+             for (auto& f : per.at(i)) f.extra["front_end_flags"] = low.at(i).cc_note;
++        if (low.at(i).ir) {
++            // a unit lowered for a target other than x86-64 says which (JSONL "target")
++            ir::Module tm;
++            const auto& t = *low.at(i).ir;
++            if (auto tp = t.find("\ntarget triple = \""); tp != std::string::npos) {
++                tp += 18;
++                tm.triple = t.substr(tp, t.find('"', tp) - tp);
++            }
++            if (!target_x86_64(tm))
++                for (auto& f : per.at(i)) f.extra["target"] = tm.triple;
++        }
+         low.at(i).ir.reset();
+         a = Analyzed{};
+     };
+@@ -3730,7 +3811,7 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
+         try {
+             const prism::clock::Stopwatch t0;
+             progress_note("start", u.path, 0.0);
+-            an.at(i) = run_unit(u, fe, cfg, low.at(i), models, budget);
++            an.at(i) = run_unit(u, fe, cfg, low.at(i), tmodels, budget);
+             progress_note("done", u.path, t0.elapsed_s());
+         } catch (const std::exception& ex) {
+             auto f = base_finding(u);
+diff --git a/src/prism/pir/translate.cpp b/src/prism/pir/translate.cpp
+index ef07ebe..f2987f2 100644
+--- a/src/prism/pir/translate.cpp
++++ b/src/prism/pir/translate.cpp
+@@ -2533,7 +2533,7 @@ bool Tr::format_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
+     // Int: two's complement bits; Fp: IEEE bits (libc_format.cpp tells them apart by the IR type)
+     for (auto& o : in.ops)
+         lits.push_back(o.v.kind == ir::Value::Int || o.v.kind == ir::Value::Fp ? std::optional<uint64_t>(o.v.bits) : std::nullopt);
+-    auto plan = pirmem::plan_format(n, fmt, tys, lits);
++    auto plan = pirmem::plan_format(n, fmt, tys, lits, target_long_double(m), target_x86(m));
+     if (!plan.handled) return false;
+     if (!plan.unencoded.empty()) throw Unenc{plan.unencoded};
+     std::vector<Arg> args;
+diff --git a/src/prism/pir/translate_ctl.inc b/src/prism/pir/translate_ctl.inc
+index 0c919f3..082efcb 100644
+--- a/src/prism/pir/translate_ctl.inc
++++ b/src/prism/pir/translate_ctl.inc
+@@ -972,7 +972,9 @@ void Tr::asm_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
+     if (it == opt.asm_contracts.end()) {
+         // a stated contract wins; otherwise --kernel-api: conservative havoc (translate_kernel.inc)
+         if (!opt.kernel_api.empty()) {
+-            if (asm_exact(fr, in, cur, line)) return;  // exact instruction semantics (translate_asm.inc)
++            // exact x86-64 instruction semantics (translate_asm.inc), only for an x86-64 target: on any other
++            // target the template is another instruction set, and the asm is havocked below
++            if (target_x86_64(m) && asm_exact(fr, in, cur, line)) return;
+             asm_havoc(fr, in, cur, line);
+             return;
+         }
+diff --git a/src/prism/pir/translate_kernel.inc b/src/prism/pir/translate_kernel.inc
+index 7bbd161..dbbb4e1 100644
+--- a/src/prism/pir/translate_kernel.inc
++++ b/src/prism/pir/translate_kernel.inc
+@@ -87,7 +87,8 @@ void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std:
+     if (mem_clobber) mt.havoc_all(cur);
+     // --pir-kernel-current: a %gs read of the running thread (Linux current_task / pcpu_hot, FreeBSD pc_curthread at 0)
+     bool current_read = false;
+-    if (opt.kernel_current && in.asm_text.find("%gs:") != std::string::npos && n_direct == 1 && written.empty() && !in.result.empty()) {
++    if (opt.kernel_current && target_x86_64(m) && in.asm_text.find("%gs:") != std::string::npos && n_direct == 1 &&
++        written.empty() && !in.result.empty()) {
+         for (auto& o : in.ops) {
+             if (o.v.kind == ir::Value::Global &&
+                 (o.v.name == "current_task" || o.v.name == "const_current_task" || o.v.name == "pcpu_hot"))
+diff --git a/src/prism/pir/translate_mem.cpp b/src/prism/pir/translate_mem.cpp
+index 6b57d33..fc34fcc 100644
+--- a/src/prism/pir/translate_mem.cpp
++++ b/src/prism/pir/translate_mem.cpp
+@@ -62,7 +62,18 @@ uint64_t count_of(const ir::Type& t) {
+ // ---------------------------------------------------------------------------
+ 
+ Layout::Layout(const ir::Module& m) : m_(m) {
+-    int_align_ = {{1, 1}, {8, 1}, {16, 2}, {32, 4}, {64, 8}, {128, 16}};
++    // No datalayout (hand-written IR): the x86-64 layout PIR always assumed.
++    // With one, LLVM's defaults (DataLayout.cpp: i64 ABI alignment 4, no i128
++    // entry, f16/f32/f64/f128 natural) overridden by the string's own specs,
++    // exactly as clang's code generator laid the IR out (m68k has no i64 spec:
++    // i64 is 4-aligned there; i386 has f64:32 and f80:32).
++    if (m.datalayout.empty()) {
++        int_align_ = {{1, 1}, {8, 1}, {16, 2}, {32, 4}, {64, 8}, {128, 16}};
++        float_align_ = {{16, 2}, {32, 4}, {64, 8}, {80, 16}, {128, 16}};
++    } else {
++        int_align_ = {{1, 1}, {8, 1}, {16, 2}, {32, 4}, {64, 4}};
++        float_align_ = {{16, 2}, {32, 4}, {64, 8}, {128, 16}};
++    }
+     std::string dl = m.datalayout;
+     std::size_t pos = 0;
+     while (pos < dl.size()) {
+@@ -88,6 +99,15 @@ Layout::Layout(const ir::Module& m) : m_(m) {
+         if (spec.size() > 1 && spec[0] == 'i' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
+             auto v = nums(1);
+             if (v.size() >= 2 && v.at(0) && v.at(1)) int_align_[v.at(0)] = v.at(1) / 8;
++        } else if (spec.size() > 1 && spec[0] == 'f' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
++            auto v = nums(1);
++            if (v.size() >= 2 && v.at(0) && v.at(1)) float_align_[v.at(0)] = v.at(1) / 8;
++        } else if (spec.size() > 1 && spec[0] == 'v' && std::isdigit(static_cast<unsigned char>(spec[1]))) {
++            auto v = nums(1);
++            if (v.size() >= 2 && v.at(0) && v.at(1)) vec_align_[v.at(0)] = v.at(1) / 8;
++        } else if (spec.size() > 1 && spec[0] == 'a' && spec[1] == ':') {
++            auto v = nums(2);
++            if (!v.empty() && v.at(0) >= 8) agg_align_ = v.at(0) / 8;
+         } else if (spec.size() > 1 && spec[0] == 'p' && (spec[1] == ':' || spec.starts_with("p0:"))) {
+             auto v = nums(spec[1] == ':' ? 2 : 3);
+             if (v.size() >= 2 && v.at(0) && v.at(1)) {
+@@ -117,21 +137,29 @@ unsigned Layout::align(const ir::Type& t0) const {
+             return int_align_.rbegin()->second;
+         }
+         case ir::Type::Ptr: return ptr_align_;
+-        case ir::Type::Float:
+-            if (t.text == "half" || t.text == "bfloat") return 2;
+-            if (t.text == "float") return 4;
+-            if (t.text == "double") return 8;
+-            return 16;
++        case ir::Type::Float: {
++            // LLVM: the entry of the format's bit width, else the natural alignment of its size
++            unsigned bits = 128;
++            if (t.text == "half" || t.text == "bfloat") bits = 16;
++            else if (t.text == "float") bits = 32;
++            else if (t.text == "double") bits = 64;
++            else if (t.text == "x86_fp80") bits = 80;
++            if (auto it = float_align_.find(bits); it != float_align_.end()) return it->second;
++            unsigned a = 1;
++            while (a < store_size(t)) a *= 2;
++            return a;
++        }
+         case ir::Type::Array: return align(t.elems.at(0));
+         case ir::Type::Vector: {
+             auto s = store_size(t);
++            if (auto it = vec_align_.find(static_cast<unsigned>(8 * s)); it != vec_align_.end()) return it->second;
+             unsigned a = 1;
+             while (a < s && a < 64) a *= 2;
+             return a;
+         }
+         case ir::Type::Struct: {
+             if (t.text.starts_with("<{")) return 1;
+-            unsigned a = 1;
++            unsigned a = agg_align_;
+             for (auto& e : t.elems) a = std::max(a, align(e));
+             return a;
+         }
+@@ -494,6 +522,7 @@ void MemTr::emit_entry_globals() {
+             Stmt w;
+             w.kind = Stmt::Store;
+             w.args = {st.off ? ptr_add(-1, p, c64(st.off)) : p, Arg::c(st.w, st.bits), Arg::c(1, 1)};
++            w.be = be_value(w.args.at(1).width);
+             t_.push(-1, w);
+         }
+         if (e.init == 2) global_harness(p, *e.g, name);
+@@ -552,6 +581,7 @@ Arg MemTr::global(const std::string& name) {
+         Stmt st;
+         st.kind = Stmt::Store;
+         st.args = {ptr_add(-1, p, c64(8)), np, Arg::c(1, 1)};
++        st.be = be_value(st.args.at(1).width);
+         t_.push(-1, st);
+         return p;
+     }
+@@ -605,6 +635,7 @@ Arg MemTr::global(const std::string& name) {
+         Stmt st;
+         st.kind = Stmt::Store;
+         st.args = {p, f, Arg::c(1, 1)};
++        st.be = be_value(st.args.at(1).width);
+         t_.push(-1, st);
+     } else if (init == 1 && !g->init.empty()) {
+         emit_init(p, 0, g->ty, g->init[0].v, name);
+@@ -624,6 +655,7 @@ void MemTr::global_harness(Arg p, const ir::Global& g, const std::string& name)
+     Stmt st;
+     st.kind = Stmt::Store;
+     st.args = {p, obj, Arg::c(1, 1)};
++    st.be = be_value(st.args.at(1).width);
+     t_.push(-1, st);
+     const std::string a = "global harness: @" + name + " (a mutable pointer global) points at entry to a valid object of " +
+                           std::to_string(kGlobalHarnessBytes) +
+@@ -642,6 +674,7 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
+         Stmt st;
+         st.kind = Stmt::Store;
+         st.args = {at(o), val, Arg::c(1, 1)};
++        st.be = be_value(st.args.at(1).width);
+         t_.push(-1, st);
+     };
+     switch (v.kind) {
+@@ -665,6 +698,7 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
+                 Stmt st;
+                 st.kind = Stmt::Store;
+                 st.args = {at(offs), t_.havoc(-1, value_width(ty, "initializer of"), false, false), Arg::c(1, 0)};
++                st.be = be_value(st.args.at(1).width);
+                 t_.push(-1, st);
+             }
+             return;  // aggregate undef: padding
+@@ -893,13 +927,38 @@ void MemTr::access_checks(int b, Arg p, Arg n, bool write, unsigned al, int line
+                  line);
+ }
+ 
++// Big-endian target (PtrModel::big): a scalar of more than one byte is loaded
++// and stored most significant byte first (Stmt::be). A first-class aggregate
++// or vector value is one bit-vector with its fields at their offsets, which a
++// whole-value byte order cannot express, and an iN whose N is not a multiple
++// of 8 has extension bits LLVM places by the target's order: both UNENCODED
++// on a big-endian target rather than read in the wrong order.
++bool MemTr::be_access(const ir::Type& ty, unsigned w, uint64_t n) const {
++    if (!ptr_model().big || n <= 1) return false;
++    const auto& rt = lay_.resolve(ty);
++    if (rt.kind != ir::Type::Int && rt.kind != ir::Type::Float && rt.kind != ir::Type::Ptr)
++        throw Unenc{"UNENCODED: big-endian load/store of " + rt.text + " (an aggregate or vector value in memory)"};
++    if (w != 8 * n)
++        throw Unenc{"UNENCODED: big-endian load/store of " + rt.text + " (" + std::to_string(w) + " bits in " +
++                    std::to_string(n) + " bytes)"};
++    return true;
++}
++
++bool MemTr::be_value(unsigned w) const {
++    if (!ptr_model().big || w <= 8) return false;
++    if (w % 8 != 0) throw Unenc{"UNENCODED: big-endian store of a " + std::to_string(w) + "-bit value"};
++    return true;
++}
++
+ int MemTr::load(int b, int dst, const ir::Type& ty, Arg ptr, unsigned al, int line, bool check_uninit) {
+     mark_memory();
+     auto w = value_width(ty, "load of");
+     auto n = lay_.store_size(ty);
++    const bool be = be_access(ty, w, n);
+     access_checks(b, ptr, c64(n), false, al, line);
+     Stmt s;
+     s.kind = Stmt::Load;
++    s.be = be;
+     s.dst = dst;
+     s.args = {ptr};
+     s.dst2 = t_.newvar("_ldu" + std::to_string(t_.fn().vars.size()), check_uninit ? 1u : static_cast<unsigned>(n));
+@@ -918,10 +977,12 @@ void MemTr::store(int b, Arg ptr, Arg val, Arg init, const ir::Type& ty, unsigne
+     mark_memory();
+     auto w = value_width(ty, "store of");
+     auto n = lay_.store_size(ty);
++    const bool be = be_access(ty, w, n);
+     access_checks(b, ptr, c64(n), true, al, line);
+     val.width = w;
+     Stmt s;
+     s.kind = Stmt::Store;
++    s.be = be;
+     s.args = {ptr, val, init};
+     s.tag = tag_of(ty);
+     t_.push(b, s);
+@@ -1321,6 +1382,7 @@ Arg MemTr::fresh_cstr(int b, MemKind k, int line) {
+     Stmt st;
+     st.kind = Stmt::Store;
+     st.args = {ptr_add(b, p, n), Arg::c(8, 0), Arg::c(1, 1)};
++    st.be = be_value(st.args.at(1).width);
+     t_.push(b, st);
+     return p;
+ }
+diff --git a/src/prism/pir/translate_mem.hpp b/src/prism/pir/translate_mem.hpp
+index 7ab0f7e..38269bf 100644
+--- a/src/prism/pir/translate_mem.hpp
++++ b/src/prism/pir/translate_mem.hpp
+@@ -51,7 +51,10 @@ public:
+ 
+ private:
+     const ir::Module& m_;
+-    std::map<unsigned, unsigned> int_align_;  // bits -> bytes
++    std::map<unsigned, unsigned> int_align_;    // bits -> bytes
++    std::map<unsigned, unsigned> float_align_;  // bits -> bytes (f specs)
++    std::map<unsigned, unsigned> vec_align_;    // bits -> bytes (v specs)
++    unsigned agg_align_ = 1;                    // a spec: least alignment of a (non-packed) struct
+     unsigned ptr_bytes_ = 8, ptr_align_ = 8;
+ };
+ 
+@@ -211,6 +214,11 @@ private:
+     // counted up to `cap`.
+     uint64_t init_stores(const ir::Type& ty, const ir::Value& v, uint64_t cap) const;
+     void mark_memory() { t_.fn().uses_memory = true; }
++    // big-endian target: whether a load/store of `ty` (w bits in n bytes) is Stmt::be; throws
++    // Unenc for what PIR cannot store in big-endian order (aggregate values, iN with N % 8 != 0)
++    bool be_access(const ir::Type& ty, unsigned w, uint64_t n) const;
++    // the same for a store PIR makes itself (initialisers, harness pointers) of a w-bit scalar
++    bool be_value(unsigned w) const;
+     unsigned tag_of(const ir::Type& ty) const;
+ };
+ 
+@@ -232,7 +240,10 @@ struct FormatPlan {
+ // max_len instead of the type's maximum (`sprintf(v, "%i.%i", 1, 7)` writes 3 characters).
+ PRISM_API FormatPlan plan_format(const std::string& callee, const std::optional<std::string>& fmt,
+                                  const std::vector<ir::Type>& args,
+-                                 const std::vector<std::optional<uint64_t>>& consts = {});
++                                 const std::vector<std::optional<uint64_t>>& consts = {},
++                                 // the target's C long double IR type (pir.hpp target_long_double; "" unknown), and
++                                 // whether the exact __prism_fmtv route may be used (x86 targets only)
++                                 const std::string& long_double = "x86_fp80", bool exact_ok = true);
+ PRISM_API bool is_format_function(const std::string& callee);
+ 
+ }  // namespace prism::pir::pirmem
+diff --git a/tests/cpp/test_pir_header_fns.cpp b/tests/cpp/test_pir_header_fns.cpp
+index 3417d08..65d1bfc 100644
+--- a/tests/cpp/test_pir_header_fns.cpp
++++ b/tests/cpp/test_pir_header_fns.cpp
+@@ -1,7 +1,7 @@
+ // --pir-header-fns (docs/PIR.md "Header functions"): a stub unit that includes a header gets the header functions
+ // PRISM_PIR_ONLY names checked in it; other header code stays skipped. Folded UB in a header function keeps it from a
+ // proof, and the unit's own folded-UB diagnostics are never placed in a header function that has an instruction on the
+-// same line number. A big-endian target is not checked.
++// same line number. A big-endian target is checked as big-endian (test_pir_targets.cpp).
+ #include <doctest/doctest.h>
+ #ifdef ERROR
+ #  undef ERROR
+@@ -151,28 +151,26 @@ TEST_CASE("pir header fns: folded UB in a header function is never a proof; the
+                   (n.fn["unit_fold"].status + ": " + n.fn["unit_fold"].message));
+ }
+ 
+-TEST_CASE("pir: a big-endian target is not checked") {
++TEST_CASE("pir: a big-endian target is checked as big-endian (no longer NOTRUN)") {
+     if (skip_without_frontend()) return;
+-    write("be.c", "int be_fn(int x) { return x; }\n");
++    write("be.c", "int be_fn(int x) { return x; }
++");
+     write("be_cc.json", "[{\"directory\": \"" + kDir.generic_string() + "\", \"file\": \"" + (kDir / "be.c").generic_string() +
+                             "\", \"arguments\": [\"clang\", \"--target=s390x-linux-gnu\", \"-c\", \"" +
+                             (kDir / "be.c").generic_string() + "\"]}]");
+     auto cfg = prism::default_config();
+     cfg.compile_commands = kDir / "be_cc.json";
+     auto g = run("be.c", false, "", cfg);
+-    bool notrun = false;
+     std::string msgs;
+-    for (auto& f : g.unit) {
+-        msgs += f.status + ": " + f.message + "\n";
+-        if (f.status == L::NOTRUN && f.message.find("big-endian") != std::string::npos) notrun = true;
+-    }
+-    if (!notrun && msgs.find("big-endian") == std::string::npos && g.fn.empty() && !g.unit.empty() &&
+-        g.unit.front().message.find("front end") != std::string::npos) {
++    for (auto& f : g.unit) msgs += f.status + ": " + f.message + "
++";
++    if (g.fn.empty() && msgs.find("does not compile") != std::string::npos) {
+         MESSAGE(("clang has no s390x target here: " + msgs));
+         return;
+     }
+-    CHECK_MESSAGE(notrun, msgs);
+-    CHECK_FALSE(g.fn.contains("be_fn"));
++    REQUIRE_MESSAGE(g.fn.contains("be_fn"), msgs);
++    CHECK_MESSAGE(g.fn["be_fn"].status == L::PROVED, g.fn["be_fn"].status + ": " + g.fn["be_fn"].message);
++    CHECK(extra(g.fn["be_fn"], "target").starts_with("s390x"));
+     fs::remove_all(kDir);
+ }
+ 
+diff --git a/tests/cpp/test_pir_targets.cpp b/tests/cpp/test_pir_targets.cpp
+new file mode 100644
+index 0000000..fe5981e
+--- /dev/null
++++ b/tests/cpp/test_pir_targets.cpp
+@@ -0,0 +1,253 @@
++// A unit is checked for its own target (docs/PIR.md "Targets"): its
++// --compile-commands --target (and the ABI flags of a non-x86-64 target) are
++// kept, and PIR takes pointer width, byte order and layout from the IR's
++// datalayout and triple. The same C source is checked as x86-64, i386, arm
++// (ILP32 little-endian), mips, m68k (ILP32 big-endian, m68k with 2-byte int
++// alignment), s390x and powerpc64 (LP64 big-endian); the verdicts differ
++// exactly where the target's semantics differ.
++#include <doctest/doctest.h>
++#ifdef ERROR
++#  undef ERROR
++#endif
++
++#include "prism/config.hpp"
++#include "prism/laws.hpp"
++#include "prism/pir.hpp"
++#include "prism/pir/frontend.hpp"
++
++#include <cstdlib>
++#include <filesystem>
++#include <fstream>
++#include <map>
++#include <string>
++#include <vector>
++
++#ifndef _WIN32
++
++namespace {
++
++namespace fs = std::filesystem;
++namespace pp = prism::pir;
++namespace L = prism::laws;
++
++bool skip_without_frontend() {
++    auto cfg = prism::default_config();
++    std::string why;
++    if (!pp::frontend_usable(cfg, &why)) {
++        MESSAGE(why);
++        return true;
++    }
++    if (!pp::z3_available()) {
++        MESSAGE("NOTRUN: pir needs Z3 (rebuild with -DPRISM_Z3=ON)");
++        return true;
++    }
++    return false;
++}
++
++const fs::path kDir = fs::temp_directory_path() / ("prism_pir_targets_" + std::to_string(::getpid()));
++
++// No system header: a cross libc need not be installed. Every function is
++// pointer-free at its interface, so each is checked without a harness.
++const char* kSrc = R"(typedef __SIZE_TYPE__ size_t;
++void *memcpy(void *, const void *, size_t);
++void *memset(void *, int, size_t);
++/* ILP32: 32-bit long and pointers */
++int ptr_is_32(void) { return 100 / ((int)sizeof(void *) - 4); }
++long mul_big(int a) { if (a < 0 || a > 100) return 0; return (long)a * 100000000L; }
++long mul_small(int a) { if (a < 0 || a > 20) return 0; return (long)a * 100000000L; }
++/* byte order: the first byte of an int in memory */
++int low_first(void) { unsigned v = 0x01020304u; unsigned char *p = (unsigned char *)&v; return 100 / (p[0] - 4); }
++int high_first(void) { unsigned v = 0x01020304u; unsigned char *p = (unsigned char *)&v; return 100 / (p[0] - 1); }
++int short_b1(void) { unsigned short s = 0x0102; unsigned char *p = (unsigned char *)&s; return 10 / (p[1] - 2); }
++static const unsigned g_word = 0x0A0B0C0Du;
++int glob_b0(void) { const unsigned char *p = (const unsigned char *)&g_word; return 100 / (p[0] - 0x0D); }
++/* bytes assembled into a wider value */
++int assemble(void) { unsigned char b[4] = {1, 2, 3, 4}; unsigned v; memcpy(&v, b, 4); return 100 / (int)(v - 0x01020304u); }
++/* a value copied through bytes comes back unchanged on every target */
++int roundtrip(unsigned x) { unsigned char b[4]; unsigned y; memcpy(b, &x, 4); memcpy(&y, b, 4); return 100 / (y == x ? 1 : 0); }
++long long roundtrip64(long long x) { long long y; unsigned char b[8]; memcpy(b, &x, 8); memcpy(&y, b, 8); return 100 / (y == x ? 1 : 0); }
++/* layout: m68k aligns int to 2 (byte 2 is the int's first byte there, padding elsewhere) */
++struct ci { char c; int i; };
++int int_at2(void) { struct ci v; memset(&v, 0, sizeof v); v.i = -1; unsigned char *p = (unsigned char *)&v; return 100 / p[2]; }
++/* layout: i386 aligns double to 4 (f64:32), so byte 11 is the double's last byte there */
++struct cd { char c; double d; };
++int dbl_b11(void) { struct cd v; memset(&v, 0, sizeof v); v.d = 1.0; unsigned char *p = (unsigned char *)&v; return 100 / p[11]; }
++)";
++
++struct Target {
++    const char* name;
++    std::vector<const char*> flags;
++};
++
++const std::vector<Target> kTargets = {
++    {"x86_64", {"--target=x86_64-linux-gnu"}},
++    {"i386", {"--target=i386-linux-gnu"}},
++    {"arm", {"--target=arm-linux-gnueabi", "-mlittle-endian", "-mabi=aapcs-linux", "-marm", "-march=armv6k", "-msoft-float"}},
++    {"mips", {"--target=mips-linux-gnu"}},
++    {"mips64be", {"--target=mipsel-linux-gnu", "-mabi=64", "-EB", "-march=mips3"}},  // the Linux kfrag form: big-endian n64
++    {"m68k", {"--target=m68k-linux-gnu"}},
++    {"s390x", {"--target=s390x-linux-gnu"}},
++    {"ppc64", {"--target=powerpc64-linux-gnu"}},
++};
++
++using ByFn = std::map<std::string, prism::Finding>;
++
++std::map<std::string, ByFn> run_all() {
++    fs::remove_all(kDir);
++    fs::create_directories(kDir);
++    std::string db = "[";
++    std::vector<fs::path> files;
++    for (auto& t : kTargets) {
++        const auto f = kDir / (std::string("t_") + t.name + ".c");
++        std::ofstream(f, std::ios::binary) << kSrc;
++        files.push_back(f);
++        db += std::string(db.size() > 1 ? "," : "") + "\n{\"directory\": \"" + kDir.generic_string() + "\", \"file\": \"" +
++              f.generic_string() + "\", \"arguments\": [\"clang\"";
++        for (auto* fl : t.flags) db += std::string(", \"") + fl + "\"";
++        db += ", \"-c\", \"" + f.generic_string() + "\"]}";
++    }
++    db += "\n]\n";
++    std::ofstream(kDir / "compile_commands.json", std::ios::binary) << db;
++    auto cfg = prism::default_config();
++    cfg.root = kDir;
++    cfg.jobs = 2;
++    cfg.compile_commands = kDir / "compile_commands.json";
++    cfg.solver_cache = kDir / "cache";
++    std::map<std::string, ByFn> by;
++    for (auto& f : pp::run_pir(files, cfg)) {
++        const auto stem = fs::path(f.file).stem().string();  // t_<target>
++        if (f.function && stem.starts_with("t_")) by[stem.substr(2)][*f.function] = f;
++    }
++    return by;
++}
++
++bool proved(const prism::Finding& f) { return L::is_proof(f.status); }
++bool failed(const prism::Finding& f, const char* cls) { return f.status == L::FAILED && f.cls == cls; }
++
++std::string extra(const prism::Finding& f, const char* k) {
++    auto it = f.extra.find(k);
++    return it == f.extra.end() ? std::string() : it->second;
++}
++
++}  // namespace
++
++TEST_CASE("pir targets: one source, checked for x86-64, ILP32 and big-endian targets") {
++    if (skip_without_frontend()) return;
++    auto by = run_all();
++    for (auto& t : kTargets) {
++        INFO(t.name);
++        REQUIRE_MESSAGE(by.count(t.name), "no rows for this target");
++        // every row of a non-x86-64 unit names the target it was checked for
++        if (std::string(t.name) != "x86_64")
++            for (auto& [fn, f] : by[t.name]) CHECK_MESSAGE(!extra(f, "target").empty(), fn);
++        else
++            for (auto& [fn, f] : by[t.name]) CHECK(extra(f, "target").empty());
++    }
++    auto st = [&](const char* t, const char* fn) {
++        const auto& f = by[t][fn];
++        return std::string(t) + " " + fn + ": " + f.status + " " + f.cls + " " + f.message;
++    };
++    const std::vector<std::string> ilp32 = {"i386", "arm", "mips", "m68k"}, lp64 = {"x86_64", "mips64be", "s390x", "ppc64"};
++    const std::vector<std::string> little = {"x86_64", "i386", "arm"}, big = {"mips", "mips64be", "m68k", "s390x", "ppc64"};
++    for (auto& t : ilp32) {
++        CHECK_MESSAGE(failed(by[t]["ptr_is_32"], "INT-DIV-ZERO"), st(t.c_str(), "ptr_is_32"));
++        CHECK_MESSAGE(failed(by[t]["mul_big"], "INT-SIGNED-OVF"), st(t.c_str(), "mul_big"));
++    }
++    for (auto& t : lp64) {
++        CHECK_MESSAGE(proved(by[t]["ptr_is_32"]), st(t.c_str(), "ptr_is_32"));
++        CHECK_MESSAGE(proved(by[t]["mul_big"]), st(t.c_str(), "mul_big"));
++    }
++    for (auto& t : little) {
++        CHECK_MESSAGE(failed(by[t]["low_first"], "INT-DIV-ZERO"), st(t.c_str(), "low_first"));
++        CHECK_MESSAGE(proved(by[t]["high_first"]), st(t.c_str(), "high_first"));
++        CHECK_MESSAGE(proved(by[t]["short_b1"]), st(t.c_str(), "short_b1"));
++        CHECK_MESSAGE(failed(by[t]["glob_b0"], "INT-DIV-ZERO"), st(t.c_str(), "glob_b0"));
++        CHECK_MESSAGE(proved(by[t]["assemble"]), st(t.c_str(), "assemble"));
++    }
++    for (auto& t : big) {
++        CHECK_MESSAGE(proved(by[t]["low_first"]), st(t.c_str(), "low_first"));
++        CHECK_MESSAGE(failed(by[t]["high_first"], "INT-DIV-ZERO"), st(t.c_str(), "high_first"));
++        CHECK_MESSAGE(failed(by[t]["short_b1"], "INT-DIV-ZERO"), st(t.c_str(), "short_b1"));
++        CHECK_MESSAGE(proved(by[t]["glob_b0"]), st(t.c_str(), "glob_b0"));
++        CHECK_MESSAGE(failed(by[t]["assemble"], "INT-DIV-ZERO"), st(t.c_str(), "assemble"));
++    }
++    for (auto& t : kTargets) {
++        CHECK_MESSAGE(proved(by[t.name]["mul_small"]), st(t.name, "mul_small"));
++        CHECK_MESSAGE(proved(by[t.name]["roundtrip"]), st(t.name, "roundtrip"));
++        CHECK_MESSAGE(proved(by[t.name]["roundtrip64"]), st(t.name, "roundtrip64"));
++        // layout: int at offset 2 only on m68k; double at offset 4 only on i386
++        if (std::string(t.name) == "m68k") CHECK_MESSAGE(proved(by[t.name]["int_at2"]), st(t.name, "int_at2"));
++        else CHECK_MESSAGE(failed(by[t.name]["int_at2"], "INT-DIV-ZERO"), st(t.name, "int_at2"));
++        if (std::string(t.name) == "i386") CHECK_MESSAGE(proved(by[t.name]["dbl_b11"]), st(t.name, "dbl_b11"));
++        else if (std::string(t.name) != "m68k")  // m68k: double is 2-aligned (offset 2): byte 11 is padding
++            CHECK_MESSAGE(failed(by[t.name]["dbl_b11"], "INT-DIV-ZERO"), st(t.name, "dbl_b11"));
++    }
++    // the kfrag mips form (--target=mipsel... -mabi=64 -EB) is big-endian mips64, not little-endian mips32
++    CHECK(extra(by["mips64be"]["low_first"], "target").starts_with("mips64"));
++    // big-endian proofs rest on the solver alone: the Lean model is little-endian
++    for (auto& t : big) {
++        const auto& f = by[t]["low_first"];
++        CHECK(f.status != L::PROVED_CERTIFIED);
++        CHECK(extra(f, "lean_supported") != "yes");
++    }
++    // translation validation runs only where lli runs the IR (x86 here)
++    CHECK(extra(by["s390x"]["low_first"], "tv").find("not the host's") != std::string::npos);
++    fs::remove_all(kDir);
++}
++
++TEST_CASE("pir targets: a target PIR's pointer model cannot hold is NOTRUN, never checked as another") {
++    if (skip_without_frontend()) return;
++    fs::remove_all(kDir);
++    fs::create_directories(kDir);
++    const auto f = kDir / "avr.c";
++    std::ofstream(f, std::ios::binary) << "int avr_fn(int x) { return x; }\n";
++    std::ofstream(kDir / "cc.json", std::ios::binary)
++        << "[{\"directory\": \"" << kDir.generic_string() << "\", \"file\": \"" << f.generic_string()
++        << "\", \"arguments\": [\"clang\", \"--target=avr\", \"-mmcu=atmega328\", \"-c\", \"" << f.generic_string() << "\"]}]";
++    auto cfg = prism::default_config();
++    cfg.root = kDir;
++    cfg.jobs = 1;
++    cfg.compile_commands = kDir / "cc.json";
++    bool fn_row = false, notrun = false;
++    std::string msgs;
++    for (auto& r : pp::run_pir({f}, cfg)) {
++        msgs += r.status + ": " + r.message + "\n";
++        if (r.function && *r.function == "avr_fn") fn_row = true;
++        if (r.status == L::NOTRUN && r.message.find("16-bit pointers") != std::string::npos) notrun = true;
++    }
++    if (!notrun && msgs.find("does not compile") != std::string::npos) {
++        MESSAGE("clang has no avr target here: " + msgs);
++        fs::remove_all(kDir);
++        return;
++    }
++    CHECK_MESSAGE(notrun, msgs);
++    CHECK_FALSE(fn_row);
++    fs::remove_all(kDir);
++}
++
++TEST_CASE("pir targets: pointer model, byte order and target queries from the datalayout and triple") {
++    // no datalayout: the x86-64 LP64 model PIR always assumed (hand-written IR)
++    auto lay_of = [](const std::string& dl) {
++        pp::ir::Module m;
++        m.datalayout = dl;
++        return pp::ptr_model_of(m);
++    };
++    CHECK(lay_of("").w == 64);
++    CHECK_FALSE(lay_of("").big);
++    CHECK(lay_of("e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64").w == 32);
++    CHECK(lay_of("E-m:e-p:32:16:32-i8:8:8-i16:16:16-i32:16:32-n8:16:32-a:0:16-S16").big);
++    CHECK(lay_of("E-m:e-p:32:16:32-i8:8:8-i16:16:16-i32:16:32-n8:16:32-a:0:16-S16").w == 32);
++    CHECK(lay_of("E-S64-m:e-i1:8:16-i8:8:16-i64:64-f128:64-v128:64-a:8:16-n32:64").big);
++    CHECK(lay_of("E-S64-m:e-i1:8:16-i8:8:16-i64:64-f128:64-v128:64-a:8:16-n32:64").w == 64);
++    pp::ir::Module avr;
++    avr.datalayout = "e-P1-p:16:8-i8:8-i16:8-i32:8-i64:8-f32:8-f64:8-n8-a:8";
++    CHECK(pp::target_unsupported(avr).find("16-bit pointers") != std::string::npos);
++    pp::ir::Module arm;
++    arm.triple = "armv6k-unknown-linux-gnueabi";
++    CHECK_FALSE(pp::target_x86_64(arm));
++    CHECK(pp::target_long_double(arm) == "double");
++    pp::ir::Module none;
++    CHECK(pp::target_x86_64(none));
++}
++
++#endif
+-- 
+2.53.0.windows.2
+

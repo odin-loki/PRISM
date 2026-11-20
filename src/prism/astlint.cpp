@@ -446,6 +446,7 @@ CompileDbCommand compile_db_command(const fs::path& db_file, const fs::path& src
         fs::path dir;
         fs::path file;
         std::vector<std::string> argv;
+        std::string compiler;
     };
     struct Index {
         std::map<std::string, std::size_t> by_path;
@@ -481,6 +482,7 @@ CompileDbCommand compile_db_command(const fs::path& db_file, const fs::path& src
                     } else if (e.contains("command") && e["command"].is_string()) {
                         argv = shell_split(e["command"].get<std::string>());  // a split of the stored text; no shell runs
                     }
+                    if (!argv.empty()) en.compiler = argv.front();
                     for (std::size_t i = 1; i < argv.size(); ++i)
                         if (!argv[i].starts_with("-W")) en.argv.push_back(std::move(argv[i]));
                     const auto idx = m->entries.size();
@@ -500,6 +502,7 @@ CompileDbCommand compile_db_command(const fs::path& db_file, const fs::path& src
         out.directory = ix->entries[i].dir;
         out.file = ix->entries[i].file;
         out.argv = ix->entries[i].argv;
+        out.compiler = ix->entries[i].compiler;
     };
     if (auto it = ix->by_path.find(detail::canon_path(src)); it != ix->by_path.end()) {
         take(it->second);

@@ -176,4 +176,52 @@ TEST_CASE("pir: a big-endian target is not checked") {
     fs::remove_all(kDir);
 }
 
+// A unit whose compile_commands.json entry builds for a target that is not LP64 (an ILP32 --target, -target, a 32-bit
+// cross compiler, -m32) is NOTRUN with the reason: it is never lowered for the host and checked as x86-64.
+TEST_CASE("pir: a unit built for a target that is not LP64 is not checked (never as x86-64)") {
+    if (skip_without_frontend()) return;
+    // the function would be FAILED on x86-64 (an out-of-bounds read), so a check as the host would give a verdict
+    write("tgt.c", "int tgt_fn(int i) { int a[4] = {0}; return a[i + 8]; }\n");
+    const std::string src = (kDir / "tgt.c").generic_string();
+    auto entry = [&](const std::string& args) {
+        return "[{\"directory\": \"" + kDir.generic_string() + "\", \"file\": \"" + src + "\", \"arguments\": [" + args +
+               ", \"-c\", \"" + src + "\"]}]";
+    };
+    const std::vector<std::pair<std::string, std::string>> cases{
+        {"--target armv7a", "\"clang\", \"--target=armv7a-linux-gnueabihf\""},
+        {"-target i386", "\"clang\", \"-target\", \"i386-unknown-freebsd\""},
+        {"cross gcc", "\"arm-linux-gnueabi-gcc\""},
+        {"cross gcc m68k", "\"m68k-linux-gnu-gcc-12\""},
+        {"-m32", "\"clang\", \"-m32\""},
+        {"-mabi=ilp32", "\"clang\", \"--target=riscv64-linux-gnu\", \"-mabi=ilp32\""},
+        {"--target hexagon", "\"clang\", \"--target=hexagon-unknown-linux-musl\""},
+        {"--target ppc32", "\"clang\", \"--target=powerpc-linux-gnu\""},
+    };
+    for (const auto& [name, args] : cases) {
+        CAPTURE(name);
+        write("tgt_cc.json", entry(args));
+        auto cfg = prism::default_config();
+        cfg.compile_commands = kDir / "tgt_cc.json";
+        auto g = run("tgt.c", false, "", cfg);
+        bool notrun = false;
+        std::string msgs;
+        for (auto& f : g.unit) {
+            msgs += f.status + ": " + f.message + "\n";
+            if (f.status == L::NOTRUN &&
+                f.message.find("target data layout not supported (checked only for LP64 little-endian)") != std::string::npos)
+                notrun = true;
+        }
+        CHECK_MESSAGE(notrun, msgs);
+        CHECK_FALSE(g.fn.contains("tgt_fn"));
+    }
+    // an LP64 entry is checked as before: the read is FAILED
+    write("tgt_cc.json", entry("\"clang\", \"--target=x86_64-linux-gnu\""));
+    auto cfg = prism::default_config();
+    cfg.compile_commands = kDir / "tgt_cc.json";
+    auto g = run("tgt.c", false, "", cfg);
+    REQUIRE(g.fn.contains("tgt_fn"));
+    CHECK(g.fn["tgt_fn"].status == L::FAILED);
+    fs::remove_all(kDir);
+}
+
 #endif

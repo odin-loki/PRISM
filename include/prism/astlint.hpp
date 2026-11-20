@@ -115,7 +115,8 @@ struct CompileDbCommand {
     bool ambiguous = false;
     std::filesystem::path directory;
     std::filesystem::path file;
-    std::vector<std::string> argv;
+    std::vector<std::string> argv;   // the arguments after the compiler (-W* dropped)
+    std::string compiler;            // argv[0] as the entry names it (a cross compiler names its target)
 };
 CompileDbCommand compile_db_command(const std::filesystem::path& db_file, const std::filesystem::path& src);
 

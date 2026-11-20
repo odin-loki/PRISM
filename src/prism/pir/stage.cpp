@@ -856,6 +856,11 @@ struct UnitCc {
     std::string note;          // what was taken and what was not (finding extra "front_end_flags")
     fs::path main_file;        // a preprocessed unit: the source file its #line markers name
     bool wrapv = false;        // --pir-build-semantics: the entry has -fwrapv / -fno-strict-overflow, and -fwrapv is taken
+    // the entry builds for a target that is not LP64 (an ILP32 --target / -target, a 32-bit cross compiler such as
+    // arm-linux-gnueabi-gcc, -m32, -mabi=ilp32): what says so, "" when nothing does. PIR checks LP64 little-endian
+    // only; lowering such a unit for the host would check it as x86-64, so the unit is NOTRUN (prepare_unit).
+    std::string not_lp64;
+    bool not_lp64_x86_32 = false;  // the target is 32-bit x86 (i386 .. i686, -m32): --data-model ILP32 models it
 };
 
 UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semantics = false) {
@@ -877,6 +882,37 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semant
             if (arch == a) return true;
         return false;
     };
+    // 32-bit (or otherwise not LP64) architectures of a target triple or a cross compiler's prefix
+    auto ilp32_arch = [](std::string_view arch) {
+        for (std::string_view a : {"i386", "i486", "i586", "i686", "x86", "arm", "armv4t", "armv5", "armv5te", "armv6",
+                                   "armv7", "armv7a", "armv7l", "armv7m", "armv8m", "armeb", "armel", "armhf", "thumb",
+                                   "thumbv7", "thumbeb", "m68k", "mips", "mipsel", "mipsisa32", "hexagon", "powerpc", "ppc",
+                                   "powerpcle", "ppcle", "sparc", "sparcel", "sh", "sh4", "sh3", "xtensa", "riscv32",
+                                   "arc", "csky", "microblaze", "microblazeel", "nios2", "or1k", "openrisc", "hppa",
+                                   "parisc", "s390", "loongarch32", "lanai", "msp430", "avr", "bpfel32", "le32", "wasm32",
+                                   "x32", "x86_64_x32", "aarch64_32", "arm64_32"})
+            if (arch == a) return true;
+        return arch.starts_with("armv") || arch.starts_with("thumbv") || arch.starts_with("mips32");
+    };
+    auto x86_32_arch = [](std::string_view arch) {
+        return arch == "i386" || arch == "i486" || arch == "i586" || arch == "i686" || arch == "x86";
+    };
+    auto note_target = [&](std::string_view t, const std::string& what) {
+        const auto arch = t.substr(0, t.find('-'));
+        if (lp64_target(t) || !out.not_lp64.empty()) return;
+        out.not_lp64 = what;
+        out.not_lp64_x86_32 = x86_32_arch(arch);
+    };
+    if (!e.compiler.empty()) {  // a cross compiler names its target: arm-linux-gnueabi-gcc, i686-linux-gnu-gcc-12
+        const std::string cc0 = fs::path(e.compiler).filename().string();
+        if (auto dash = cc0.find('-'); dash != std::string::npos && dash > 0) {
+            const std::string arch = cc0.substr(0, dash);
+            if (ilp32_arch(arch)) {
+                out.not_lp64 = "compiler " + cc0;
+                out.not_lp64_x86_32 = x86_32_arch(arch);
+            }
+        }
+    }
     static const std::set<std::string> kExact{
         "-nostdinc", "-ffreestanding", "-fshort-wchar", "-funsigned-char", "-fsigned-char", "-fno-common",
         "-fcommon", "-fms-extensions", "-fplan9-extensions", "-fno-builtin", "-m64", "-mno-sse", "-mno-sse2",
@@ -912,7 +948,24 @@ UnitCc unit_cc_flags(const fs::path& db, const fs::path& unit, bool build_semant
             }
         } else if (x.starts_with("--target=")) {
             if (lp64_target(std::string_view(x).substr(9))) out.flags.push_back(x);
-            else dropped.push_back(x + " (not an LP64 target: PIR's memory model assumes LP64)");
+            else {
+                dropped.push_back(x + " (not an LP64 target: PIR's memory model assumes LP64)");
+                note_target(std::string_view(x).substr(9), x);
+            }
+        } else if ((x == "-target" || x == "--target") && has_next) {
+            ++i;
+            if (lp64_target(a[i])) out.flags.push_back("--target=" + a[i]);
+            else {
+                dropped.push_back(x + " " + a[i] + " (not an LP64 target: PIR's memory model assumes LP64)");
+                note_target(a[i], x + " " + a[i]);
+            }
+        } else if (x == "-m32" || x == "-m16" || x == "-mx32" || x.starts_with("-mabi=ilp32") || x == "-mabi=32" ||
+                   x == "-mabi=n32" || x == "-mabi=o32" || x == "-mabi=x32") {
+            dropped.push_back(x + " (not an LP64 target: PIR's memory model assumes LP64)");
+            if (out.not_lp64.empty()) {
+                out.not_lp64 = x;
+                out.not_lp64_x86_32 = x == "-m32";
+            }
         } else if (kExact.count(x) || x.starts_with("-fno-builtin-") || x.starts_with("-fstrict-flex-arrays=")) {
             out.flags.push_back(x);
         } else if (x == "-w" || x.starts_with("-W")) {
@@ -2458,6 +2511,8 @@ struct Lowered {
     std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
     std::string cc_note;     // --compile-commands: the entry used and the flags not taken
     bool wrapv = false;      // --pir-build-semantics: lowered with the build's -fwrapv
+    std::string not_lp64;    // --compile-commands: the entry's target is not LP64 (UnitCc::not_lp64)
+    bool not_lp64_x86_32 = false;
     fs::path cc_main;        // a preprocessed unit (x.i): the entry's source file (x.c), whose name its #line markers carry
     // Functions the front end rejected, cut out so the rest of the unit could
     // be lowered (salvage_unit): name, line, the first clang error.
@@ -3642,6 +3697,21 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
     const auto& ir = low.ir;
     const auto& folded = low.folded;
     const auto& sshl = low.sshl;
+    // A unit built for a target that is not LP64 (ILP32: arm, i386, m68k, mips32, hexagon, ppc32, ...): PIR's memory
+    // model, the pointer harness and the kernel specs are LP64 little-endian, and the unit was lowered for the host,
+    // so checking it would check it as x86-64. Not checked (Law 7), like a big-endian target. 32-bit x86 stays
+    // checked when --data-model ILP32 asks for it (the ILP32 pointer model and the i386 front-end target).
+    if (!low.not_lp64.empty() && !(low.not_lp64_x86_32 && is_ilp32(cfg.data_model))) {
+        auto f = base_finding(u);
+        f.status = std::string(laws::NOTRUN);
+        f.strength = std::string(laws::STRENGTH_SOME);
+        f.message = "target data layout not supported (checked only for LP64 little-endian): the compile_commands.json "
+                    "entry builds for a target that is not LP64 (" + low.not_lp64 + "); not checked";
+        f.extra["frontend"] = fe.version;
+        f.extra["target"] = low.not_lp64;
+        out.push_back(std::move(f));
+        return res;
+    }
     if (!ir) {
         auto f = base_finding(u);
         f.status = std::string(laws::ERROR);
@@ -4599,6 +4669,8 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                     l.cc_note = std::move(cc.note);
                     l.cc_main = std::move(cc.main_file);
                     l.wrapv = cc.wrapv;
+                    l.not_lp64 = cc.not_lp64;
+                    l.not_lp64_x86_32 = cc.not_lp64_x86_32;
                 } else {
                     l.cc_note = cc.ambiguous
                                     ? "--compile-commands: several entries match this preprocessed unit's stem; default flags used"
