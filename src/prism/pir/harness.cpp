@@ -32,6 +32,10 @@ struct Use {
     // integer values loaded from the object at a constant offset: (function, register) -> (byte offset, bits)
     // (--pir-length-pairing: a count field bounding the index of a pointer field)
     std::map<std::pair<const ir::Function*, std::string>, std::pair<uint64_t, unsigned>> int_loads;
+    // the largest `align A` of a load or store through a field address (a getelementptr from the pointer) at a constant
+    // offset that is a multiple of A: clang derives that alignment from the pointee type's declared alignment
+    // (IR struct types carry no alignment: `struct __aligned(64) s` is `type { ... }`), so it is the type's own
+    unsigned field_align = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -162,6 +166,32 @@ int inbound_successor(const FnFacts& f, int branch_block, const ir::Inst& br, co
     const auto& pr = f.preds[static_cast<std::size_t>(it->second)];
     if (pr.size() != 1 || pr[0] != branch_block) return -1;
     return it->second;
+}
+
+// (pointer argument, length argument) positions of library functions whose length bounds the bytes they access
+// through that pointer. Only the caller's objects count: the user-space side of copy_from_user / copy_to_user is not.
+std::vector<std::pair<std::size_t, std::size_t>> library_length_args(const std::string& callee) {
+    using V = std::vector<std::pair<std::size_t, std::size_t>>;
+    static const std::map<std::string, V> table{
+        {"memcpy", {{0, 2}, {1, 2}}},        {"memmove", {{0, 2}, {1, 2}}},     {"memcmp", {{0, 2}, {1, 2}}},
+        {"bcmp", {{0, 2}, {1, 2}}},          {"memset", {{0, 2}}},              {"memchr", {{0, 2}}},
+        {"__memcpy", {{0, 2}, {1, 2}}},      {"__memset", {{0, 2}}},            {"__memmove", {{0, 2}, {1, 2}}},
+        {"memcpy_fromio", {{0, 2}}},         {"memcpy_toio", {{1, 2}}},         {"memscan", {{0, 2}}},
+        {"strscpy", {{0, 2}}},               {"sized_strscpy", {{0, 2}}},       {"strlcpy", {{0, 2}}},
+        {"strncpy", {{0, 2}}},               {"strlcat", {{0, 2}}},             {"strnlen", {{0, 1}}},
+        {"strncmp", {{0, 2}, {1, 2}}},       {"snprintf", {{0, 1}}},            {"vsnprintf", {{0, 1}}},
+        {"scnprintf", {{0, 1}}},             {"vscnprintf", {{0, 1}}},          {"copy_from_user", {{0, 2}}},
+        {"_copy_from_user", {{0, 2}}},       {"__copy_from_user", {{0, 2}}},    {"raw_copy_from_user", {{0, 2}}},
+        {"copy_to_user", {{1, 2}}},          {"_copy_to_user", {{1, 2}}},       {"__copy_to_user", {{1, 2}}},
+        {"raw_copy_to_user", {{1, 2}}},      {"copyin", {{1, 2}}},              {"copyout", {{0, 2}}},
+        {"bcopy", {{0, 2}, {1, 2}}},         {"bzero", {{0, 1}}},               {"explicit_bzero", {{0, 1}}},
+        {"memzero_explicit", {{0, 1}}},
+    };
+    // clang's intrinsics: @llvm.memcpy.p0.p0.i64(dst, src, len, volatile), memmove, memset(dst, byte, len, volatile)
+    if (callee.starts_with("llvm.memcpy.") || callee.starts_with("llvm.memmove.")) return {{0, 2}, {1, 2}};
+    if (callee.starts_with("llvm.memset.")) return {{0, 2}};
+    auto it = table.find(callee);
+    return it == table.end() ? V{} : it->second;
 }
 
 bool dominates(const FnFacts& f, int a, int b) { return f.dom[static_cast<std::size_t>(b)][static_cast<std::size_t>(a)] != 0; }
@@ -319,7 +349,29 @@ void pair_evidence(const ir::Module& m, const Layout& lay, const ir::Function& g
             out.push_back(std::move(e));
         }
     }
-    // (3) the pointer and its count passed together to a module function
+    // (3) a library call with an explicit length: the pointer argument and the length argument that resolves to the
+    // count (memcpy(buf, src, len), memcmp, memset, strscpy, snprintf(buf, size, ...), copy_from_user(buf, u, n) ...).
+    // The call reads or writes up to `len` bytes through the pointer, so the count is in bytes (i8 elements).
+    for (const auto& bl : g.blocks)
+        for (const auto& in : bl.insts) {
+            if (in.op != "call" || in.callee.empty() || in.callee_op) continue;
+            for (const auto& [pi, li] : library_length_args(in.callee)) {
+                if (pi >= in.ops.size() || li >= in.ops.size()) continue;
+                const auto& pa = in.ops[pi];
+                if (pa.v.kind != ir::Value::Local || !ptrs.count(pa.v.name)) continue;
+                if (in.ops[li].v.kind != ir::Value::Local) continue;
+                const std::string k = count_of(strip_casts(f, in.ops[li]));
+                if (k.empty()) continue;
+                PairEvidence e;
+                e.count = k;
+                e.elem = ir::parse_type("i8");
+                e.esz = 1;
+                e.is_signed = false;  // a length argument is a size_t
+                e.how = "length argument of " + in.callee + " (" + g.name + ")";
+                out.push_back(std::move(e));
+            }
+        }
+    // (4) the pointer and its count passed together to a module function
     if (depth >= 3) return;
     for (const auto& bl : g.blocks)
         for (const auto& in : bl.insts) {
@@ -555,6 +607,12 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                         u.scalar_ty = *acc;
                     if (in.op == "load" && acc->kind == ir::Type::Int && !in.result.empty() && acc->bits && acc->bits <= 64)
                         u.int_loads[{&g, in.result}] = {static_cast<uint64_t>(a), acc->bits};
+                    // an access through the pointer itself (no field address) says nothing about the type: a cast to an
+                    // over-aligned type (`*(long __aligned(128) *)p`) claims its own alignment
+                    if (in.align && (in.align & (in.align - 1)) == 0 && addr->v.name != rootname &&
+                        static_cast<uint64_t>(a) % in.align == 0)
+                        if (auto d = defs.find(addr->v.name); d != defs.end() && d->second->op == "getelementptr")
+                            u.field_align = std::max(u.field_align, in.align);
                     if (in.op == "load" && acc->kind == ir::Type::Ptr && !in.result.empty()) {
                         u.ptr_fields[static_cast<uint64_t>(a)].push_back({&g, in.result});
                         if (called.count(in.result) && addr->v.kind == ir::Value::Local) {
@@ -637,13 +695,14 @@ struct Builder {
         c->elems = 0;
         c->bytes = 0;
         c->basis = "length pairing";
+        c->align = harness_align(lay, lp->elem);
         const std::string cnt = n.name + "->@" + std::to_string(lp->count_off);
         plan.assumptions.push_back(
             "length pairing: " + fname + " points to at least " + cnt + " elements (inferred from usage): an object of " +
             (lp->is_signed ? "max(" + cnt + ", 0)" : cnt + " (unsigned)") + " x " + std::to_string(lp->elem_bytes) + " bytes (" +
             lp->elem.text + "), the count being the i" + std::to_string(lp->count_bits) + " field at byte " +
             std::to_string(lp->count_off) + " of " + n.name + " as it is at entry; size below 2^47 bytes; evidence: " +
-            lp->evidence + "; 16-byte aligned, arbitrary contents, pointer fields of its elements arbitrary (auto harness)");
+            lp->evidence + "; " + std::to_string(c->align) + "-byte aligned, arbitrary contents, pointer fields of its elements arbitrary (auto harness)");
         c->pair = std::move(lp);
         return c;
     }
@@ -708,7 +767,15 @@ struct Builder {
                 if (depth == 0) fail = "pointee object larger than the pointer model allows";
                 return nullptr;
             }
-            if (!container) n->elems = std::max<uint64_t>(n->elems, (u.max_end + esz - 1) / esz);
+            if (!container) {
+                const uint64_t reach = (u.max_end + esz - 1) / esz;
+                if (reach > n->elems)  // say so: the size then comes from the accesses themselves, not the default
+                    n->basis += "; raised to " + std::to_string(reach) + " elements to reach the highest constant offset accessed";
+                n->elems = std::max<uint64_t>(n->elems, reach);
+            }
+            n->align = harness_align(lay, n->type);
+            if (n->type_known && !container && lay.resolve(n->type).kind == ir::Type::Struct && u.field_align > n->align)
+                n->align = std::min(u.field_align, 4096u);
             n->bytes = n->elems * esz;
         } catch (const Unenc& e) {
             if (depth == 0) fail = e.reason;
@@ -720,7 +787,7 @@ struct Builder {
                                                      : std::string(" points to the start of a valid object of ")) +
                                    std::to_string(n->bytes) +
                                    " bytes (" + std::to_string(n->elems) + " x " + n->type.text + "; " + n->basis +
-                                   "), 16-byte aligned, fields initialised with arbitrary values (auto harness)");
+                                   "), " + std::to_string(n->align) + "-byte aligned, fields initialised with arbitrary values (auto harness)");
         const uint64_t psz = lay.store_size(ir::parse_type("ptr"));
         for (auto& [off, rs] : u.ptr_fields) {
             if (n->member_off + off + psz > n->bytes) continue;
@@ -832,6 +899,15 @@ std::optional<HarnessPlan> plan_pointer_harness(const ir::Module& m, const Layou
                  "; pointer fields left arbitrary: " + std::to_string(cd) + " past the depth bound, " + std::to_string(cc) +
                  " over the object cap of " + std::to_string(opt.max_objects) + ", " + std::to_string(cn) + " without pointee type evidence";
     return std::move(b.plan);
+}
+
+unsigned harness_align(const Layout& lay, const ir::Type& t) {
+    unsigned a = 16;
+    try {
+        a = std::max(a, static_cast<unsigned>(lay.align(t)));
+    } catch (const Unenc&) {
+    }
+    return std::min(a, 4096u);
 }
 
 std::optional<LengthPair> infer_param_length(const ir::Module& m, const Layout& lay, const ir::Function& f, const ir::Param& p) {

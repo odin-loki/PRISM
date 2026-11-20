@@ -477,8 +477,16 @@ the module functions it passes the pointer to (three calls deep):
   `--pir-harness-elems` elements (default 16), at least what the constant
   offsets reach. A type the function never accesses: `--pir-harness-bytes`
   bytes (default 64). The defaults are stated in the assumption.
-* **Fields** are unconstrained: the object has arbitrary initialised bytes
-  and is 16-byte aligned. No field value is assumed.
+* **Fields** are unconstrained: the object has arbitrary initialised bytes.
+  No field value is assumed.
+* **Alignment**: the object has its type's own alignment, at least 16 bytes
+  (`harness_align`, at most 4096): a struct declared `__aligned(64)` or with
+  a `____cacheline_aligned` member is 64-byte aligned, as every object of the
+  type is, so its `align 64` accesses are not reported as `MEM-MISALIGNED`.
+  An access that claims more than the type's alignment (`*(T __aligned(128)
+  *)p` on a `long *`) is still a violation under the harness. The alignment
+  is in the assumption (`N-byte aligned`), and `--pir-discharge` checks it at
+  the call sites as far as the accesses need it.
 * **Nested pointers**: a pointer field the function loads and dereferences
   (its pointee type found by the same rules) gets its own object and the
   pointer is stored into the field, down to `--pir-harness-depth` levels
@@ -531,6 +539,17 @@ itself shows (`harness.cpp` `pair_evidence`), after mem2reg:
   (`while (len--)`: `n != 0`, `n > 0`) or an index up from 0 to `count`
   (`i < count`, `i != count`), with a load or store through `P'` on the
   in-bound side.
+* **Library calls with a length.** The pointer passed to a library function
+  together with a length argument that resolves to the count:
+  `memcpy`/`memmove`/`memcmp`/`bcmp` (both pointers), `memset`, `memchr`,
+  `strscpy`, `strlcpy`, `strncpy`, `strlcat`, `strncmp`, `strnlen`,
+  `snprintf`/`vsnprintf`/`scnprintf` (buffer, size), `copy_from_user` (the
+  kernel destination), `copy_to_user` (the kernel source), FreeBSD
+  `copyin`/`copyout`, `bcopy`, `bzero`, `memzero_explicit`, and clang's
+  `llvm.memcpy`/`llvm.memmove`/`llvm.memset` (`harness.cpp`
+  `library_length_args`). The count is then in bytes (`i8` elements) and
+  unsigned. `memcpy(dst, src, n + 1)` is not evidence (the length is not the
+  count).
 * **Passed on.** The pointer and an integer that resolves to the count
   passed to a module function (not a library model) are searched there,
   three calls deep.
@@ -550,9 +569,9 @@ access (`if (idx >= len) return buf[idx];`), changes nothing.
 sizeof(T)` bytes, symbolic in `count`: `max(count, 0)` elements when every
 bound is a signed comparison, otherwise `count` read as unsigned (`!=`
 bounds and `while (len--)` count unsigned); the size must stay below 2^47
-bytes (`count < 2^47 / sizeof(T)`, the pointer model's object size). It is
-16-byte aligned with arbitrary initialised contents, like a `requires`
-object; it is flat (pointer fields of its elements are arbitrary values).
+bytes (`count < 2^47 / sizeof(T)`, the pointer model's object size). It has
+arbitrary initialised contents, like a `requires` object, and is 16-byte
+aligned (a field pair: its element type's alignment, at least 16); it is flat (pointer fields of its elements are arbitrary values).
 A field pair reads the count from the containing object at entry (the
 function may change the field afterwards; the object keeps its entry size).
 An object of exactly `count` elements is the weakest case of "at least

@@ -2739,13 +2739,13 @@ Arg alloc_paired_node(Tr& tr, const pirmem::HarnessNode& c, Arg parent, uint64_t
     }
     tr.assume(-1, tr.assign(-1, Op::Ult, 1, {n, Arg::c(64, max_obj_size() / lp.elem_bytes)}));
     Arg size = tr.assign(-1, Op::Mul, 64, {n, Arg::c(64, lp.elem_bytes)});
-    return tr.mt.alloc(-1, size, MemKind::Extern, 2, "*" + c.name + " (length pairing)", 0);
+    return tr.mt.alloc(-1, size, MemKind::Extern, 2, "*" + c.name + " (length pairing)", 0, -1, c.align);
 }
 
 // Allocates the objects of an automatic pointer harness (harness.cpp) and
 // stores the nested pointers: returns the pointer to `n`'s object.
 Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
-    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0);
+    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0, -1, n.align);
     const auto ptr_ty = ir::parse_type("ptr");
     std::set<uint64_t> bound;  // byte offsets (from the object start) that got an object of their own
     for (const auto& [off, child] : n.nested) {

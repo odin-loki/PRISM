@@ -95,3 +95,21 @@ int ring_get_incl(struct ring *r, u32 i) {
 
 /* the head field is not compared with anything: no pairing for slots[head] */
 int ring_head(struct ring *r) { return r->slots[r->head]; }
+
+/* library calls with an explicit length (--pir-length-pairing): the pointer and the length argument */
+void *memcpy(void *d, const void *s, size_t n);
+void *memset(void *d, int c, size_t n);
+int memcmp(const void *a, const void *b, size_t n);
+
+int lib_eq(const u8 *a, const u8 *b, size_t len) { return memcmp(a, b, len); }
+void lib_copy(u8 *dst, const u8 *src, size_t n) { memcpy(dst, src, n); }
+void lib_zero(u8 *p, size_t n) { memset(p, 0, n); }
+
+/* off by one after the library call: p[n] is one past the n bytes the pairing gives (FAILED) */
+void lib_zero_term(u8 *p, size_t n) {
+    memset(p, 0, n);
+    p[n] = 0;
+}
+
+/* the length is not the parameter itself: no pairing */
+void lib_copy_plus(u8 *dst, const u8 *src, size_t n) { memcpy(dst, src, n + 1); }

@@ -74,6 +74,7 @@ struct HarnessNode {
     uint64_t bytes = 0;              // object size
     std::string basis;               // why this type/size
     uint64_t member_off = 0;         // container_of: the parameter points this many bytes into the object
+    unsigned align = 16;             // the object's alignment: its type's own (ABI / __aligned), at least 16 (harness_align)
     // pointer fields (byte offset) that get their own object
     std::vector<std::pair<uint64_t, std::shared_ptr<HarnessNode>>> nested;
     // pointer fields the function loads and dereferences that stay arbitrary
@@ -88,6 +89,10 @@ struct HarnessNode {
     // entry (bytes and elems are then 0). The node is flat: pointer fields of its elements are arbitrary values.
     std::optional<LengthPair> pair;
 };
+
+// Alignment of a harness object of type t: max(16, the type's alignment), at most 4096. A type declared with a larger
+// alignment (____cacheline_aligned members, __aligned(64)) is aligned like that, as every object of the type is.
+unsigned harness_align(const Layout& lay, const ir::Type& t);
 
 struct HarnessPlan {
     std::shared_ptr<HarnessNode> root;

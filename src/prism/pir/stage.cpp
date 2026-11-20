@@ -2764,7 +2764,7 @@ std::string ir_symbol_at(const std::string& t, std::size_t at, std::size_t* end)
 }
 
 // Alignment beyond the accessed type's own (an explicit `align N` on a load or store, N above the type's ABI
-// alignment) of any load or store of the function or of a module function it calls, at most the harness's 16.
+// alignment) of any load or store of the function or of a module function it calls, at most 4096 (obligation_of caps it at the harness object's alignment).
 // The proof used the object's alignment only in the access checks (MemTr::access_checks), so the call sites must
 // give each object its type's ABI alignment, or this excess if it is larger.
 unsigned excess_access_align(const ir::Module& mod, const pirmem::Layout& lay, const ir::Function& g) {
@@ -2789,7 +2789,7 @@ unsigned excess_access_align(const ir::Module& mod, const pirmem::Layout& lay, c
                     if (const auto* c = mod.find(in.callee); c && !c->is_declaration) work.push_back(c);
             }
     }
-    return std::min(a, 16u);
+    return std::min(a, 4096u);
 }
 
 std::shared_ptr<ObligationNode> obligation_of(const pirmem::HarnessNode& n, const pirmem::Layout& lay, unsigned excess) {
@@ -2799,9 +2799,10 @@ std::shared_ptr<ObligationNode> obligation_of(const pirmem::HarnessNode& n, cons
     o->member_off = n.member_off;
     o->check_init = n.bytes <= 1024;
     try {
-        o->align = std::min(16u, std::max(lay.align(n.type), excess));
+        // what the accesses need, at most what the proof had (the harness object's alignment)
+        o->align = std::min(n.align, std::max(lay.align(n.type), excess));
     } catch (const pirmem::Unenc&) {
-        o->align = 16;
+        o->align = n.align;
     }
     for (const auto& [off, c] : n.nested) o->nested.emplace_back(off, obligation_of(*c, lay, excess));
     return o;

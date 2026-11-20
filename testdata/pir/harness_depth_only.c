@@ -12,11 +12,14 @@ struct cell {
 /* five links: below depth 5 the last pointer is arbitrary (NEEDS-HARNESS) */
 int chain5(struct cell *c) { return c->next->next->next->next->next->v; }
 
-/* the read is past any default object: whatever the depth, the pointer it
- * goes through is bounded by nothing the code states (never a proof) */
-int cookie_far(struct cell *c) {
+/* the index is bounded by nothing the code states: whatever the depth, the
+ * object the nested pointer gets cannot cover it (never a proof). (With a
+ * literal index such as q[1000] the harness sizes the object to reach it,
+ * 1001 elements, and says so in the assumption: that is a proof only under
+ * that stated size.) */
+int cookie_far(struct cell *c, int i) {
     const int *q = c->next->cookie;
-    return q ? q[1000] : 0;
+    return q ? q[i] : 0;
 }
 
 /* walks the list as far as it goes: the depth bound always leaves a link */
