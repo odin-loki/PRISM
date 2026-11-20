@@ -440,6 +440,10 @@ struct OpsField {
 // that struct type (a named assumption per row used). TSV: struct ("%struct.NAME"), byte offset, width (bytes),
 // kind, a, b, status, source. Kinds: "valid" (a pointer field points to a fresh object of `a` bytes, arbitrary
 // contents), "nonnull" (a pointer field is not NULL), "range" (an integer field, signed, a <= v <= b).
+// An optional 9th column scopes the row: "fn:GLOB" (the analysed function's name), "unit:GLOB" (the compile unit's
+// path) or "module:GLOB" (the unit's path as well, for a directory such as "*/drivers/net/ethernet/intel/*");
+// empty = every function (global). A row applies only where its scope matches (field_invariant_applies), and the
+// assumption names the scope. '*' and '?' are the glob characters; '*' also matches '/'.
 struct FieldInvariant {
     std::string struct_type;
     uint64_t offset = 0;
@@ -447,7 +451,9 @@ struct FieldInvariant {
     std::string kind;
     int64_t a = 0, b = 0;
     std::string status, source;
+    std::string scope;
 };
+PRISM_API bool field_invariant_applies(const FieldInvariant& fi, const std::string& function, const std::string& unit_path);
 // One lock contract of --lock-contracts (TSV, docs/KERNEL_CONCURRENCY.md section 14), for
 // unmodified code: the analysed (root) function acquires, releases or requires a lock.
 struct LockContract {

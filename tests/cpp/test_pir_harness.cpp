@@ -437,6 +437,42 @@ TEST_CASE("pir harness: --pir-field-invariants keeps only the rows a proof needs
     fs::remove(tsv, ec);
 }
 
+TEST_CASE("pir harness: a scoped field-invariant row applies only inside its scope") {
+    if (skip_without_frontend()) return;
+    namespace L = prism::laws;
+    auto run_with = [&](const std::string& scope) {
+        const auto tsv = fs::temp_directory_path() / "prism_field_invariants_scope_test.tsv";
+        {
+            std::ofstream o(tsv);
+            o << "%struct.fidev\t8\t4\trange\t1\t10\tUNVALIDATED\ttest\t" << scope << "\n";
+        }
+        auto cfg = prism::default_config();
+        cfg.pir_harness = true;
+        cfg.pir_field_invariants = tsv;
+        auto st = run_file(cfg, "field_invariants.c");
+        std::error_code ec;
+        fs::remove(tsv, ec);
+        REQUIRE(st.contains("div_by_field"));
+        return st["div_by_field"];
+    };
+    // in scope: the function, its unit, a directory glob
+    for (const char* sc : {"fn:div_by_*", "unit:*/field_invariants.c", "module:*/testdata/pir/*"}) {
+        auto f = run_with(sc);
+        CHECK_MESSAGE(f.status == L::PROVED_ASSUMING, (std::string(sc) + ": " + f.status + " " + f.message));
+        CHECK_MESSAGE(extra(f, "assumptions").find(std::string("scope ") + sc) != std::string::npos, sc);
+    }
+    // out of scope: another function, another unit, another directory: the row does not apply, never proved
+    for (const char* sc : {"fn:other_function", "unit:*/elsewhere.c", "module:*/drivers/net/*"}) {
+        auto f = run_with(sc);
+        CHECK_MESSAGE(f.status != L::PROVED_ASSUMING, sc);
+        CHECK_MESSAGE(f.status != L::PROVED, sc);
+        CHECK_MESSAGE(extra(f, "assumptions").find("field-invariant:") == std::string::npos, sc);
+    }
+    // the global row (no scope) says so
+    auto g = run_with("");
+    CHECK(extra(g, "assumptions").find("scope global") != std::string::npos);
+}
+
 TEST_CASE("pir discharge: container_of obligations, the member of a real outer, not a lone struct") {
     if (skip_without_frontend()) return;
     auto cfg = prism::default_config();
