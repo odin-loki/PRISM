@@ -246,6 +246,7 @@ set(PRISM_SRC
   src/prism/pir/frontend.cpp
   src/prism/pir/harness.cpp
   src/prism/pir/field_mine.cpp
+  src/prism/pir/callback_models.cpp
   src/prism/pir/jsonl.cpp
   src/prism/pir/ir_parser.cpp
   src/prism/pir/libc_format.cpp
@@ -868,6 +869,7 @@ if(PRISM_TESTS)
     tests/cpp/test_pbsd.cpp
     tests/cpp/test_pir3.cpp
     tests/cpp/test_pir_cluster_answers.cpp
+    tests/cpp/test_pir_callback_models.cpp
     tests/cpp/test_pir_refinement.cpp
     tests/cpp/test_cli.cpp
     tests/cpp/test_pipeline.cpp

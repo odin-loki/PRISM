@@ -35,6 +35,7 @@
 #include "models/asm/x86_64_asm.h"
 
 #include <algorithm>
+#include <functional>
 #include <array>
 #include <cctype>
 #include <fstream>
@@ -2821,7 +2822,8 @@ Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
 
 // Pointer parameter bound to an object built from the IR types (--pir-harness).
 // Returns false (and `why`) when no object can be built.
-bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame& top, std::string* why) {
+bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame& top, std::string* why,
+                       const CallbackBinding* trailing = nullptr, const CallbackBinding* drvdata = nullptr) {
     pirmem::HarnessOptions ho;
     ho.depth = tr.opt.auto_harness.depth;
     ho.elems = tr.opt.auto_harness.elems;
@@ -2834,10 +2836,129 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
     }
     auto plan = pirmem::plan_pointer_harness(tr.m, tr.mt.layout(), f, p, ho, why);
     if (!plan) return false;
+    // --pir-callback-models trailing-alloc: the object is the driver's own allocation with its private area appended
+    // (net_device + priv): only when the harness object is one object of exactly that struct type, at its start. The
+    // harness may have grown it to cover the accesses it saw past the struct (netdev_priv: "2 x %struct.net_device, one
+    // object"); an indexed pointer (an array of the type) is not one object and is left alone
+    std::string trailing_text;
+    if (trailing && plan->root->type_known && plan->root->type.text == trailing->struct_type &&
+        plan->root->basis.find(", indexed") == std::string::npos && plan->root->member_off == 0) {
+        // exactly the allocation (struct + private area): the harness's own size (from the accesses it sees) is replaced,
+        // so an access past the driver's private area is still out of bounds
+        const uint64_t want = tr.mt.layout().alloc_size(plan->root->type) + trailing->extra_bytes;
+        uint64_t need = 0;  // the harness's own pointer fields must stay inside the object
+        for (const auto& [off, child] : plan->root->nested) need = std::max<uint64_t>(need, off + 8);
+        for (const auto& fp : plan->root->fp_fields) need = std::max<uint64_t>(need, fp.offset + 8);
+        if (want <= max_obj_size() && need <= want) {
+            plan->root->elems = 1;
+            plan->root->bytes = want;
+            // the harness's own line for this object names the size it planned: say which size holds instead
+            const std::string head = p.name + " points to the start of a valid object of ";
+            if (!plan->assumptions.empty() && plan->assumptions.front().starts_with(head))
+                plan->assumptions.front() = head + std::to_string(want) + " bytes (1 x " + plan->root->type.text +
+                                            " and its private area: driver environment model below), 16-byte aligned, "
+                                            "fields initialised with arbitrary values (auto harness)";
+            trailing_text = trailing->text + "; object size " + std::to_string(want) + " bytes (replaces the automatic harness size)";
+        }
+    }
+    // --pir-callback-models drvdata: probe ran first and stored one constant-size allocation in driver_data. The field is
+    // found in the harness object through the device struct it contains (the parameter itself, or the platform_device /
+    // i2c_client / pci_dev that a container_of took it to); its harness object becomes exactly that allocation.
+    std::string drvdata_text;
+    if (drvdata && plan->root->type_known) {
+        const auto& lay = tr.mt.layout();
+        std::vector<uint64_t> devoffs;  // byte offsets of the device struct inside the root object (not through pointers)
+        std::function<void(const ir::Type&, uint64_t, int)> walk = [&](const ir::Type& t, uint64_t base, int depth) {
+            if (depth > 6) return;
+            if (t.text == drvdata->struct_type) {
+                devoffs.push_back(base);
+                return;
+            }
+            try {
+                const auto& r = lay.resolve(t);
+                if (r.kind != ir::Type::Struct) return;
+                for (unsigned k = 0; k < r.elems.size(); ++k) walk(lay.field_type(r, k), base + lay.field_offset(r, k), depth + 1);
+            } catch (const pirmem::Unenc&) {
+            }
+        };
+        walk(plan->root->type, 0, 0);
+        const int64_t key = devoffs.size() == 1 ? static_cast<int64_t>(devoffs[0] + drvdata->field_off) -
+                                                      static_cast<int64_t>(plan->root->member_off)
+                                                : -1;
+        if (key >= 0) {
+            const auto ukey = static_cast<uint64_t>(key);
+            const uint64_t S = drvdata->extra_bytes;
+            std::shared_ptr<pirmem::HarnessNode> child;
+            for (auto& [off, c] : plan->root->nested)
+                if (off == ukey) child = c;
+            const bool unbound = std::find(plan->root->unbound_fields.begin(), plan->root->unbound_fields.end(), ukey) !=
+                                 plan->root->unbound_fields.end();
+            bool ok = false;
+            if (child) {
+                // the harness typed and sized it from the callback's own uses; the allocation replaces that size (an access
+                // past it, also one through a larger struct type than the probe allocated, is out of bounds). Only the
+                // harness's own pointer fields must fit
+                uint64_t need = 0;
+                for (const auto& [off, c] : child->nested) need = std::max<uint64_t>(need, child->member_off + off + 8);
+                if (child->member_off == 0 && need <= S) {
+                    const std::string head = child->name + " points to the start of a valid object of ";
+                    for (auto& a : plan->assumptions)
+                        if (a.starts_with(head))
+                            a = head + std::to_string(S) + " bytes (the object probe allocated: driver environment model " +
+                                "below), 16-byte aligned, fields initialised with arbitrary values (auto harness)";
+                    child->bytes = S;
+                    ok = true;
+                }
+            } else if (unbound) {
+                auto c = std::make_shared<pirmem::HarnessNode>();
+                c->name = p.name + "->@" + std::to_string(ukey);
+                c->type = ir::parse_type("i8");
+                c->elems = S;
+                c->bytes = S;
+                plan->root->nested.emplace_back(ukey, c);
+                auto& u = plan->root->unbound_fields;
+                u.erase(std::remove(u.begin(), u.end(), ukey), u.end());
+                // the harness's line naming the root's arbitrary pointer fields: without this one now
+                const std::string uh = "pointer fields of " + plan->root->name + " at byte offsets ";
+                for (auto it = plan->assumptions.begin(); it != plan->assumptions.end(); ++it)
+                    if (it->starts_with(uh)) {
+                        if (u.empty()) {
+                            plan->assumptions.erase(it);
+                        } else {
+                            std::string offs;
+                            for (auto o : u) offs += (offs.empty() ? "" : ",") + std::to_string(o);
+                            const auto tail = it->find(" that the function loads");
+                            *it = uh + offs + (tail == std::string::npos ? std::string() : it->substr(tail));
+                        }
+                        break;
+                    }
+                plan->assumptions.push_back(c->name + " points to the start of a valid object of " + std::to_string(S) +
+                                            " bytes (the object probe allocated: driver environment model below; the "
+                                            "harness had no type evidence for it), 16-byte aligned, fields initialised with "
+                                            "arbitrary values (auto harness)");
+                ok = true;
+            }
+            if (ok) drvdata_text = drvdata->text + "; " + p.name + "->@" + std::to_string(ukey) + " is driver_data";
+        }
+    }
     top.env[p.name] = alloc_harness_node(tr, *plan->root);
     tr.out.ptr_params.push_back(p.name);
     for (auto& a : plan->assumptions) tr.out.assumptions.push_back(a);
+    if (!trailing_text.empty()) tr.out.assumptions.push_back(trailing_text);
+    if (!drvdata_text.empty()) tr.out.assumptions.push_back(drvdata_text);
     return true;
+}
+
+// --pir-callback-models id-entry: the parameter points to one entry 0..count-1 of the driver's constant id table
+void bind_id_entry(Tr& tr, const ir::Param& p, const CallbackBinding& b, Frame& top) {
+    Arg base = tr.mt.global(b.global);
+    Arg k = tr.havoc(-1, 64, false, false);
+    tr.assume(-1, tr.assign(-1, Op::Ult, 1, {k, Arg::c(64, b.count)}, "cbm"));
+    int slot = tr.newvar(tr.tmpname("cbm_id"), ptr_w());
+    tr.mt.gep(-1, slot, base, ir::parse_type("i8"), {tr.assign(-1, Op::Mul, 64, {k, Arg::c(64, b.elem_bytes)}, "cbm")}, true, 0);
+    top.env[p.name] = Arg::v(slot, ptr_w());
+    tr.out.ptr_params.push_back(p.name);
+    tr.out.assumptions.push_back(b.text);
 }
 
 }  // namespace
@@ -2953,6 +3074,15 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         tr.out.name = f.name;
         Frame top;
         top.f = &f;
+        // --pir-callback-models: the driver environment models of this function's callback kind(s)
+        std::vector<CallbackBinding> cbs;
+        if (opt.callback_models) cbs = resolve_callback_bindings(m, f, *opt.callback_models);
+        auto binding = [&](const ir::Param* p, const char* kind) -> const CallbackBinding* {
+            const int idx = static_cast<int>(p - f.params.data());
+            for (const auto& b : cbs)
+                if ((b.param == idx || b.param == -1) && b.kind == kind) return &b;
+            return nullptr;
+        };
         std::vector<const ir::Param*> ptrs;
         for (auto& p : f.params) {
             if (p.ty.kind == ir::Type::Ptr) {
@@ -2964,6 +3094,19 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
             tr.out.vars[static_cast<std::size_t>(v)].fp = p.ty.kind == ir::Type::Float;
             tr.out.params.push_back(v);
             top.env[p.name] = Arg::v(v, w);
+            if (const auto* b = binding(&p, "range"); b && p.ty.kind == ir::Type::Int && w <= 64) {
+                // lo <= v <= hi, signed, at the parameter's width (bounds outside it: that side is no constraint)
+                const Arg val = Arg::v(v, w);
+                const int64_t mn = w == 64 ? INT64_MIN : -(int64_t{1} << (w - 1));
+                const int64_t mx = w == 64 ? INT64_MAX : (int64_t{1} << (w - 1)) - 1;
+                const uint64_t mk = w == 64 ? ~uint64_t{0} : (uint64_t{1} << w) - 1;
+                if (b->lo > mn && b->lo <= mx)
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {val, Arg::c(w, static_cast<uint64_t>(b->lo) & mk)}, "cbm"), Arg::c(1, 1)}, "cbm"));
+                if (b->hi < mx && b->hi >= mn)
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {Arg::c(w, static_cast<uint64_t>(b->hi) & mk), val}, "cbm"), Arg::c(1, 1)}, "cbm"));
+                if (b->hi < mn || b->lo > mx) tr.assume(-1, Arg::c(1, 0));  // empty at this width: no execution
+                tr.out.assumptions.push_back(b->text);
+            }
         }
         int contracts = 0;
         for (auto* p : ptrs) {
@@ -2978,9 +3121,17 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
             }
             if (const auto* pc = contract_of(p->name)) {
                 bind_contract(tr, f, *p, *pc, top);
+            } else if (const auto* ib = binding(p, "id-entry")) {
+                bind_id_entry(tr, *p, *ib, top);
+            } else if (const auto* bb = binding(p, "buffer")) {
+                // --pir-callback-models buffer: the core passes a buffer of that size (sysfs show / store: PAGE_SIZE)
+                top.env[p->name] = tr.mt.alloc(-1, Arg::c(64, bb->extra_bytes), MemKind::Extern, 2,
+                                               "*" + p->name + " (driver environment model)", 0);
+                tr.out.ptr_params.push_back(p->name);
+                tr.out.assumptions.push_back(bb->text + ", 16-byte aligned");
             } else {
                 std::string why;
-                if (!bind_auto_harness(tr, f, *p, top, &why))
+                if (!bind_auto_harness(tr, f, *p, top, &why, binding(p, "trailing-alloc"), binding(p, "drvdata")))
                     throw Unenc{"UNENCODED: automatic pointer harness for parameter " + p->name + ": " + why};
             }
             ++contracts;

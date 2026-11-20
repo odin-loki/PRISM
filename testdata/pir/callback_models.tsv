@@ -1,0 +1,9 @@
+# Rows for testdata/pir/callback_models.c (byte offsets of that file's structs). The real file is OS-Proving
+# data/coverage/driver_env_models.tsv (adapted from the Klever environment model specifications, Apache-2.0).
+interface	container	field_off	callback	param	kind	a	b	status	source
+pci	%struct.pci_driver	16	probe	1	id-entry	8	-	UNVALIDATED	Klever spec drivers/pci/pci event spec.json (test)
+file_operations	%struct.file_operations	8	write	1	range	0	2147479552	UNVALIDATED	Klever spec fs/file operations event spec.json (test)
+file_operations	%struct.file_operations	0	read	1	range	0	2147479552	UNVALIDATED	kernel fs/read_write.c rw_verify_area (test)
+net	%struct.net_device_ops	*	ndo_*	0	trailing-alloc	alloc_netdev_mqs:0	%struct.net_device	UNVALIDATED	Klever spec net/core/net event spec.json (test)
+devattr	%struct.device_attribute	8	show	2	buffer	4096	-	UNVALIDATED	kernel Documentation/filesystems/sysfs.rst (test)
+platform	%struct.platform_driver	0	probe	*	drvdata	8	%struct.device	UNVALIDATED	Klever spec drivers/base/platform event spec.json (probe first, then the other callbacks; test)

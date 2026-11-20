@@ -401,7 +401,10 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
     // defect report: the precondition was invented (Law 6).
     bool drafted = false;
     for (auto& a : fn.assumptions)
-        drafted = drafted || a.find("harness (template draft)") != std::string::npos || a.find("(auto harness)") != std::string::npos;
+        drafted = drafted || a.find("harness (template draft)") != std::string::npos || a.find("(auto harness)") != std::string::npos ||
+                  // --pir-callback-models: a pointer bound by a driver environment model is an invented object too (a
+                  // range model only narrows the inputs: a violation under it is one for every input)
+                  (a.starts_with("driver environment model:") && a.find(" is in [") == std::string::npos);
     if (drafted && v.status == laws::FAILED) {
         v.extra["verdict_under_draft"] = v.status + ": " + v.message;
         v.status = std::string(laws::NEEDS_HARNESS);

@@ -102,6 +102,7 @@ struct Config {
     //  --pir-harness-deep: harness depth 4 and 64 objects per parameter (unless set explicitly)
     std::filesystem::path callee_contracts;
     std::filesystem::path pir_field_invariants;  // --pir-field-invariants FILE: struct field value invariants for the auto harness
+    std::filesystem::path pir_callback_models;   // --pir-callback-models FILE: driver environment models (docs/DRIVER_ENV_MODELS.md)
     bool pir_ops_auto = false;
     bool pir_addr_values = false;
     bool pir_harness_deep = false;
