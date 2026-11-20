@@ -679,6 +679,40 @@ initialiser, one struct field, one flag and one budget, and requires the key
 to change; and requires a copy at other lines in another file to share only
 the location-free key.
 
+## Header functions (`--pir-header-fns`)
+
+The pir stage checks the functions of the unit's own file: a function whose
+debug location is another file (a header) is skipped, or every unit that
+includes the header would check it again. A function that is only defined in
+a header (a `static inline` helper) then has no record. OS-Proving gives such
+functions a stub unit: a file that includes the header through a compile unit
+that uses it, compiled with that unit's flags.
+
+With `--pir-header-fns`, a header function is checked in the unit when
+`PRISM_PIR_ONLY` names it for that unit (`<unit file>\t<function>`); without
+`PRISM_PIR_ONLY` none is. The unit is lowered with `-femit-all-decls`, so the
+header functions nothing in the unit calls get IR too. Such a row has
+`header_file` (the function's file, in `--jsonl` too) and `header_context`
+(checked as compiled in this unit: its macros, configuration and flags); its
+line is the header's. Every other function keeps the rule above.
+
+- Its source lines (`// requires:` contracts, asm contracts, harness drafts)
+  are read from its own file.
+- Folded UB: clang's diagnostics are placed as IR markers only in functions
+  of the unit's own file (a header function with an instruction on the same
+  line number is not where the UB is; this also holds without the option).
+  A diagnostic in the header function's own file, between its first line and
+  the next function of that file, has no marker, so the function is
+  NEEDS-HARNESS ("clang-folded UB in <file> at line N, in this header
+  function, not attributable to an IR instruction"), never proved. The unit's
+  own folded-UB rules (by line) never apply to a header function.
+- The harness discharge does not apply: the row stands for the header
+  function in every unit that includes it, and other units call it too.
+
+A big-endian target (datalayout component `E`) is not checked at all: the
+memory model assembles multi-byte values little-endian. The unit gets one
+`NOTRUN` row that says so.
+
 ## Lean coverage
 
 Per function, `lean.supported` says whether its translation is inside the

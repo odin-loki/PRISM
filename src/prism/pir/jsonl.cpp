@@ -114,6 +114,8 @@ json jsonl_record(const Finding& f, const Config& cfg) {
     // --pir-input-hash (stage.cpp inkey)
     for (const char* k : {"input_key", "input_key_loc_free", "input_scope"})
         if (auto s = get(f, k); !s.empty()) r[k] = s;
+    // --pir-header-fns: the function's own file (its start line is that file's)
+    if (auto s = get(f, "header_file"); !s.empty()) r["header_file"] = s;
     const std::string lvl = proof_level(f);
     r["level"] = lvl.empty() ? json(nullptr) : json(lvl);
     const bool mem = hit_memory_limit(f);

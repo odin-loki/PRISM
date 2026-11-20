@@ -245,11 +245,50 @@ std::string dbg_suffix(const std::string& line) {
 //  * every `iN poison` operand clang emitted for folded UB becomes a call to
 //    @__prism.poison.iN() at that instruction;
 //  * every value-folding UB diagnostic gets @__prism.folded(i32 k) before
-//    the instruction that carries its line.
+//    the instruction that carries its line, in a function of the unit's own
+//    file (the diagnostics are the main file's: a function from a header
+//    with an instruction on the same line number is not where the UB is).
+// The file of each defined function: `define ... !dbg !N`, !N a
+// DISubprogram with `file: !M`, !M a DIFile; "" when not found.
+std::map<std::size_t, std::string> define_files(const std::vector<std::string>& lines) {
+    std::map<std::string, std::string> md;
+    for (auto& l : lines)
+        if (!l.empty() && l[0] == '!')
+            if (auto eq = l.find(" = "); eq != std::string::npos) md[l.substr(0, eq)] = l.substr(eq + 3);
+    auto ref_after = [](const std::string& s, const char* key) -> std::string {
+        auto p = s.find(key);
+        if (p == std::string::npos) return {};
+        p += std::strlen(key);
+        auto q = p;
+        while (q < s.size() && std::isdigit(static_cast<unsigned char>(s[q]))) ++q;
+        return q > p ? "!" + s.substr(p, q - p) : std::string();
+    };
+    std::map<std::size_t, std::string> out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (!lines[i].starts_with("define ")) continue;
+        std::string file;
+        if (auto sp = md.find(ref_after(lines[i], "!dbg !")); sp != md.end())
+            if (auto df = md.find(ref_after(sp->second, "file: !")); df != md.end()) {
+                auto p = df->second.find("filename: \"");
+                if (p != std::string::npos) {
+                    p += 11;
+                    file = df->second.substr(p, df->second.find('"', p) - p);
+                }
+            }
+        out[i] = file;
+    }
+    return out;
+}
+
 std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folded,
-                       std::vector<int>& placed) {
+                       std::vector<int>& placed, const std::string& main_name = {}) {
     auto lines = split_lines(ir);
     auto locs = scan_locs(lines);
+    auto dfiles = main_name.empty() ? std::map<std::size_t, std::string>{} : define_files(lines);
+    // no function names the main file (a preprocessed copy whose #line markers name another file): as before
+    if (std::none_of(dfiles.begin(), dfiles.end(),
+                     [&](const auto& x) { return fs::path(x.second).filename().string() == main_name; }))
+        dfiles.clear();
     // choose the marker position for each folded diagnostic
     std::map<std::size_t, std::vector<int>> markers;
     {
@@ -264,7 +303,10 @@ std::string instrument(const std::string& ir, const std::vector<FoldedUb>& folde
             for (std::size_t i = 0; i < lines.size(); ++i) {
                 const auto& l = lines.at(i);
                 if (l.starts_with("define ")) {
-                    in_body = true;
+                    // a function of another file (a header): its line numbers are that file's
+                    const auto it = dfiles.find(i);
+                    in_body = it == dfiles.end() || it->second.empty() ||
+                              fs::path(it->second).filename().string() == main_name;
                     continue;
                 }
                 if (ir_line_closes_function(l)) {
@@ -1573,7 +1615,8 @@ std::optional<DfpSplit> dfp_split(const std::string& in, const std::string& salt
 std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, double timeout_s,
                                        std::string& err, std::vector<FoldedUb>* folded,
                                        std::vector<std::pair<int, int>>* signed_shl, std::string* cxx_models,
-                                       const std::vector<std::string>& include_flags, int cxx_std) {
+                                       const std::vector<std::string>& include_flags, int cxx_std,
+                                       std::vector<std::pair<std::string, FoldedUb>>* folded_other) {
     const bool cxx = is_cxx(src);
     const auto& cc = cxx ? fe.clangxx : fe.clang;
     if (!cc || !fe.opt) {
@@ -1857,7 +1900,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         av.insert(av.end(), {"-femit-all-decls", "-o", o0.string(), src.string()});
         (void)prism::exec::run_process(av, timeout_s);
     }
-    auto diags = parse_folded_clang_diagnostics(r.text, src);
+    auto diags = parse_folded_clang_diagnostics(r.text, src, folded_other);
     {
         // Folded shift UB that has no instruction and no Sema diagnostic (see
         // parse_ubsan_folded_shifts). The sanitizer build is compiled exactly
@@ -1896,7 +1939,7 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
         }
     }
     std::vector<int> placed;
-    auto text = pirctl::keep_setjmp_locals(pirctl::uninit_fp_locals(instrument(read_file(o0), diags, placed)));
+    auto text = pirctl::keep_setjmp_locals(pirctl::uninit_fp_locals(instrument(read_file(o0), diags, placed, src.filename().string())));
     if (folded) {
         // index = marker id; unplaced diagnostics are kept with line < 0
         folded->clear();
@@ -2055,6 +2098,8 @@ struct FnRec {
     std::optional<Function> fn;
     std::vector<uint64_t> cex;
     const ir::Function* irf = nullptr;
+    // --pir-header-fns: a function of another file (a header) checked in this unit; its lines are that file's
+    std::string header_file;
 };
 
 // Replace the __prism.* declarations with trivial definitions so lli can run
@@ -2401,6 +2446,8 @@ struct Lowered {
     std::string err;
     std::vector<FoldedUb> folded;
     std::vector<std::pair<int, int>> sshl;
+    // --pir-header-fns: clang-folded UB diagnostics of the other files (headers), with the file as clang printed it
+    std::vector<std::pair<std::string, FoldedUb>> folded_other;
     std::string cxx_models;  // C++ library used (lower_to_ir), "" for C or no modelled header
     std::string cc_note;     // --compile-commands: the entry used and the flags not taken
     bool wrapv = false;      // --pir-build-semantics: lowered with the build's -fwrapv
@@ -2574,24 +2621,46 @@ struct Analyzed {
 // deterministic checks; a child that runs out of memory again does the same
 // for its own remaining functions. Linux only (/proc/self); elsewhere the
 // rows stay UNKNOWN (Law 7: said, not dropped).
-bool rerun_only_wanted(const std::string& unit, const std::string& fn) {
-    static const std::optional<std::set<std::string>> only = []() -> std::optional<std::set<std::string>> {
-        const char* e = prism::settings::cstr(prism::settings::pir_only());
-        if (!e || !*e) return std::nullopt;
-        std::set<std::string> r;
-        std::string cur;
-        for (const char* p = e;; ++p) {
-            if (*p == '\n' || *p == '\0') {
-                if (!cur.empty()) r.insert(cur);
-                cur.clear();
-                if (!*p) break;
-            } else {
-                cur += *p;
+
+// PRISM_PIR_ONLY's "<unit>\t<function>" lines (nullopt: not set), parsed again only when the variable changes (tests set
+// it between runs in one process).
+std::shared_ptr<const std::optional<std::set<std::string>>> pir_only_set() {
+    static std::mutex mu;
+    static std::optional<std::string> last;
+    static std::shared_ptr<const std::optional<std::set<std::string>>> cur;
+    const char* e = std::getenv("PRISM_PIR_ONLY");
+    const std::string now = e ? e : "";
+    std::lock_guard<std::mutex> g(mu);
+    if (!cur || !last || *last != now) {
+        std::optional<std::set<std::string>> r;
+        if (!now.empty()) {
+            r.emplace();
+            std::string item;
+            for (char ch : now + "\n") {
+                if (ch == '\n') {
+                    if (!item.empty()) r->insert(item);
+                    item.clear();
+                } else {
+                    item += ch;
+                }
             }
         }
-        return r;
-    }();
-    return !only || only->count(unit + "\t" + fn) > 0;
+        cur = std::make_shared<const std::optional<std::set<std::string>>>(std::move(r));
+        last = now;
+    }
+    return cur;
+}
+
+bool rerun_only_wanted(const std::string& unit, const std::string& fn) {
+    const auto only = pir_only_set();
+    return !*only || (*only)->count(unit + "\t" + fn) > 0;
+}
+
+// --pir-header-fns: a function defined in another file (a header) is checked in this unit only when PRISM_PIR_ONLY
+// names it for this unit; without PRISM_PIR_ONLY none is (every unit would check its headers again).
+bool pir_only_names(const std::string& unit, const std::string& fn) {
+    const auto only = pir_only_set();
+    return *only && (*only)->count(unit + "\t" + fn) > 0;
 }
 
 std::vector<std::string> self_cmdline() {
@@ -2983,6 +3052,11 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
         if (!r.irf || !r.fn || r.f.status != laws::PROVED_ASSUMING || !has_auto_harness(*r.fn)) continue;
         const std::string g = r.irf->name;
         DischargeInfo& di = info[g];
+        if (!r.header_file.empty()) {  // --pir-header-fns: other includers call it too; the harness stays
+            di.status = "not discharged";
+            di.reason = "a header function checked in this unit (--pir-header-fns): units other than this one call it too";
+            continue;
+        }
         auto no = [&](const std::string& why) {
             di.status = "not discharged";
             di.reason = why;
@@ -3375,6 +3449,27 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
     res.mod = std::make_unique<ir::Module>(cfg.pir_kernel_api.empty() ? ir::parse_module(*ir)
                                                                        : ir::parse_module_kernel(*ir));
     auto& mod = *res.mod;
+    // A big-endian target (datalayout component "E": s390x, sparc64, big-endian powerpc64 / mips64): PIR's memory model
+    // assembles a multi-byte load little-endian (docs/PIR.md "Memory model"), so a byte-level view of a wider value
+    // (unions, casts, memcpy into a struct) would be the wrong value. Not checked rather than checked wrongly (Law 7).
+    {
+        bool big = false;
+        std::string comp;
+        for (char ch : mod.datalayout + "-") {
+            if (ch == '-') { big = big || comp == "E"; comp.clear(); }
+            else comp += ch;
+        }
+        if (big) {
+            auto f = base_finding(u);
+            f.status = std::string(laws::NOTRUN);
+            f.strength = std::string(laws::STRENGTH_SOME);
+            f.message = "big-endian target (datalayout \"" + mod.datalayout +
+                        "\"): PIR's memory model is little-endian; not checked";
+            f.extra["frontend"] = fe.version;
+            out.push_back(std::move(f));
+            return res;
+        }
+    }
     // library operational models for what the unit declares (docs/PIR.md "Library models")
     link_models(mod, models, cfg.pir_kernel_api);
     TranslateOptions topt;
@@ -3444,6 +3539,7 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
     // --jsonl: source line ranges (cparse's view of the unit) for the records
     const bool want_jsonl = !cfg.jsonl.empty();
     std::map<std::string, std::vector<std::pair<int, int>>> fn_spans;
+    std::map<std::string, std::vector<std::string>> header_lines;  // --pir-header-fns: a header's source lines
     if (want_jsonl) {
         try {
             for (auto& fi : extract_functions(pre_main ? low.cc_main : u.path, u.rel))
@@ -3533,7 +3629,10 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         if (sub.artificial || irf.name.starts_with("__cxx_global_var_init") || irf.name.starts_with("_GLOBAL__") ||
             irf.is_model)
             continue;
-        if (!sub.file.empty() && fs::path(sub.file).filename().string() != unit_name) continue;  // header code
+        // header code: not this unit's function (every includer would check it again). --pir-header-fns: a header
+        // function PRISM_PIR_ONLY names for this unit is checked here (a stub unit made for its header functions).
+        const bool other_file = !sub.file.empty() && fs::path(sub.file).filename().string() != unit_name;
+        if (other_file && !(cfg.pir_header_fns && pir_only_names(u.rel, sub.name.empty() ? irf.name : sub.name))) continue;
         FnRec rec;
         rec.irf = &irf;
         auto& f = rec.f;
@@ -3543,10 +3642,24 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         f.line = sub.line ? std::optional<int>(sub.line) : std::nullopt;
         f.extra["frontend"] = fe.version;
         if (!sub.linkage.empty()) f.extra["ir_name"] = irf.name;
+        // a header function: its source lines (requires / asm contracts, harness drafts) are its own file's
+        std::optional<pirmem::UnitInfo> hinfo;
+        if (other_file) {
+            rec.header_file = sub.file;
+            f.extra["header_file"] = sub.file;
+            f.extra["header_context"] = "a function of " + sub.file +
+                                        ", checked as compiled in this unit (its macros, configuration and flags; --pir-header-fns)";
+            auto [it, fresh] = header_lines.try_emplace(sub.file);
+            fs::path hp(sub.file);
+            if (hp.is_relative()) hp = u.path.parent_path() / hp;
+            std::error_code hec;
+            if (fresh && fs::is_regular_file(hp, hec)) it->second = split_lines(read_file(hp));
+            hinfo.emplace(pirmem::UnitInfo{hp, sub.file, is_cxx(hp), it->second, std::nullopt});
+        }
         FnStats stats{recs, recs.size(), want_jsonl, prism::clock::Stopwatch{}};
         if (want_jsonl) {
             membudget::reset_peak();
-            if (auto it = fn_spans.find(*f.function); it != fn_spans.end()) {
+            if (auto it = other_file ? fn_spans.end() : fn_spans.find(*f.function); it != fn_spans.end()) {
                 const std::pair<int, int>* best = nullptr;
                 for (auto& sp : it->second)
                     if (!best || std::abs(sp.first - sub.line) < std::abs(best->first - sub.line)) best = &sp;
@@ -3556,7 +3669,7 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
                 }
             }
         }
-        auto fopt = pirmem::function_options(topt, irf, uinfo, sub.line, cfg, sub.name.empty() ? irf.name : sub.name);
+        auto fopt = pirmem::function_options(topt, irf, hinfo ? *hinfo : uinfo, sub.line, cfg, sub.name.empty() ? irf.name : sub.name);
         auto tr = translate(mod, irf, fopt);
         if (want_jsonl) {
             const auto lc = lean_coverage(mod, irf, fopt, tr);
@@ -3782,8 +3895,39 @@ void check_rec(Analyzed& a, std::size_t j, const Config& cfg, const Lowered& low
         f.extra["prop"] = v.prop;
         if (v.line) f.line = v.line;
     }
+    // A header function (--pir-header-fns): clang's folded-UB diagnostics of its own file between its first line and
+    // the next function of that file have no IR marker (markers are placed for the unit's own file only), so the
+    // function cannot be proved; the unit's own diagnostics (other line numbers' file) do not apply to it.
+    ir::DISub sub;
+    if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
+    if (!rec.header_file.empty() && f.status != laws::FAILED && f.status != laws::NEEDS_HARNESS && sub.line > 0) {
+        int next = std::numeric_limits<int>::max();
+        for (const auto& g : mod.functions)
+            if (auto it = mod.subprograms.find(g.dbg); it != mod.subprograms.end() && it->second.file == sub.file &&
+                                                       it->second.line > sub.line)
+                next = std::min(next, it->second.line);
+        const auto same_file = [&](const std::string& p) {
+            if (fs::path(p).lexically_normal() == fs::path(sub.file).lexically_normal()) return true;
+            std::error_code ec;
+            return fs::equivalent(fs::path(p), fs::path(sub.file), ec);
+        };
+        for (const auto& [p, fu] : low.folded_other) {
+            if (fu.line < sub.line || fu.line >= next || !same_file(p)) continue;
+            if (low.wrapv && wraps_under_fwrapv(fu)) continue;  // --pir-build-semantics: wraps, not UB
+            f.extra["verdict_before_folded"] = f.status;
+            f.extra.erase(std::string(laws::CERTIFICATE_KEY));
+            f.status = std::string(laws::NEEDS_HARNESS);
+            f.strength = std::string(laws::STRENGTH_SOME);
+            f.message = "UNENCODED: clang-folded UB in " + sub.file + " at line " + std::to_string(fu.line) +
+                        ", in this header function, not attributable to an IR instruction (" + fu.msg + ")";
+            rec.cex.clear();
+            f.counterexample.clear();
+            f.extra.erase("cex");
+            break;
+        }
+    }
     // Folded UB whose IR marker was dropped or not encoded must not stand as PROVED.
-    for (std::size_t k = 0; k < folded.size(); ++k) {
+    for (std::size_t k = 0; k < folded.size() && rec.header_file.empty(); ++k) {
         if (used_folded.count(static_cast<int>(k))) continue;
         if (folded[k].line <= 0) continue;
         if (!f.line || *f.line != folded[k].line) continue;
@@ -3890,6 +4034,7 @@ void finalize_unit(Analyzed& res, const Unit& u, const Frontend& fe, const Lower
             return false;
         }();
         for (auto& rec : recs) {
+            if (!rec.header_file.empty()) continue;  // a header function (--pir-header-fns): its lines are its header's
             if (std::find(owners.begin(), owners.end(), rec.irf) == owners.end()) continue;  // not an owner, or not checked here
             FnRec* owner = &rec;
             if (owner->f.status == laws::FAILED || owner->f.status == laws::NEEDS_HARNESS) continue;
@@ -4213,9 +4358,12 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                 if (fs::is_directory(root / "include", ec)) inc.insert(inc.end(), {"-idirafter", (root / "include").string()});
             }
             if (u.header) inc.insert(inc.begin(), {"-x", "c", "-femit-all-decls"});
+            // --pir-header-fns: the header functions the unit does not call get IR too (clang drops unused inline ones)
+            if (cfg.pir_header_fns && !u.header) inc.push_back("-femit-all-decls");
             const prism::clock::Stopwatch lt0;
             progress_note("lower-start", u.path, 0.0);
-            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std);
+            l.ir = lower_to_ir(fe, u.path, std::max(10.0, cfg.timeout), l.err, &l.folded, &l.sshl, &l.cxx_models, inc, cxx_std,
+                               cfg.pir_header_fns ? &l.folded_other : nullptr);
             if (!l.ir && !u.header) {
                 // clang reports the first error only (first_error): cut the
                 // functions it names, re-lower, and repeat with the errors
@@ -4233,11 +4381,13 @@ std::vector<Finding> run_pir(const std::vector<fs::path>& sources, const Config&
                     inc2.insert(inc2.begin(), {"-iquote", u.path.parent_path().string()});
                     std::string err2;
                     Lowered l2;
-                    l2.ir = lower_to_ir(fe, cp, std::max(10.0, cfg.timeout), err2, &l2.folded, &l2.sshl, &l2.cxx_models, inc2, cxx_std);
+                    l2.ir = lower_to_ir(fe, cp, std::max(10.0, cfg.timeout), err2, &l2.folded, &l2.sshl, &l2.cxx_models, inc2, cxx_std,
+                                        cfg.pir_header_fns ? &l2.folded_other : nullptr);
                     if (l2.ir) {
                         l.ir = std::move(l2.ir);
                         l.folded = std::move(l2.folded);
                         l.sshl = std::move(l2.sshl);
+                        l.folded_other = std::move(l2.folded_other);
                         l.cxx_models = std::move(l2.cxx_models);
                         l.dropped = std::move(sv->dropped);
                         l.err.clear();

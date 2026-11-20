@@ -167,6 +167,7 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         else if (a == "--pir-container-of") { ok = in.flag(); cfg.pir_container_of = true; }
         else if (a == "--pir-vacuity") { ok = in.flag(); cfg.pir_vacuity = true; }
         else if (a == "--pir-input-hash") { ok = in.flag(); cfg.pir_input_hash = true; }
+        else if (a == "--pir-header-fns") { ok = in.flag(); cfg.pir_header_fns = true; }
         else if (a == "--fp-checks") { ok = in.flag(); cfg.fp_checks = true; }
         else if (a == "--certified") { ok = in.flag(); cfg.certified = true; }
         else if (a == "--z3-only") { ok = in.flag(); o.z3_only = true; }
@@ -495,6 +496,9 @@ std::string cli_usage() {
         "  unreachable under its assumptions is NEEDS-HARNESS (vacuous), never a proof.\n"
         "--pir-input-hash: check nothing; each translated function's row (NOTRUN) carries input_key\n"
         "  and input_key_loc_free: equal keys mean the same check (docs/PIR.md \"Input key\").\n"
+        "--pir-header-fns: a function defined in a header is checked in the unit when PRISM_PIR_ONLY\n"
+        "  names it for that unit (a stub unit that includes the header); unused ones get IR\n"
+        "  (-femit-all-decls). Other header code stays skipped (docs/PIR.md \"Header functions\").\n"
         "--callee-contracts FILE: assume-guarantee stubs for callees without a body (TSV: function,\n"
         "  signature, requires, assigns, ensures, status, source). The requires are checked at the call\n"
         "  site, only the assigns are havocked, the ensures are assumed; a callee without a usable\n"

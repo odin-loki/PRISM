@@ -922,7 +922,8 @@ PRISM_API std::optional<std::string> lower_to_ir(const Frontend& fe,
                                                  std::vector<std::pair<int, int>>* signed_shl = nullptr,
                                                  std::string* cxx_models = nullptr,
                                                  const std::vector<std::string>& include_flags = {},
-                                                 int cxx_std = 17);
+                                                 int cxx_std = 17,
+                                                 std::vector<std::pair<std::string, FoldedUb>>* folded_other = nullptr);
 // The flags of `unit` from cfg.compile_commands (--compile-commands), as the
 // pir stage takes them (docs/PIR.md "Units with their own flags"): empty when
 // the option is unset or the file has no entry (`note` then says so). `note`
