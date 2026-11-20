@@ -184,7 +184,7 @@ json jsonl_record(const Finding& f, const Config& cfg) {
     }
     r["harness"] = h;
     // --pir-discharge / --pir-vacuity (docs/HARNESS_GENERATOR.md)
-    for (const char* k : {"harness_discharge", "discharge_entry", "non_vacuity"})
+    for (const char* k : {"harness_discharge", "discharge_entry", "discharge_grounding", "verdict_before_discharge", "non_vacuity"})
         if (auto v = get(f, k); !v.empty()) r[k] = v;
     if (auto v = num(get(f, "properties"))) r["vcs"] = static_cast<long long>(*v);
     else r["vcs"] = nullptr;
