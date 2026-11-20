@@ -86,6 +86,9 @@ struct Frame {
     // results, { ptr, i32 } exception pairs, and scalar pairs such as the
     // { ptr, i8 } an ABI returns std::pair<iterator, bool> in (scalar_pair)
     std::map<std::string, std::pair<int, int>> pairs;
+    // --kernel-api: the result of an inline asm with three or more direct outputs ({ i32, i32, i32, i32 } of cpuid),
+    // one variable per field; only extractvalue reads it (asm_havoc writes every field)
+    std::map<std::string, std::vector<int>> tuples;
     // a scalar pair load's field-1 address, numbered between its two fields
     // (the order export_lean's `L pload` gives the Lean frame)
     std::map<std::string, int> pairq;
@@ -201,6 +204,8 @@ struct Tr final : pirmem::TrApi {
     void asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std::string& tag = "asm-havoc", const std::string& extra = "");
     bool asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line);
     void unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line);
+    // --pir-icall-havoc: an indirect call not resolved to inlined targets is a havoc of all memory (translate_kernel.inc)
+    Arg icall_havoc(int& cur, const ir::Inst& in, unsigned w, int line, const std::string& why);
     Arg opaque_ptr(int& cur, const std::string& what, int line);
     // ghost lock state (translate_lock.inc, docs/KERNEL_CONCURRENCY.md)
     std::optional<Arg> lk_;                           // hidden object: held locks, atomic depth
@@ -591,6 +596,21 @@ struct Tr final : pirmem::TrApi {
                     fr.pairs[in.result] = {a, s};
                     fr.defs[in.result] = &in;
                     continue;
+                }
+                if (in.op == "call" && in.is_asm && !opt.kernel_api.empty() && in.ty.kind == ir::Type::Struct &&
+                    in.ty.elems.size() > 2) {
+                    bool scalar = true;
+                    for (auto& e : in.ty.elems)
+                        scalar = scalar && ((e.kind == ir::Type::Int && e.bits > 0 && e.bits <= 64) || e.kind == ir::Type::Ptr);
+                    if (scalar) {
+                        std::vector<int> vs;
+                        for (std::size_t k = 0; k < in.ty.elems.size(); ++k)
+                            vs.push_back(newvar(fr.prefix + in.result + "." + std::to_string(k),
+                                                in.ty.elems[k].kind == ir::Type::Ptr ? ptr_w() : in.ty.elems[k].bits));
+                        fr.tuples[in.result] = std::move(vs);
+                        fr.defs[in.result] = &in;
+                        continue;
+                    }
                 }
                 if (in.op == "insertvalue" || in.op == "call" || in.op == "invoke" || in.op == "load")
                     if (auto sp = scalar_pair(in.ty)) {
@@ -1252,6 +1272,13 @@ struct Tr final : pirmem::TrApi {
         if (op == "extractvalue") {
             if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Local || in.indices.size() != 1)
                 throw Unenc{"UNENCODED: extractvalue"};
+            if (auto tu = fr.tuples.find(in.ops[0].v.name); tu != fr.tuples.end()) {
+                if (in.indices[0] >= tu->second.size()) throw Unenc{"UNENCODED: extractvalue"};
+                const int src = tu->second[in.indices[0]];
+                int dst = result_var(fr, in);
+                if (dst >= 0) emit_assign(cur, dst, Op::Copy, {Arg::v(src, out.vars[static_cast<std::size_t>(src)].width)});
+                return;
+            }
             auto it = fr.pairs.find(in.ops[0].v.name);
             if (it == fr.pairs.end()) throw Unenc{"UNENCODED: extractvalue of " + in.ops[0].ty.text};
             int src = in.indices[0] == 0 ? it->second.first : it->second.second;
@@ -1456,6 +1483,20 @@ struct Tr final : pirmem::TrApi {
                     }
                     note_assumption("builtin-contract: @llvm.read_register reads a hardware register: its value is arbitrary (a pointer result is an "
                                     "arbitrary value that points to no object); it changes no memory");
+                    return;
+                }
+                if (starts(n, "llvm.write_register.")) {
+                    // Only the stack pointer: the write-back clang emits after an asm with a "+r"(current_stack_pointer)
+                    // operand (Linux ASM_CALL_CONSTRAINT), which writes back the value the asm statement left there.
+                    // The stack is not addressed through registers in this model, so the write changes nothing it
+                    // sees; any other register stays UNENCODED.
+                    std::string reg;
+                    if (!in.ops.empty() && in.ops[0].v.kind == ir::Value::Other)
+                        if (auto it = m.md_strings.find(in.ops[0].v.text); it != m.md_strings.end()) reg = it->second;
+                    if (reg != "rsp" && reg != "esp" && reg != "sp") throw Unenc{"UNENCODED: call @" + n + (reg.empty() ? "" : " (register " + reg + ")")};
+                    note_assumption("builtin-contract: @llvm.write_register of the stack pointer " + reg +
+                                    " (the write-back of an asm \"+r\"(current_stack_pointer) operand) leaves the stack pointer as the asm "
+                                    "statement left it: no effect on the program state the model sees");
                     return;
                 }
                 if (starts(n, "llvm.prefetch.")) {
@@ -1684,13 +1725,57 @@ struct Tr final : pirmem::TrApi {
                 mt.obligation_distinct(cur, objs[i], objs[j], "call of @" + in.callee, line);
     }
 
+    // Instructions of g and of every function it calls directly, transitively (TranslateOptions::small_inline_insts);
+    // an indirect call, an asm goto, a recursive tree or one over the limit counts as "large" (limit + 1).
+    std::map<const ir::Function*, long> small_memo;
+    long small_tree(const ir::Function& g) {
+        const long big = static_cast<long>(opt.small_inline_insts) + 1;
+        if (auto it = small_memo.find(&g); it != small_memo.end()) return it->second;
+        small_memo[&g] = big;  // in progress: a cycle is large
+        long n = 0;
+        for (auto& bl : g.blocks) {
+            for (auto& ins : bl.insts) {
+                if (++n >= big) return big;
+                if (ins.op == "callbr" || ins.op == "invoke" || (ins.op == "call" && !ins.is_asm && ins.callee.empty()))
+                    return big;
+                if (ins.op == "call" && !ins.callee.empty())
+                    if (const auto* c = m.find(ins.callee); c && !c->blocks.empty()) {
+                        n += small_tree(*c);
+                        if (n >= big) return big;
+                    }
+            }
+        }
+        small_memo[&g] = n;
+        return n;
+    }
+
     void inline_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
         const auto& n = in.callee;
         const auto* callee = m.find(n);
         if (std::ranges::find(stack, n) != stack.end())
             throw Unenc{"UNENCODED: recursive call @" + n};
-        if (static_cast<int>(stack.size()) > opt.inline_depth)
-            throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
+        // Depth: user frames (stack minus the library-model frames on it) are bounded by inline_depth; a model callee
+        // is exempt from that bound and bounded only by inline_depth + model_inline_depth frames in all (models are
+        // inlined exactly, so the exemption adds no assumption). Past either bound the call is UNENCODED, as before.
+        {
+            const int frames = static_cast<int>(stack.size());
+            const bool model_call = callee && callee->is_model && opt.model_inline_depth > 0;
+            if (model_call) {
+                const int cap = opt.inline_depth + opt.model_inline_depth;
+                if (frames > cap)
+                    throw Unenc{"UNENCODED: call depth > " + std::to_string(cap) + " (@" + n + ") (library model frames)"};
+            } else {
+                const int user = opt.model_inline_depth > 0 ? frames - static_cast<int>(model_stack.size()) : frames;
+                // a small call tree (the kernel's one-line wrappers: kasan_check_*, kobject_name, refcount_read ->
+                // atomic_read -> ...) is inlined past inline_depth when its whole tree has at most
+                // small_inline_insts instructions; the total cap still holds
+                const bool small = opt.small_inline_insts > 0 && callee && user > opt.inline_depth &&
+                                   frames <= opt.inline_depth + opt.model_inline_depth &&
+                                   small_tree(*callee) <= opt.small_inline_insts;
+                if (user > opt.inline_depth && !small)
+                    throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
+            }
+        }
         if (!callee->parse_error.empty())
             throw Unenc{"UNENCODED: call @" + n + " (unparsed IR: " + callee->parse_error + ")"};
         const auto ret_pair = scalar_pair(callee->ret);
@@ -2600,11 +2685,54 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
 Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
     auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0);
     const auto ptr_ty = ir::parse_type("ptr");
+    std::set<uint64_t> bound;  // byte offsets (from the object start) that got an object of their own
     for (const auto& [off, child] : n.nested) {
         Arg cp = alloc_harness_node(tr, *child);
         int slot = tr.newvar(tr.tmpname("hslot"), ptr_w());
         tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off + off)}, true, 0);
         tr.mt.store(-1, Arg::v(slot, ptr_w()), cp, Arg::c(1, 1), ptr_ty, 1, 0);
+        bound.insert(n.member_off + off);
+    }
+    // --pir-field-invariants: value invariants of this struct's fields (the first element only), one named assumption
+    // per row used; a field that already has its own harness object is left as it is
+    if (n.type_known && n.type.kind == ir::Type::Struct && !tr.opt.field_invariants.empty()) {
+        const uint64_t obj_bytes = n.bytes;
+        for (const auto& fi : tr.opt.field_invariants) {
+            if (fi.struct_type != n.type.text || fi.offset + fi.width > obj_bytes || bound.count(fi.offset)) continue;
+            int slot = tr.newvar(tr.tmpname("hfi"), ptr_w());
+            tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, fi.offset)}, true, 0);
+            const Arg at = Arg::v(slot, ptr_w());
+            std::string what;
+            if (fi.kind == "valid") {
+                auto o = tr.mt.alloc(-1, Arg::c(64, static_cast<uint64_t>(fi.a)), MemKind::Extern, 2,
+                                     "*" + n.name + "->@" + std::to_string(fi.offset) + " (field invariant)", 0);
+                tr.mt.store(-1, at, o, Arg::c(1, 1), ptr_ty, 1, 0);
+                what = "points to a valid object of " + std::to_string(fi.a) + " bytes (arbitrary contents)";
+            } else {
+                const unsigned bits = fi.kind == "nonnull" ? ptr_w() : fi.width * 8;
+                const auto ty = fi.kind == "nonnull" ? ptr_ty : ir::parse_type("i" + std::to_string(bits));
+                int v = tr.newvar(tr.tmpname("hfiv"), bits);
+                tr.mt.load(-1, v, ty, at, 1, 0, false);
+                const Arg val = Arg::v(v, bits);
+                if (fi.kind == "nonnull") {
+                    tr.assume(-1, tr.assign(-1, Op::Ne, 1, {val, Arg::c(bits, 0)}, "fi"));
+                    what = "is not NULL";
+                } else {
+                    const uint64_t m = bits == 64 ? ~uint64_t{0} : (uint64_t{1} << bits) - 1;
+                    Arg lo = Arg::c(bits, static_cast<uint64_t>(fi.a) & m), hi = Arg::c(bits, static_cast<uint64_t>(fi.b) & m);
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {val, lo}, "fi"), Arg::c(1, 1)}, "fi"));
+                    tr.assume(-1, tr.assign(-1, Op::Xor, 1, {tr.assign(-1, Op::Slt, 1, {hi, val}, "fi"), Arg::c(1, 1)}, "fi"));
+                    what = "is in [" + std::to_string(fi.a) + ", " + std::to_string(fi.b) + "] (signed, " +
+                           std::to_string(bits) + " bits)";
+                }
+            }
+            const std::string a = "field-invariant: " + n.name + "->@" + std::to_string(fi.offset) + " (" + fi.struct_type +
+                                  " at byte " + std::to_string(fi.offset) + ") " + what + " (--pir-field-invariants; scope " +
+                                  (fi.scope.empty() ? std::string("global") : fi.scope) + "; status " + fi.status + "; source " +
+                                  fi.source + "; not checked here)";
+            if (std::find(tr.out.assumptions.begin(), tr.out.assumptions.end(), a) == tr.out.assumptions.end())
+                tr.out.assumptions.push_back(a);
+        }
     }
     // function-pointer fields known to the ops tables (--pir-ops-auto): one of the targets, chosen freely
     for (const auto& fp : n.fp_fields) {

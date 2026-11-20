@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <iosfwd>
 #include <functional>
 #include <map>
 #include <set>
@@ -164,6 +165,7 @@ struct Module {
     std::map<std::string, DILoc> locs;          // "!13" -> line/col
     std::map<std::string, DISub> subprograms;   // "!10" -> source name/line/file
     std::map<std::string, DILoc> loop_starts;   // "!15" (llvm.loop) -> the loop's start location
+    std::map<std::string, std::string> md_strings;  // "!12" -> "rsp": one-string tuples !{!"rsp"} (named registers)
     const Function* find(std::string_view name) const;
     const Global* find_global(std::string_view name) const;
 };
@@ -430,6 +432,24 @@ struct OpsField {
     std::vector<std::string> targets;
     std::string role;
 };
+// --pir-field-invariants FILE: one value invariant of a struct field, applied to every automatic-harness object of
+// that struct type (a named assumption per row used). TSV: struct ("%struct.NAME"), byte offset, width (bytes),
+// kind, a, b, status, source. Kinds: "valid" (a pointer field points to a fresh object of `a` bytes, arbitrary
+// contents), "nonnull" (a pointer field is not NULL), "range" (an integer field, signed, a <= v <= b).
+// An optional 9th column scopes the row: "fn:GLOB" (the analysed function's name), "unit:GLOB" (the compile unit's
+// path) or "module:GLOB" (the unit's path as well, for a directory such as "*/drivers/net/ethernet/intel/*");
+// empty = every function (global). A row applies only where its scope matches (field_invariant_applies), and the
+// assumption names the scope. '*' and '?' are the glob characters; '*' also matches '/'.
+struct FieldInvariant {
+    std::string struct_type;
+    uint64_t offset = 0;
+    unsigned width = 0;
+    std::string kind;
+    int64_t a = 0, b = 0;
+    std::string status, source;
+    std::string scope;
+};
+PRISM_API bool field_invariant_applies(const FieldInvariant& fi, const std::string& function, const std::string& unit_path);
 // One lock contract of --lock-contracts (TSV, docs/KERNEL_CONCURRENCY.md section 14), for
 // unmodified code: the analysed (root) function acquires, releases or requires a lock.
 struct LockContract {
@@ -486,6 +506,15 @@ struct TranslateOptions {
     std::vector<std::pair<int, int>> signed_shl;  // (line, col) of C signed `<<`
     std::vector<FoldedUb> folded;                 // @__prism.folded(i32 k) -> folded[k]
     int inline_depth = 4;
+    // Frames of PRISM's own library models (kernel specs, libc models: ir::Function::is_model) do not count toward
+    // inline_depth: a model is inlined exactly like any callee, so this only adds encoding, never an assumption. They
+    // have their own bound: the whole inline stack may hold at most inline_depth + model_inline_depth frames, and a call
+    // past either bound is still UNENCODED (NEEDS-HARNESS). 0 restores the old rule (models count like user code).
+    // PRISM_PIR_MODEL_INLINE_DEPTH sets it (stage_mem.cpp).
+    int model_inline_depth = 16;
+    // A callee whose whole call tree has at most this many IR instructions is inlined past inline_depth (exactly, no
+    // assumption), within the same total cap; 0 = off. PRISM_PIR_SMALL_INLINE sets it (stage_mem.cpp).
+    int small_inline_insts = 64;
     // pointer parameters of the function being translated
     std::vector<PtrContract> contracts;
     // --lock-contracts: lock contracts of the root function (translate_lock.inc lock_table)
@@ -513,6 +542,11 @@ struct TranslateOptions {
     // than ops_max_targets targets stays UNENCODED ("too many indirect targets").
     std::vector<OpsField> ops_table;
     std::size_t ops_max_targets = 8;
+    // --pir-icall-havoc (kernel mode): an indirect call with more than 16 candidate targets, or to a target outside the
+    // unit's address-taken functions, is a havoc of all memory with an arbitrary result (named), not UNENCODED
+    bool icall_havoc = false;
+    // --pir-field-invariants: field value invariants applied to automatic-harness objects
+    std::vector<FieldInvariant> field_invariants;
     // --callee-contracts FILE (docs/HARNESS_PHASE2.md): assume-guarantee stubs for callees that have no body
     // (IR name -> contract). A callee with a body, or a kernel spec, is never replaced by one.
     std::map<std::string, CalleeContract> callee_contracts;
@@ -532,6 +566,12 @@ struct TranslateOptions {
 PRISM_API std::vector<OpsField> derive_ops_table(const ir::Module& m, std::size_t max_targets = 8);
 // Adds the entries of `derived` for fields the explicit table does not list.
 PRISM_API void merge_ops_tables(std::vector<OpsField>& explicit_table, const std::vector<OpsField>& derived);
+
+// Reads a --pir-field-invariants file (format at FieldInvariant). On failure returns {} and sets error.
+PRISM_API std::vector<FieldInvariant> load_field_invariants(const std::filesystem::path& file, std::string& error);
+// PRISM_PIR_MINE_FIELDS: one JSON line per store to a struct field the module makes (field_mine.cpp): struct, offset,
+// width, kind (alloc / global / const / null / other), value or size. Input of OS-Proving tools/prism_clusters/mine_fields.py.
+PRISM_API void mine_field_stores(const ir::Module& m, const std::string& unit, std::ostream& out);
 
 // Reads an --ops-table file (format in docs/PIR.md). On failure returns {} and sets error.
 PRISM_API std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error);

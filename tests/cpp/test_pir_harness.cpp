@@ -367,6 +367,112 @@ TEST_CASE("pir harness: container_of gets its containing object (--pir-container
     CHECK(st["outer_reg_unchecked"].extra.contains("verdict_under_draft"));
 }
 
+TEST_CASE("pir harness: container_of through a helper function's returned pointer (--pir-container-of)") {
+    if (skip_without_frontend()) return;
+    namespace L = prism::laws;
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    // without the option the negative offset is not harnessable: never proved
+    auto off = run_file(cfg, "harness_container_helper.c");
+    for (auto* k : {"helper_tag", "helper2_tag", "helper_reg_ok"}) {
+        REQUIRE_MESSAGE(off.contains(k), k);
+        CHECK_MESSAGE(off[k].status == L::NEEDS_HARNESS, (std::string(k) + ": " + off[k].status + " " + off[k].message));
+    }
+    cfg.pir_container_of = true;
+    auto st = run_file(cfg, "harness_container_helper.c");
+    for (auto* ok : {"helper_tag", "helper2_tag", "helper_reg_ok"}) {
+        REQUIRE_MESSAGE(st.contains(ok), ok);
+        CHECK_MESSAGE(st[ok].status == L::PROVED_ASSUMING, (std::string(ok) + ": " + st[ok].status + " " + st[ok].message));
+        const auto a = extra(st[ok], "assumptions");
+        CHECK_MESSAGE(a.find("%struct.outer") != std::string::npos, ok);
+        CHECK_MESSAGE(a.find("container_of") != std::string::npos, ok);
+    }
+    // the unchecked index is still a missing precondition (NEEDS-HARNESS), never proved
+    REQUIRE(st.contains("helper_reg_unchecked"));
+    CHECK(st["helper_reg_unchecked"].status == L::NEEDS_HARNESS);
+    // an accessor's returned pointer field: the nested object is typed from the caller's uses
+    REQUIRE(off.contains("priv_tail"));
+    CHECK(off["priv_tail"].status == L::NEEDS_HARNESS);
+    REQUIRE(st.contains("priv_tail"));
+    CHECK_MESSAGE(st["priv_tail"].status == L::PROVED_ASSUMING, (st["priv_tail"].status + " " + st["priv_tail"].message));
+    CHECK(extra(st["priv_tail"], "assumptions").find("%struct.priv") != std::string::npos);
+    // container_of then an accessor of the container's driver data: typed from the caller's uses
+    REQUIRE(off.contains("drv_x"));
+    CHECK(off["drv_x"].status == L::NEEDS_HARNESS);
+    REQUIRE(st.contains("drv_x"));
+    CHECK_MESSAGE(st["drv_x"].status == L::PROVED_ASSUMING, (st["drv_x"].status + " " + st["drv_x"].message));
+    CHECK(extra(st["drv_x"], "assumptions").find("%struct.priv2") != std::string::npos);
+    // two different returned offsets: no containing object is derived, never proved
+    REQUIRE(st.contains("helper_two_offsets"));
+    CHECK(st["helper_two_offsets"].status != L::PROVED_ASSUMING);
+    CHECK(st["helper_two_offsets"].status != L::PROVED);
+}
+
+TEST_CASE("pir harness: --pir-field-invariants keeps only the rows a proof needs") {
+    if (skip_without_frontend()) return;
+    namespace L = prism::laws;
+    const auto tsv = fs::temp_directory_path() / "prism_field_invariants_test.tsv";
+    {
+        std::ofstream o(tsv);
+        o << "%struct.fidev\t8\t4\trange\t1\t10\tUNVALIDATED\ttest: needed\n";
+        o << "%struct.fidev\t12\t4\trange\t0\t5\tUNVALIDATED\ttest: not needed\n";
+        o << "%struct.fidev\t0\t8\tvalid\t16\t0\tUNVALIDATED\ttest: not needed\n";
+    }
+    auto cfg = prism::default_config();
+    cfg.pir_harness = true;
+    cfg.pir_field_invariants = tsv;
+    auto st = run_file(cfg, "field_invariants.c");
+    REQUIRE(st.contains("div_by_field"));
+    CHECK_MESSAGE(st["div_by_field"].status == L::PROVED_ASSUMING, (st["div_by_field"].status + " " + st["div_by_field"].message));
+    const auto a = extra(st["div_by_field"], "assumptions");
+    CHECK(a.find("(%struct.fidev at byte 8) is in [1, 10]") != std::string::npos);
+    CHECK(a.find("(%struct.fidev at byte 12)") == std::string::npos);
+    CHECK(a.find("(%struct.fidev at byte 0)") == std::string::npos);
+    CHECK(extra(st["div_by_field"], "field_invariants_not_needed").find("%struct.fidev@12") != std::string::npos);
+    // other - 1 may be 0 under the row [0, 5]: never proved
+    REQUIRE(st.contains("div_by_other"));
+    CHECK(st["div_by_other"].status != L::PROVED_ASSUMING);
+    CHECK(st["div_by_other"].status != L::PROVED);
+    std::error_code ec;
+    fs::remove(tsv, ec);
+}
+
+TEST_CASE("pir harness: a scoped field-invariant row applies only inside its scope") {
+    if (skip_without_frontend()) return;
+    namespace L = prism::laws;
+    auto run_with = [&](const std::string& scope) {
+        const auto tsv = fs::temp_directory_path() / "prism_field_invariants_scope_test.tsv";
+        {
+            std::ofstream o(tsv);
+            o << "%struct.fidev\t8\t4\trange\t1\t10\tUNVALIDATED\ttest\t" << scope << "\n";
+        }
+        auto cfg = prism::default_config();
+        cfg.pir_harness = true;
+        cfg.pir_field_invariants = tsv;
+        auto st = run_file(cfg, "field_invariants.c");
+        std::error_code ec;
+        fs::remove(tsv, ec);
+        REQUIRE(st.contains("div_by_field"));
+        return st["div_by_field"];
+    };
+    // in scope: the function, its unit, a directory glob
+    for (const char* sc : {"fn:div_by_*", "unit:*/field_invariants.c", "module:*/testdata/pir/*"}) {
+        auto f = run_with(sc);
+        CHECK_MESSAGE(f.status == L::PROVED_ASSUMING, (std::string(sc) + ": " + f.status + " " + f.message));
+        CHECK_MESSAGE(extra(f, "assumptions").find(std::string("scope ") + sc) != std::string::npos, sc);
+    }
+    // out of scope: another function, another unit, another directory: the row does not apply, never proved
+    for (const char* sc : {"fn:other_function", "unit:*/elsewhere.c", "module:*/drivers/net/*"}) {
+        auto f = run_with(sc);
+        CHECK_MESSAGE(f.status != L::PROVED_ASSUMING, sc);
+        CHECK_MESSAGE(f.status != L::PROVED, sc);
+        CHECK_MESSAGE(extra(f, "assumptions").find("field-invariant:") == std::string::npos, sc);
+    }
+    // the global row (no scope) says so
+    auto g = run_with("");
+    CHECK(extra(g, "assumptions").find("scope global") != std::string::npos);
+}
+
 TEST_CASE("pir discharge: container_of obligations, the member of a real outer, not a lone struct") {
     if (skip_without_frontend()) return;
     auto cfg = prism::default_config();

@@ -100,10 +100,12 @@ struct Config {
     //  --pir-addr-values: ptrtoint / inttoptr constant expressions and integer-address initialisers
     //  --pir-harness-deep: harness depth 4 and 64 objects per parameter (unless set explicitly)
     std::filesystem::path callee_contracts;
+    std::filesystem::path pir_field_invariants;  // --pir-field-invariants FILE: struct field value invariants for the auto harness
     bool pir_ops_auto = false;
     bool pir_addr_values = false;
     bool pir_harness_deep = false;
     bool pir_builtin_contracts = false;  // --pir-builtin-contracts: contracts for llvm.read_register / prefetch / objectsize (needs --kernel-api)
+    bool pir_icall_havoc = false;       // --pir-icall-havoc: unresolved indirect calls are a havoc of all memory (named)
     // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
     // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.
     std::string pir_lock_contracts;

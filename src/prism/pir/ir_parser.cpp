@@ -1629,6 +1629,10 @@ static Module parse_module_impl(std::string_view text, bool kernel_atomics) {
                 subs_raw.emplace_back(ref, std::string(rhs));
             } else if (rhs.find("!DIFile(") != std::string_view::npos) {
                 files[ref] = md_field(rhs, "filename");
+            } else if (rhs.starts_with("!{!\"") && rhs.ends_with("\"}") && rhs.size() > 6 &&
+                       rhs.substr(4, rhs.size() - 6).find('"') == std::string_view::npos) {
+                // a one-string tuple: the register name of llvm.read_register / llvm.write_register
+                m.md_strings[ref] = std::string(rhs.substr(4, rhs.size() - 6));
             } else if (rhs.starts_with("distinct !{")) {
                 // loop metadata: !N = distinct !{!N, !startloc, !endloc, ...}
                 std::vector<std::string> refs;

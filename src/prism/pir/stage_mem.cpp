@@ -119,6 +119,15 @@ std::vector<std::string> static_init_functions(const ir::Module& m) {
 TranslateOptions function_options(const TranslateOptions& base, const ir::Function& irf, UnitInfo& unit, int line,
                                   const Config& cfg, const std::string& source_name) {
     TranslateOptions o = base;
+    // --pir-field-invariants: only the rows whose scope matches this function and unit (FieldInvariant::scope)
+    if (!o.field_invariants.empty()) {
+        std::vector<FieldInvariant> in_scope;
+        const std::string upath = unit.path.generic_string();
+        for (const auto& fi : o.field_invariants)
+            if (field_invariant_applies(fi, irf.name, upath) || (!source_name.empty() && field_invariant_applies(fi, source_name, upath)))
+                in_scope.push_back(fi);
+        o.field_invariants = std::move(in_scope);
+    }
     o.strict_aliasing = cfg.strict_aliasing;
     o.fp_checks = cfg.fp_checks;
     o.kernel_api = cfg.pir_kernel_api;
@@ -140,6 +149,18 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
         char* end = nullptr;
         const long d = std::strtol(e, &end, 10);
         if (end != e && d >= 1 && d <= 64) o.inline_depth = static_cast<int>(d);
+    }
+    // PRISM_PIR_MODEL_INLINE_DEPTH: extra depth for library-model frames (TranslateOptions::model_inline_depth)
+    if (const char* e = std::getenv("PRISM_PIR_MODEL_INLINE_DEPTH")) {
+        char* end = nullptr;
+        const long d = std::strtol(e, &end, 10);
+        if (end != e && d >= 0 && d <= 64) o.model_inline_depth = static_cast<int>(d);
+    }
+    // PRISM_PIR_SMALL_INLINE: instruction budget of a call tree inlined past the depth (TranslateOptions::small_inline_insts)
+    if (const char* e = std::getenv("PRISM_PIR_SMALL_INLINE")) {
+        char* end = nullptr;
+        const long d = std::strtol(e, &end, 10);
+        if (end != e && d >= 0 && d <= 4096) o.small_inline_insts = static_cast<int>(d);
     }
     std::vector<std::string> ptrs;
     for (auto& p : irf.params)
@@ -203,6 +224,79 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
     const auto status_of = [](const Verdict& r) {
         return r.status == laws::TIMEOUT ? r.status + " (" + r.message + ")" : r.status;
     };
+    // --pir-field-invariants: a row is applied to every harness object of its struct, so a proof can carry rows it
+    // does not need. Each row the translation used is dropped in turn and the function checked again; a row whose
+    // removal keeps the verdict is removed for good (the function is re-translated without it, so its assumption and
+    // its assume statements are gone). What remains is the set the proof used; the vacuity check later runs on it.
+    if (!topt.field_invariants.empty() &&
+        (v.status == laws::PROVED || v.status == laws::PROVED_ASSUMING || v.status == laws::PROVED_UNBOUNDED ||
+         v.status == laws::BOUNDED)) {
+        auto row_used = [](const Function& g, const FieldInvariant& r) {
+            const std::string key = "(" + r.struct_type + " at byte " + std::to_string(r.offset) + ")";
+            for (const auto& a : g.assumptions)
+                if (a.starts_with("field-invariant: ") && a.find(key) != std::string::npos) return true;
+            return false;
+        };
+        std::vector<FieldInvariant> kept = topt.field_invariants;
+        std::string dropped;
+        const auto adopt = [&](Function&& g) {
+            auto name = fn.name;
+            auto file = fn.file;
+            auto line = fn.line;
+            fn = std::move(g);
+            fn.name = std::move(name);  // as the stage set them on the first translation
+            fn.file = std::move(file);
+            fn.line = line;
+        };
+        // First one re-check without every used row (the common case: the proof needs none of them), so a spent
+        // budget does not keep rows the proof never needed; then row by row for what is left.
+        {
+            std::vector<FieldInvariant> rest;
+            std::string all;
+            for (const auto& r : kept) {
+                if (row_used(fn, r)) all += (all.empty() ? "" : ", ") + r.struct_type + "@" + std::to_string(r.offset);
+                else rest.push_back(r);
+            }
+            if (!all.empty()) {
+                auto o = topt;
+                o.field_invariants = rest;
+                auto tr = translate(mod, irf, o);
+                if (tr.fn) {
+                    const auto r = recheck(*tr.fn, "without the field invariants " + all);
+                    if (r.status == v.status || (v.status == laws::PROVED_ASSUMING && r.status == laws::PROVED)) {
+                        if (r.status != v.status) v = r;
+                        dropped = all;
+                        kept = std::move(rest);
+                        adopt(std::move(*tr.fn));
+                    }
+                }
+            }
+        }
+        for (std::size_t i = 0; i < kept.size();) {
+            if (!row_used(fn, kept[i])) {
+                ++i;
+                continue;
+            }
+            auto o = topt;
+            o.field_invariants = kept;
+            o.field_invariants.erase(o.field_invariants.begin() + static_cast<std::ptrdiff_t>(i));
+            auto tr = translate(mod, irf, o);
+            if (tr.fn) {
+                const auto r = recheck(*tr.fn, "without field invariant " + kept[i].struct_type + "@" +
+                                                    std::to_string(kept[i].offset));
+                // the same verdict, or PROVED where it was PROVED-ASSUMING (nothing else was assumed)
+                if (r.status == v.status || (v.status == laws::PROVED_ASSUMING && r.status == laws::PROVED)) {
+                    if (r.status != v.status) v = r;
+                    dropped += (dropped.empty() ? "" : ", ") + kept[i].struct_type + "@" + std::to_string(kept[i].offset);
+                    kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(i));
+                    adopt(std::move(*tr.fn));
+                    continue;
+                }
+            }
+            ++i;
+        }
+        if (!dropped.empty()) f.extra["field_invariants_not_needed"] = dropped;
+    }
     if (fn.uses_memory) {
         f.extra["strict_aliasing"] = cfg.strict_aliasing ? "checked" : "off (--strict-aliasing checks effective types)";
     }

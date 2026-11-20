@@ -791,8 +791,20 @@ Arg MemTr::const_gep(int b, const ir::Value& ce, int line) {
     }
     if (total == i128(0)) return base;
     const i128 lim = i128_from_i64(max_obj_size());
-    if (total > lim || total < i128_neg(lim))
+    if (total > lim || total < i128_neg(lim)) {
+        // --pir-addr-values: an absolute address (inttoptr of a constant, or null) plus a constant beyond the
+        // object-size range is another absolute address, a constant that points to no object: every access through
+        // it is a violation, and one that rests on the address model is NEEDS-HARNESS (stage_mem.cpp)
+        if (t_.options().addr_values && base.is_const) {
+            const std::string s = "addr-values: a constant address plus a constant offset beyond any object is an absolute "
+                                  "address that points to no object (its value is not modelled)";
+            auto& as = t_.fn().assumptions;
+            if (std::find(as.begin(), as.end(), s) == as.end()) as.push_back(s);
+            const auto off = static_cast<uint64_t>(i128_to_i64(total));  // two's complement: wraps like the address
+            return Arg::c(ptr_w(), base.bits + off);
+        }
         throw Unenc{"UNENCODED: constant pointer offset out of range"};
+    }
     mark_memory();
     return ptr_add(b, base, c64(static_cast<uint64_t>(i128_to_i64(total))));
 }

@@ -771,6 +771,10 @@ std::vector<std::string> base_flags(const fs::path& src) {
     // optional/unique_ptr dereference, ...): PIR reports a reachable
     // __glibcxx_assert_fail as a violation (docs/PIR.md "C++ library").
     if (is_cxx(src)) f.push_back("-D_GLIBCXX_ASSERTIONS");
+    // PRISM_PIR_EMIT_ALL_DECLS=1: clang emits every definition of the unit, also the internal-linkage ones nothing in
+    // the unit calls (clang otherwise drops an unused `static` / `static inline` function, and pir has no record for it:
+    // NOFUNC). Emission only: the functions' IR is the same, no check changes, so no assumption is added.
+    if (const char* e = std::getenv("PRISM_PIR_EMIT_ALL_DECLS"); e && *e == '1') f.push_back("-femit-all-decls");
     return f;
 }
 
@@ -3123,6 +3127,15 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         topt.ops_table = load_ops_table(cfg.ops_table, ops_err);
         if (!ops_err.empty()) throw std::runtime_error("--ops-table " + ops_err);
     }
+    if (!cfg.pir_field_invariants.empty()) {  // --pir-field-invariants (field_mine.cpp)
+        std::string fi_err;
+        topt.field_invariants = load_field_invariants(cfg.pir_field_invariants, fi_err);
+        if (!fi_err.empty()) throw std::runtime_error("--pir-field-invariants " + fi_err);
+    }
+    if (const char* mine = std::getenv("PRISM_PIR_MINE_FIELDS"); mine && *mine) {  // field_mine.cpp
+        std::ofstream mf(mine, std::ios::app);
+        if (mf) mine_field_stores(mod, u.path.string(), mf);
+    }
     if (!cfg.callee_contracts.empty()) {  // --callee-contracts (docs/HARNESS_PHASE2.md)
         std::string cc_err;
         topt.callee_contracts = load_callee_contracts(cfg.callee_contracts, cc_err);
@@ -3134,6 +3147,7 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
     }
     topt.addr_values = cfg.pir_addr_values;
     topt.builtin_contracts = cfg.pir_builtin_contracts;
+    topt.icall_havoc = cfg.pir_icall_havoc;
     std::set<int> used_folded;
     // A preprocessed copy (x.i, --compile-commands) names x.c in its #line
     // markers: the unit's own functions are those of x.c, and its lines are x.c's.
