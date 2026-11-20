@@ -151,14 +151,13 @@ static void mem_guard() {
         throw z3::exception("soft memory cap (memory budget) reached while encoding memory: no room for Z3's next growth");
 }
 
-// Per log entry walked: the budget check of mem_guard every 4096 entries
+// Per log entry walked: the budget check of mem_guard every 1024 entries
 // (one read walks the whole log and, through copies, earlier logs again;
-// cdns_torrent_phy_on walked 97M entries, and without a check inside the
-// walk the watchdog's stuck-streak hard stop ended the process, exit 75, no
-// record for the function).
+// cdns_torrent_phy_on walked 97M entries): the walk itself polls the budget,
+// not only each read_cell_log call (sampled every 256 calls).
 static void walk_guard() {
     thread_local unsigned n = 0;
-    if ((++n & 4095u) != 0) return;
+    if ((++n & 1023u) != 0) return;
     if (membudget::over_budget())
         throw z3::exception("soft memory cap (memory budget) reached while encoding memory (log walk)");
 }

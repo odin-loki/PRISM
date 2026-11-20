@@ -295,6 +295,21 @@ struct Footprint {
 };
 
 struct Encoding {
+    // Freeing the encoding is no reason for the memory watchdog's hard stop
+    // (membudget::teardown_begin): ~Encoding starts the teardown, and this
+    // first member, destroyed after every other one, ends it.
+    struct TeardownEnd {
+        bool on = false;  // set by ~Encoding (not when the constructor threw)
+        ~TeardownEnd() {
+            if (on) membudget::teardown_end();
+        }
+    } teardown_end_;
+    ~Encoding() {
+        membudget::teardown_begin();
+        teardown_end_.on = true;
+    }
+    Encoding(const Encoding&) = delete;
+    Encoding& operator=(const Encoding&) = delete;
     z3::context& c;
     const Function& fn;
     const CfgInfo& g;

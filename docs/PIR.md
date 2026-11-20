@@ -1933,5 +1933,18 @@ three to four times its memory) is skipped when the process plus about 400
 bytes per query node would pass half the budget (a 5M-node query of
 bfq_find_bfqq_for_underused_actuator went from 2.8 to 10.4 GB in the key and
 the watchdog's hard stop ended the run with no record), and the encoder's log
-walk checks the budget every 4,096 entries (a walk of tens of millions of
-entries between two checks also ended in that hard stop).
+walk checks the budget every 1,024 entries. The hard stop itself
+(`PRISM_MEM_STUCK_MS`, armed in processes with `PRISM_PIR_ONLY`, which
+include prism-by-module's runner, not only rerun children) is not taken while
+a function's encoding is being freed (`membudget::teardown_begin/end`, from
+`~Encoding`: deleting millions of Z3 terms kept the RSS over the trip point
+for more than a second after the encoder had already stopped the function),
+and, while the busy phase is `encode: Encoding::build`, only once the RSS
+passes 1.5 times the budget (Z3's own `memory_max_size`): the encoder polls
+the budget and throws at its next check, so a streak there is one long call
+inside Z3 that returns, Z3's AST hash table growing (`expand_table`, 94% of
+perf samples on tegra_vde_setup_frameid, 1.3 to 3.4 GB in one call of more
+than 5 s with a 3,000 MB budget). Before, both ended runs with exit 75 and
+no record for the function (the r1 study's "NOFUNC at 10 GB" rows). The
+encoder's "no room for Z3's next growth" check did not stop these before
+the call (RSS plus Z3's allocation estimate was still under the budget).

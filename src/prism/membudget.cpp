@@ -226,6 +226,7 @@ bool g_thread = false;
 
 std::mutex g_hmu;
 std::function<void()> g_stuck_hook;
+std::atomic<int> g_teardown{0};
 
 void watchdog() {
     std::optional<clock::Stopwatch> streak;  // running while over budget
@@ -251,6 +252,33 @@ void watchdog() {
             continue;
         }
         if (!streak) streak.emplace();
+        // Freeing a function's encoding (Teardown) only gives memory back,
+        // however long it takes: no hard stop then. The encoder (phase
+        // "encode: Encoding::build") polls the budget itself and throws at
+        // its next check, so a streak there is one long allocation inside Z3
+        // that returns: the AST hash table's expand_table (94% of the samples
+        // of tegra_vde_setup_frameid, 1.3 -> 3.4 GB in one call, more than
+        // 5 s, budget 3000 MB). There the hard stop waits until the RSS
+        // passes 1.5 times the budget (Z3's own memory_max_size). Both used
+        // to end runs with exit 75 and no record (docs/PIR.md "Memory
+        // budget").
+        if (g_teardown.load() > 0) continue;
+        {
+            const std::string ph = phases();
+            const bool encoding = !ph.empty() && ph.find("Encoding::build") != std::string::npos &&
+                                  ph.find("portfolio") == std::string::npos && ph.find("vc solve") == std::string::npos;
+            const uint64_t b = budget_mb();
+            if (encoding && b > 0 && tree_rss_mb() < b + b / 2) {
+                streak.reset();  // a later phase's streak starts when that phase does
+                g_trips.fetch_add(1);
+                std::lock_guard<std::mutex> lk(g_wmu);
+                for (auto& [id, r] : g_watches) {
+                    r.fired = true;
+                    if (r.stop) r.stop();
+                }
+                continue;
+            }
+        }
         if (!hooked && stuck_ms > 0 && streak->elapsed_ms() >= static_cast<uint64_t>(stuck_ms)) {
             hooked = true;
             std::function<void()> h;
@@ -294,6 +322,9 @@ Watch::~Watch() {
 }
 
 uint64_t trips() { return g_trips.load(); }
+
+void teardown_begin() { g_teardown.fetch_add(1); }
+void teardown_end() { g_teardown.fetch_sub(1); }
 
 void set_stuck_hook(std::function<void()> hook) {
     std::lock_guard<std::mutex> lk(g_hmu);
