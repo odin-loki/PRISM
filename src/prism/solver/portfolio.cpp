@@ -1306,7 +1306,13 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
                     worker_msg.member = i;
                     const double s0 = now_s();
                     CubeStats st;
-                    auto a = cube_solve_cnf(*cp, co, seed, left, stop.get(), st);
+                    CubeCnfAnswer a;
+                    try {
+                        a = cube_solve_cnf(*cp, co, seed, left, stop.get(), st);
+                    } catch (const std::exception& e) {
+                        a = CubeCnfAnswer{};  // no answer
+                        a.note = std::string("cube: stopped: ") + e.what();
+                    }
                     worker_msg.secs = now_s() - s0;
                     if (a.kind == CubeCnfAnswer::Sat) {
                         worker_msg.kind = Kind::Sat;

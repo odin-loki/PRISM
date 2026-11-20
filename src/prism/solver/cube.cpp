@@ -522,12 +522,34 @@ CubeCnfAnswer cube_solve_cnf(const Cnf& cnf, const CubeOptions& co_in, std::uint
         }
     };
 
+    // An exception in a thread (bad_alloc in a solver copy near the address
+    // space limit: measured on the pool, SIGABRT at 7.6 GB under prlimit 8 GiB)
+    // would terminate the process. It stops the engine instead; the node it
+    // was on stays open, so the answer is none.
+    auto guarded = [&](const char* who, auto&& body) {
+        try {
+            body();
+        } catch (const std::exception& e) {
+            std::lock_guard<std::mutex> lk(t.mu);
+            t.notes.push_back(std::string("cube: ") + who + " thread stopped: " + e.what() + " (no answer)");
+            t.finished = true;
+            halt.store(true);
+            t.cv.notify_all();
+        } catch (...) {
+            std::lock_guard<std::mutex> lk(t.mu);
+            t.notes.push_back(std::string("cube: ") + who + " thread stopped by an exception (no answer)");
+            t.finished = true;
+            halt.store(true);
+            t.cv.notify_all();
+        }
+    };
+
     // ---------------------------------------------------------------- GPU walkers (SAT only)
     std::thread gpu_thread;
     stats.gpu = co.gpu ? "" : "off";
 #ifdef PRISM_HAS_CUDA
     if (co.gpu) {
-        gpu_thread = std::thread([&] {
+        gpu_thread = std::thread([&] { guarded("gpu", [&] {
             std::uint64_t gseed = seed * 7919 + 1;
             bool whole = true;
             while (!halt.load() && !(stop && stop->load()) && now_s() < deadline) {
@@ -596,14 +618,14 @@ CubeCnfAnswer cube_solve_cnf(const Cnf& cnf, const CubeOptions& co_in, std::uint
                     }
                 }
             }
-        });
+        }); });
     }
 #else
     if (co.gpu) stats.gpu = "not built (PRISM_CUDA off or nvcc missing; NOTRUN)";
 #endif
 
     std::vector<std::thread> pool;
-    for (unsigned w = 0; w < threads; ++w) pool.emplace_back(worker, w);
+    for (unsigned w = 0; w < threads; ++w) pool.emplace_back([&, w] { guarded("solver", [&] { worker(w); }); });
     for (auto& th : pool) th.join();
     halt.store(true);
     if (gpu_thread.joinable()) gpu_thread.join();
