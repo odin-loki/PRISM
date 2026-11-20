@@ -205,6 +205,18 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     return o;
 }
 
+// "g_a, g_b, ..." (at most 8 names, then "and N more"): the mutable globals the function reads or writes
+static std::string mutable_global_list(const Function& fn) {
+    std::string s;
+    std::size_t n = 0;
+    for (const auto& g : fn.mutable_global_names) {
+        if (++n > 8) continue;
+        s += (s.empty() ? "" : ", ") + g;
+    }
+    if (n > 8) s += " and " + std::to_string(n - 8) + " more";
+    return s.empty() ? std::string("unnamed") : s;
+}
+
 void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module& mod, const ir::Function& irf,
                          const TranslateOptions& topt, const Config& cfg, const CheckOptions& copt) {
     // Re-checks share the function's budget, cache and core share; plain
@@ -369,11 +381,27 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
     }
     // Global state: a violation that needs other values of mutable globals
     // than their initializers is a missing precondition, not a defect.
+    // Two runs, both with the function's inputs arbitrary: the violation's own
+    // check (property and source line) with the globals at their initial
+    // values, and, when something else fails there, the whole function.
     if (v.status == laws::FAILED && fn.mutable_globals && !topt.globals_initial) {
         auto o = topt;
         o.globals_initial = true;
         auto tr = translate(mod, irf, o);
         if (tr.fn) {
+            const std::string names = mutable_global_list(fn);
+            const std::string site = v.prop + (v.line > 0 ? "@" + std::to_string(v.line) : std::string());
+            // arbitrary-globals violation -> NEEDS-HARNESS (never a proof: the status only gets weaker)
+            const auto downgrade = [&](const std::string& initial_run, const std::string& why) {
+                f.extra["verdict_before_globals"] = v.status;
+                v.extra["globals"] = "arbitrary: FAILED (" + site + "); initial values: " + initial_run;
+                v.extra["globals_involved"] = names;
+                v.status = std::string(laws::NEEDS_HARNESS);
+                v.message = "violation needs mutable-global values (" + names + "): " + why + " (" + v.message +
+                            "); the global state the function is called in is an unstated precondition";
+                v.cex.clear();
+                v.cex_args.clear();
+            };
             auto v2 = recheck(*tr.fn, "initial globals");
             if (v2.status != laws::FAILED) {
                 // decided (no violation with the initial values), or not
@@ -381,20 +409,45 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
                 // violation is not shown for the state the function starts in
                 const bool decided = v2.status == laws::PROVED || v2.status == laws::PROVED_UNBOUNDED ||
                                      v2.status == laws::BOUNDED;
-                f.extra["verdict_before_globals"] = v.status;
-                v.status = std::string(laws::NEEDS_HARNESS);
-                v.message = decided ? "violation needs values of mutable globals other than their initializers (" +
-                                          v.message +
-                                          "); the global state the function is called in is an unstated precondition"
-                                    : "violation with arbitrary values of mutable globals (" + v.message +
-                                          "); with their initializers not decided (" + status_of(v2) +
-                                          "); the global state the function is called in is an unstated precondition";
-                v.extra["globals"] = "arbitrary: FAILED; initial values: " + status_of(v2);
-                v.cex.clear();
-                v.cex_args.clear();
+                downgrade(status_of(v2), decided ? "it does not occur with the globals' initializers"
+                                                 : "it is not shown with the globals' initializers (not decided)");
                 return;
             }
-            v.extra["globals"] = "FAILED also with the globals' initial values";
+            // Something fails with the initial values too. If it is this very
+            // check, the violation does not need the globals' other values.
+            const bool same_site = v2.prop == v.prop && v2.line == v.line;
+            if (same_site || v.prop.empty()) {
+                v.extra["globals"] = "FAILED also with the globals' initial values";
+            } else {
+                // another check fails with the initial values: is this one's violation still there?
+                Function one = *tr.fn;
+                for (auto& b : one.blocks)
+                    std::erase_if(b.stmts, [&](const Stmt& s) {
+                        return s.kind == Stmt::Check && !(s.prop == v.prop && (v.line <= 0 || s.line == v.line));
+                    });
+                auto v3 = recheck(one, "initial globals, " + site + " only");
+                const bool gone = v3.status == laws::PROVED || v3.status == laws::PROVED_UNBOUNDED ||
+                                  v3.status == laws::BOUNDED;
+                if (gone) {
+                    // the global-dependent violation is gone, but the function has a violation of its own with the
+                    // initial values (inputs arbitrary): that one is the verdict, with both runs recorded
+                    const std::string before = v.prop + ": " + v.cls + " at line " + std::to_string(v.line);
+                    v2.extra["globals"] = "arbitrary: FAILED (" + site + ", needs mutable-global values (" + names +
+                                          ")); initial values: FAILED (" + v2.prop + "@" + std::to_string(v2.line) + "); " +
+                                          site + " only, initial values: " + status_of(v3);
+                    v2.extra["globals_involved"] = names;
+                    f.extra["verdict_before_globals"] = v.status + " (" + before + ")";
+                    v = std::move(v2);
+                } else if (v3.status == laws::FAILED) {
+                    v.extra["globals"] = "FAILED also with the globals' initial values (" + site + " only: FAILED)";
+                } else {
+                    // the check alone is not decided: the violation is not shown for the initial state
+                    downgrade("FAILED (" + v2.prop + "@" + std::to_string(v2.line) + "); " + site + " only: " +
+                                  status_of(v3),
+                              "it is not shown with the globals' initializers (not decided)");
+                    return;
+                }
+            }
         }
     }
     // A violation under a drafted (not user-stated) precondition is not a

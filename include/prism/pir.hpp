@@ -369,6 +369,7 @@ struct Function {
     bool uses_memory = false;  // has memory statements (k-induction is not attempted)
     PtrModel ptr = kLP64;      // from the module's datalayout (translate)
     bool mutable_globals = false;  // reads/writes a mutable global (translation validation partial)
+    std::vector<std::string> mutable_global_names;  // which ones (no @; each once, in order of first use)
     bool returns_ptr = false;
     std::vector<std::string> ptr_params;   // pointer parameters bound to contract objects
     std::vector<std::string> assumptions;  // PROVED becomes PROVED-ASSUMING when non-empty
