@@ -229,10 +229,118 @@ distribution (cb = 2.38 for 3-CNF and up to 5.4 for long clauses, eps = 1).
 It keeps an unsatisfied-clause list and true-literal counts. It is a
 counterexample finder only. Its CUDA mirror, `src/cuda/probsat.cu` (one
 walker per thread, host re-check of the assignment), is built only with
-`PRISM_CUDA=ON`. It has been type-checked with clang's CUDA front end
-against a stub runtime header, but it has **never been compiled by nvcc or
-run**, because this machine has no GPU. The roadmap's GPU exit criterion
-("finds counterexamples faster than CPU-only") is not measured.
+`PRISM_CUDA=ON`. Since 2026-11-20 it is built by nvcc 13.4 (host gcc-12) in
+WSL2 and run on an RTX 3090 (sm_86): the doctests "solver: GPU ProbSAT*" and
+"cube: GPU ProbSAT with statistics" plant an assignment and check it, and
+`cuda_probsat_ex` reports the kernel time, the walkers that fit in device
+memory (walkers x clauses x 12 bytes, capped at 4 GiB) and every CUDA error
+as an error string, never as an answer. The portfolio does not run it; the
+cube engine's GPU mode does (below). Measured use: "Cube-and-conquer".
+
+## Cube-and-conquer (2026-11-20)
+
+`src/prism/solver/cube.cpp`, `SolveOptions::cube`, environment
+`PRISM_CUBE*` (`prism::env_vars()`). Off by default. For the queries the
+portfolio has not answered within `PRISM_CUBE_AFTER` seconds (default 2),
+the cube engine joins the portfolio as one more member, `cube`, on the CNF
+the portfolio has bit-blasted for its DIMACS members (one bit-blast for all),
+with the time that is left of `--timeout`. Like every member, the first
+definitive answer stops the others.
+
+**How.**
+
+- The CNF is the portfolio's (Z3 tactics, `bitblast_fresh`). A formula that
+  cannot be bit-blasted (arrays, UF, arithmetic, quantifiers) gets no cube
+  member. `PRISM_CUBE_ALONE=1` bit-blasts in the engine itself, under its
+  own deadline (the tactics are interrupted at it).
+- CaDiCaL 3.0.1 is linked as a library (`libcadical.a` of the pinned
+  `prism-deps tool cadical` build; CMake finds it under
+  `~/.prism/tools/cadical/<manifest commit>/src`, or `PRISM_CADICAL_DIR`).
+  Without it the engine is NOTRUN and the note says so. CaDiCaL's sources are
+  not changed. Each of `PRISM_CUBE_THREADS` threads (default 8) holds one
+  incremental solver loaded with the CNF; learned clauses stay across cubes
+  (they are consequences of the CNF alone).
+- A cube is a set of literals, solved as assumptions under a conflict budget
+  (`PRISM_CUBE_CONFLICTS`, default 5000). A cube that runs out of budget is
+  split on one variable into cube+x and cube-x with 1.5 x the budget
+  (dynamic partitioning as in Shapiro, Lerner and Bjorner 2026). x is
+  CaDiCaL's `lookahead()` under the cube's assumptions, else the highest
+  input bit not yet in the cube (`PRISM_CUBE_SPLIT=inputs` uses input bits
+  only). While fewer cubes are open than twice the threads, a node is split
+  before it is solved, so all threads have work from the start.
+- An UNSAT cube's failed assumptions (`failed()`) are an UNSAT core. Every
+  open cube that contains a core is closed without solving it (core-guided
+  pruning); an empty core is UNSAT for the whole formula.
+- `CaDiCaL::generate_cubes` is not used: it silently leaves out cubes that
+  propagation refutes, so its cube list is not a partition.
+- Threads are capped by the memory budget (an estimate per solver of 16 bytes
+  per literal + 96 per clause + 400 per variable; the note says when).
+
+**Soundness rules** (tests in `tests/cpp/test_cube.cpp`):
+
+- UNSAT only when the tree is finished, every leaf was closed by a solver
+  UNSAT or by a core that is a subset of the leaf (checked again at the end),
+  and the leaf cubes cover every assignment: `cubes_cover()` gives the
+  clauses "not cube" for all leaves to Z3, and they must be unsatisfiable.
+  This check does not trust the tree bookkeeping. `PRISM_CUBE_DEBUG_DROP=N`
+  removes leaf N before the check; the doctest "a dropped cube never gives
+  unsat" requires that this is never UNSAT.
+- A leaf still open at the deadline (or when stopped) leaves the query
+  TIMEOUT/UNKNOWN, never UNSAT (doctest "an open cube at the deadline").
+- SAT only through an assignment that satisfies the CNF and whose model
+  evaluates the original formula to true in Z3 (the portfolio validates every
+  member's model that way; alone mode validates it in the engine and again in
+  `solve()`).
+- Certified requests and `known_unsat` requests never use the engine (a
+  certificate needs one LRAT proof of the whole CNF; composing per-cube
+  proofs is not implemented). A cube UNSAT is cached like any member's plain
+  UNSAT (alone mode does not cache).
+- `PRISM_CUBE_ALONE=1` answers every query with the cube engine alone; the
+  soundness gates run the conformance suite and csmith that way.
+
+**GPU** (`PRISM_CUBE_GPU=1`, needs `PRISM_CUDA=ON`): one host thread runs
+the CUDA ProbSAT walkers, alternately on the whole CNF and on the CNF of an
+open cube (its literals fixed: satisfied clauses dropped, false literals
+removed), 2048 walkers x 200,000 flips per call. A walker's assignment is a
+SAT candidate validated as above. The GPU can only find counterexamples; it
+never closes a cube, so it cannot help the UNSAT (proof) side. What exists
+for GPUs beyond this (GPU inprocessing in ParaFROST, GPL-3.0 and a whole
+solver, not a preprocessor that hands a CNF on; GPU local search such as
+NVIDIA's TurboSAT, SAT only and no code; GPU lookahead libraries) was
+surveyed and not adopted; the measurement below shows why.
+
+**Measured (2026-11-20).** The setup:
+
+- the r1 timing sample of the OS-Proving PRISM-by-module run (`docs/coverage/CUBE_AND_CONQUER.md` there has the tables);
+- 40 functions of the timeout and memory-limit groups at the L1 budgets (80 s per function, 12,000 MB, 30 s per query);
+- the hard queries they posed: 17 queries a run left unanswered, replayed one at a time with `--solve-smt2`;
+- a 64-thread machine shared with other jobs (load 40-95).
+
+What it showed:
+
+- **The bit-blast comes first, and it is the cost.** The unanswered queries are QF_BV with wide multiplication and division, 50k to
+  1.7M nodes, giving CNFs of 1.1-6.4M clauses. Z3's `simplify; bit-blast; simplify; tseitin-cnf` takes 16 s idle and 27-135 s on
+  the loaded machine before any SAT solver sees a clause. With a 30 s query timeout the cube member started on 6 of the 17
+  queries and never answered. Neither did any other configuration answer more than plain.
+- **At 120 s per query**:
+  - the portfolio with the CaDiCaL and Kissat binaries answered 8 of 17 (Kissat 5 SAT, CaDiCaL 2 UNSAT, ProbSAT 1);
+  - with the cube member at 8, 16 or 32 threads it answered the same or fewer (7 of 15-16). The cube member never won.
+  - The cube member raised the median resident memory from 2.2 to 3.2 GB, because every thread holds a copy of the CNF. It also
+    raised the median wall time (104 s to 128 s), because it competes with the single-threaded members for cores.
+  - The answers never disagreed between configurations.
+- **The cube engine alone** (8 threads, 120 s, 6 queries) answered 1: SAT on a 3.4M-clause CNF, found by a CaDiCaL cube after
+  82 s of bit-blasting. The other 5 ran out of time with 1-3 open cubes.
+  - On 2.9M-clause CNFs the 8 solver copies reached 8-12 GB. The thread cap by memory budget, from the estimate above,
+    undercounts CaDiCaL's memory by a factor of about 3.
+- **GPU.** Every one of these CNFs has clauses of more than 64 literals (Tseitin form of wide disjunctions). The CUDA walker's
+  scratch is bounded at 64, so the GPU mode ran on none of them ("cuda: clause longer than 64 literals").
+  - On the doctest's planted 3-SAT (2,000 variables), 2,048 GPU walkers take 0.03-0.07 s of kernel time, where one CPU walker
+    takes 0.001-0.003 s.
+  - The GPU does not help these queries, and it cannot help the proofs at all.
+- **The installed solvers matter more than splitting.** r1 (and every run on this machine until 20 Nov) had no CaDiCaL, Kissat
+  or Bitwuzla binary, so its portfolio was Z3 and the CPU ProbSAT walker only. On these queries Z3 answered none at either
+  timeout (its child was killed at its memory cap). All the answers came from the CaDiCaL and Kissat members, plus one from
+  ProbSAT.
 
 ## Tools
 

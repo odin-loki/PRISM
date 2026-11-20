@@ -569,6 +569,7 @@ struct Encoding {
             // 2.1 -> 3.8 GB here in one second (budget 3000 MB).
             if (membudget::over_budget_sampled(64))
                 throw z3::exception("soft memory cap (PRISM_PIR_MEM_MB) reached while unrolling");
+            mem::encode_budget_check("unrolling");
             int id = q.front();
             q.pop_front();
             auto nb = nodes.at(static_cast<std::size_t>(id));  // a copy: node_id grows nodes
@@ -622,6 +623,7 @@ struct Encoding {
         for (int id : order) {
             static const bool tr_on = prism::settings::mem_trace().is_set();
             const uint64_t r0 = tr_on ? membudget::rss_mb() : 0;
+            mem::encode_budget_check("encoding the unrolled program");
             encode_node(id, out_edges.at(static_cast<std::size_t>(id)));
             if (tr_on && membudget::rss_mb() > r0 + 100)
                 std::fprintf(stderr, "[memtrace] node %d of %zu +%llu MB\n", id, order.size(),
@@ -2634,6 +2636,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
                 "not certified: loop invariants are checked by Z3 alone; PROVED-UNBOUNDED is not certified";
         return true;
     };
+    std::atomic<bool> enc_fired{false};  // the encoder's budget timer interrupted Z3
     try {
         if (rc.mode == RunCtl::Mode::RefineH) {
             try_invariants(v);
@@ -2716,6 +2719,39 @@ const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
         Encoding e(c, fn, g, unwind, eo);
         {
             prism::membudget::Phase phase_b("encode: Encoding::build");
+            // The function budget holds while encoding too (memory.hpp). Not
+            // for the k-induction and Houdini strategies: they say themselves
+            // that a spent budget left them "not attempted", and the race
+            // merges that note, not a TIMEOUT, into the verdict.
+            const bool enc_guard = rc.mode != RunCtl::Mode::RefineK && rc.mode != RunCtl::Mode::RefineH;
+            mem::EncodeBudgetScope enc_budget(enc_guard ? fn_budget.get() : nullptr, fn_budget_n);
+            // One Z3 simplify of a long read-over-write chain can itself run
+            // for minutes between two guard checks: once the budget is spent
+            // the context is interrupted (the "canceled" exception is mapped
+            // to the budget TIMEOUT below).
+            struct EncTimer {
+                std::mutex mu;
+                std::condition_variable cv;
+                bool done = false;
+                std::thread t;
+                ~EncTimer() {
+                    {
+                        std::lock_guard<std::mutex> g(mu);
+                        done = true;
+                    }
+                    cv.notify_all();
+                    if (t.joinable()) t.join();
+                }
+            } enc_timer;
+            if (fn_budget && enc_guard)
+                enc_timer.t = std::thread([&c, &enc_timer, &enc_fired, b = fn_budget] {
+                    std::unique_lock<std::mutex> lk(enc_timer.mu);
+                    const auto left = std::chrono::duration<double>(std::max(0.0, b->left()));
+                    if (!enc_timer.cv.wait_for(lk, left, [&] { return enc_timer.done; })) {
+                        enc_fired.store(true);
+                        Z3_interrupt(c);
+                    }
+                });
             e.build();
         }
         if (rc.meter) {
@@ -3363,9 +3399,19 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
     } catch (const mem::EncodeError& f) {
         v.status = f.status;
         v.message = f.msg;
+        // the function budget ran out while encoding (EncodeBudgetScope)
+        if (fn_budget && f.status == std::string(laws::TIMEOUT)) v.extra["function_budget_s"] = fn_budget_n;
         return v;
     } catch (const z3::exception& ex) {
         const std::string m = ex.msg();
+        // the encoder's budget timer interrupted Z3 (EncTimer above)
+        if (enc_fired.load() && fn_budget && m.find("cancel") != std::string::npos) {
+            v.status = std::string(laws::TIMEOUT);
+            v.message = "pir function budget of " + fn_budget_n +
+                        " s spent while encoding (Z3 interrupted) (PRISM_FUNCTION_BUDGET)";
+            v.extra["function_budget_s"] = fn_budget_n;
+            return v;
+        }
         // memory_max_size (cap_z3_memory_once): no proof, and not a crash
         const bool soft = m.find("soft memory cap") != std::string::npos;
         const bool oom = soft || m.find("out of memory") != std::string::npos || m.find("max. memory") != std::string::npos;

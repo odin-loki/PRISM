@@ -129,12 +129,36 @@ std::optional<uint64_t> eval_const(const z3::expr& e, const std::vector<uint64_t
 }
 }  // namespace
 
+namespace {
+thread_local const FunctionBudget* g_enc_budget = nullptr;
+thread_local std::string g_enc_total;
+}  // namespace
+
+EncodeBudgetScope::EncodeBudgetScope(const FunctionBudget* budget, std::string total_s)
+    : prev_(g_enc_budget), prev_total_(g_enc_total) {
+    g_enc_budget = budget;
+    g_enc_total = std::move(total_s);
+}
+
+EncodeBudgetScope::~EncodeBudgetScope() {
+    g_enc_budget = prev_;
+    g_enc_total = prev_total_;
+}
+
+void encode_budget_check(const char* where) {
+    if (g_enc_budget && g_enc_budget->exhausted())
+        throw EncodeError{std::string(laws::TIMEOUT), "pir function budget of " + g_enc_total + " s spent while " +
+                                                          where + " (PRISM_FUNCTION_BUDGET)"};
+}
+
 // Law 7: one load can build millions of read-over-write terms (a symbolic
 // address against a long write log, nested once per copy). The process RSS
 // is checked every few thousand steps against the memory budget; past it the
 // function ends with a reported UNKNOWN (encode.cpp maps this exception) and
-// its context, with everything built here, is freed.
+// its context, with everything built here, is freed. The function budget is
+// checked here too (EncodeBudgetScope): past it, a TIMEOUT.
 static void mem_guard() {
+    encode_budget_check("encoding memory");
     if (membudget::over_budget_sampled(256))
         throw z3::exception("soft memory cap (memory budget) reached while encoding memory");
     // Headroom for one more growth step: Z3's term tables double when they
