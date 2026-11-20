@@ -1421,6 +1421,9 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
         // "#dbg_assign(...)", "#dbg_label(...)") replace the llvm.dbg.*
         // intrinsics. They carry no semantics: dropped, like the intrinsics.
         if (line.starts_with("#dbg_")) continue;
+        // The intrinsic form (LLVM 18 with full -g, --pir-declared-types) is dropped the same way, so a unit lowered
+        // with -g has the instructions it has with -gline-tables-only (the translator ignores llvm.dbg.* calls).
+        if (line.starts_with("call void @llvm.dbg.") || line.starts_with("tail call void @llvm.dbg.")) continue;
         if (!lpad.empty()) {
             if (line.starts_with("catch ") || line.starts_with("filter ") || line.starts_with("cleanup")) {
                 lpad += " " + line;
@@ -1645,6 +1648,57 @@ static Module parse_module_impl(std::string_view text, bool kernel_atomics) {
                     q = e - 1;
                 }
                 if (refs.size() >= 2 && refs.at(0) == ref) loop_tuples.emplace_back(ref, refs.at(1));
+            } else if (auto dk = rhs.find("!DI"); dk != std::string_view::npos && dk <= 9 &&
+                       (rhs.substr(dk).starts_with("!DIBasicType(") || rhs.substr(dk).starts_with("!DIDerivedType(") ||
+                        rhs.substr(dk).starts_with("!DICompositeType("))) {
+                // debug type nodes (full -g, --pir-declared-types; docs/PIR.md "Declared pointee types")
+                DIType t;
+                t.kind = rhs.substr(dk).starts_with("!DIBasicType(") ? "basic"
+                         : rhs.substr(dk).starts_with("!DIDerivedType(") ? "derived" : "composite";
+                t.tag = md_field(rhs, "tag");
+                t.name = md_field(rhs, "name");
+                const auto num = [&](std::string_view k) {
+                    uint64_t v = 0;
+                    const auto s = md_field(rhs, k);
+                    std::from_chars(s.data(), s.data() + s.size(), v);
+                    return v;
+                };
+                t.size_bits = num("size");
+                t.offset_bits = num("offset");
+                t.base = md_field(rhs, "baseType");
+                if (t.base == "null") t.base.clear();
+                t.elements = md_field(rhs, "elements");
+                t.fwd = md_field(rhs, "flags").find("DIFlagFwdDecl") != std::string::npos;
+                m.ditypes[ref] = std::move(t);
+            } else if (rhs.find("!DILocalVariable(") != std::string_view::npos) {
+                if (const int arg = to_int(md_field(rhs, "arg")); arg > 0) {
+                    DIParamVar v;
+                    v.name = md_field(rhs, "name");
+                    v.arg = arg;
+                    v.scope = md_field(rhs, "scope");
+                    v.type = md_field(rhs, "type");
+                    m.diparams.push_back(std::move(v));
+                }
+            } else if (rhs.starts_with("!{") && rhs.ends_with("}") && rhs.find('"') == std::string_view::npos) {
+                // a tuple of refs (struct members of a DICompositeType's `elements:`)
+                std::vector<std::string> refs;
+                std::string_view in = rhs.substr(2, rhs.size() - 3);
+                bool ok = true;
+                for (std::size_t s = 0; s < in.size();) {
+                    auto c = in.find(',', s);
+                    auto item = trim(in.substr(s, c == std::string_view::npos ? std::string_view::npos : c - s));
+                    if (!item.empty()) {
+                        if (item != "null" && !(item.size() > 1 && item[0] == '!' &&
+                                                std::isdigit(static_cast<unsigned char>(item[1])))) {
+                            ok = false;
+                            break;
+                        }
+                        refs.push_back(item);
+                    }
+                    if (c == std::string_view::npos) break;
+                    s = c + 1;
+                }
+                if (ok) m.md_tuples[ref] = std::move(refs);
             }
         }
     }

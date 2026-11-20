@@ -35,6 +35,14 @@ int alloc_size_arg(const std::string& n) {
     static const std::regex first(R"(^(__)?(k|kv|v)(m|z|c)?alloc(_noprof|_node_noprof|_node)?$|^kzalloc_noprof$|^kmalloc_noprof$|^__kmalloc_noprof$|^__kmalloc_large_noprof$|^vzalloc(_noprof)?$|^vmalloc(_noprof)?$|^kvzalloc(_noprof)?$|^kvmalloc(_noprof)?$|^malloc$|^zfs_kmem_alloc$|^kmem_alloc$|^kmem_zalloc$)");
     static const std::regex second(R"(^devm_k(m|z)alloc(_noprof)?$)");
     static const std::regex third(R"(^__kmalloc_cache_noprof$|^kmalloc_trace(_noprof)?$)");
+    // MMIO mappings (pir-ptr-patterns (c)): the mapped size, so a `regs + offset` field gets a mined "valid N" row
+    static const std::map<std::string, int> kMmio{
+        {"ioremap", 1},          {"ioremap_wc", 1},     {"ioremap_uc", 1},       {"ioremap_cache", 1},
+        {"ioremap_np", 1},       {"ioremap_wt", 1},     {"devm_ioremap", 2},     {"devm_ioremap_wc", 2},
+        {"devm_ioremap_uc", 2},  {"pci_iomap_range", 3}, {"pci_iomap", 2},       {"pcim_iomap", 2},
+        {"of_iomap", -1},        {"pmap_mapdev", 1},    {"pmap_mapdev_attr", 1}, {"acpi_os_map_iomem", 1},
+        {"acpi_os_map_memory", 1}, {"memremap", 1},     {"devm_memremap", 2}};
+    if (auto it = kMmio.find(n); it != kMmio.end()) return it->second;
     if (std::regex_match(n, first)) return 0;
     if (std::regex_match(n, second)) return 1;
     if (std::regex_match(n, third)) return 2;
@@ -183,6 +191,79 @@ std::vector<FieldInvariant> load_field_invariants(const std::filesystem::path& f
         out.push_back(std::move(fi));
     }
     return out;
+}
+
+// --pir-param-preconditions FILE (docs/PIR.md "Parameter preconditions"). TSV, 6 columns:
+//   function  parameter  condition  scope  status  source
+// '#' lines, blank lines and a header line starting with "function\t" are skipped.
+std::vector<ParamPrecondition> load_param_preconditions(const std::filesystem::path& file, std::string& error) {
+    error.clear();
+    std::ifstream in(file);
+    if (!in) {
+        error = "cannot read " + file.string();
+        return {};
+    }
+    std::vector<ParamPrecondition> out;
+    std::string line;
+    const auto bad = [&](int no, const std::string& why) {
+        error = file.string() + ":" + std::to_string(no) + ": " + why;
+        return std::vector<ParamPrecondition>{};
+    };
+    for (int no = 1; std::getline(in, line); ++no) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#' || line.starts_with("function\t")) continue;
+        std::vector<std::string> c;
+        std::stringstream ss(line);
+        for (std::string x; std::getline(ss, x, '\t');) c.push_back(x);
+        if (c.size() != 6) return bad(no, "6 tab-separated columns expected (function, parameter, condition, scope, status, source)");
+        ParamPrecondition r;
+        r.function = c[0].starts_with("@") ? c[0].substr(1) : c[0];
+        r.param = c[1];
+        r.condition = c[2];
+        r.scope = c[3].empty() ? "*" : c[3];
+        r.status = c[4];
+        r.source = c[5];
+        if (r.function.empty() || r.param.empty()) return bad(no, "function and parameter are required");
+        if (r.status.empty() || r.source.empty()) return bad(no, "status and source are required");
+        std::vector<std::string> w;
+        std::stringstream cs(r.condition);
+        for (std::string x; cs >> x;) w.push_back(x);
+        if (w.empty()) return bad(no, "empty condition");
+        r.kind = w[0];
+        try {
+            if (r.kind == "valid" && w.size() == 2) {
+                std::size_t used = 0;
+                r.a = std::stoll(w[1], &used);
+                if (used != w[1].size() || r.a <= 0 || r.a > (int64_t{1} << 30)) return bad(no, "valid needs a size in (0, 1 GiB]");
+            } else if (r.kind == "range" && w.size() == 3) {
+                std::size_t u1 = 0, u2 = 0;
+                r.a = std::stoll(w[1], &u1);
+                r.b = std::stoll(w[2], &u2);
+                if (u1 != w[1].size() || u2 != w[2].size() || r.a > r.b) return bad(no, "range needs integers A <= B");
+            } else if (r.kind == "nonnull" && w.size() == 1) {
+            } else if (r.kind == "type" && (w.size() == 2 || (w.size() == 3 && (w[1] == "struct" || w[1] == "union")))) {
+                std::string t = w.size() == 3 ? w[1] + "." + w[2] : w[1];
+                if (t.starts_with("%")) t = t.substr(1);
+                if (!t.starts_with("struct.") && !t.starts_with("union.")) t = "struct." + t;
+                r.type_name = "%" + t;
+            } else {
+                return bad(no, "condition must be 'valid N', 'type S', 'nonnull' or 'range A B'");
+            }
+        } catch (const std::exception&) {
+            return bad(no, "condition numbers must be integers");
+        }
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::string param_precondition_key(const ParamPrecondition& r) {
+    return "param-precondition: " + r.function + "(" + r.param + ") " + r.condition + " (";
+}
+
+std::string param_precondition_text(const ParamPrecondition& r) {
+    return param_precondition_key(r) + "--pir-param-preconditions; scope " + r.scope + "; status " + r.status +
+           "; source " + r.source + "; not checked here)";
 }
 
 }  // namespace prism::pir

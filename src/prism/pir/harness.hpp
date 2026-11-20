@@ -31,6 +31,17 @@ struct HarnessOptions {
     const std::vector<OpsField>* ops = nullptr;
     // the callee names must be defined or declared in the module
     const ir::Module* ops_module = nullptr;
+    // --pir-declared-types: a pointee without type evidence (and one smaller than its declaration) takes the type and
+    // size its declaration has in the unit's debug information (ir::Module::ditypes), a named assumption
+    bool declared_types = false;
+    // --pir-param-preconditions for this parameter: its own object is of this type / at least this many bytes
+    std::optional<ir::Type> root_type;
+    uint64_t root_min_bytes = 0;
+    // --pir-priv-areas: a struct-typed pointer derived at the end of the object (netdev_priv-style private area) sizes
+    // the object to that offset plus the area (from a visible allocation, else the area struct), a named assumption
+    bool priv_areas = false;
+    // --pir-index-field-bounds: an integer field of the object that indexes an in-object array [N x T] is in [0, N-1]
+    bool index_field_bounds = false;
 };
 
 // A function-pointer field of a harness object bound to the targets of its ops-table entry.
@@ -56,6 +67,16 @@ struct HarnessNode {
     // (past the depth bound, over the object cap, or no pointee type evidence)
     std::vector<uint64_t> unbound_fields;
     std::vector<HarnessFpField> fp_fields;
+    // --pir-index-field-bounds: an integer field (byte offset, width) used as the index of an in-object array of
+    // `count` elements; the field is assumed in [0, count - 1] (named, not discharged)
+    struct IndexBound {
+        uint64_t offset = 0;
+        unsigned width = 0;
+        uint64_t count = 0;
+        uint64_t array_off = 0;
+        std::string where;  // "%struct.S field K"
+    };
+    std::vector<IndexBound> index_bounds;
     // why a pointer field the function loads has no object of its own (recorded, see unbound_lines)
     int cut_depth = 0;     // past the depth bound
     int cut_cap = 0;       // over the object cap
@@ -67,7 +88,25 @@ struct HarnessPlan {
     std::vector<std::string> assumptions;  // one named line per choice
     int objects = 0;
     int depth_reached = 0;  // deepest nesting level of an object (0 = the parameter's own object)
+    bool root_override_used = false;  // root_type / root_min_bytes changed the parameter's object
+    int declared_used = 0;            // objects whose type or size came from the declaration (--pir-declared-types)
 };
+
+// The declared pointee of a pointer (debug information, full -g): its size and spelling, and the stripped
+// DI type ref (to find the declared types of its members).
+struct DeclaredPointee {
+    uint64_t bytes = 0;
+    std::string ref;        // stripped pointee type node
+    std::string spelling;   // "struct mount", "u8", ...
+    bool composite = false; // struct / union / array
+    std::string ir_struct;  // "%struct.mount" when the module has that struct with the same size
+};
+// The declared pointee type of parameter p of f; nullopt without full debug information or a sized pointee.
+std::optional<DeclaredPointee> declared_param_pointee(const ir::Module& m, const Layout& lay, const ir::Function& f,
+                                                      const ir::Param& p);
+// The declared pointee of the pointer member at byte `off` of an object of DI type `ref` (nested structs/arrays).
+std::optional<DeclaredPointee> declared_member_pointee(const ir::Module& m, const Layout& lay, const std::string& ref,
+                                                       uint64_t off);
 
 // nullopt (and `why`): the parameter cannot be given an object (negative
 // offsets such as container_of, an object too large for the model).

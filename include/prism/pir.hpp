@@ -144,6 +144,26 @@ struct DISub {
     bool artificial = false;
 };
 
+// A debug-information type node (DIBasicType / DIDerivedType / DICompositeType), kept so that --pir-declared-types
+// can read a parameter's declared pointee type (full -g only; -gline-tables-only emits none of these).
+struct DIType {
+    std::string kind;          // "basic" | "derived" | "composite"
+    std::string tag;           // "DW_TAG_pointer_type", "DW_TAG_structure_type", "DW_TAG_member", ...
+    std::string name;
+    uint64_t size_bits = 0;
+    uint64_t offset_bits = 0;  // DW_TAG_member: offset in its struct
+    std::string base;          // baseType ref ("" = void)
+    std::string elements;      // composite: members tuple ref
+    bool fwd = false;          // DIFlagFwdDecl (incomplete type: no size)
+};
+// A DILocalVariable that is a parameter (arg: N >= 1).
+struct DIParamVar {
+    std::string name;
+    int arg = 0;
+    std::string scope;         // the DISubprogram ref
+    std::string type;
+};
+
 struct Global {
     std::string name;
     Type ty;                   // value type
@@ -165,6 +185,9 @@ struct Module {
     std::map<std::string, DISub> subprograms;   // "!10" -> source name/line/file
     std::map<std::string, DILoc> loop_starts;   // "!15" (llvm.loop) -> the loop's start location
     std::map<std::string, std::string> md_strings;  // "!12" -> "rsp": one-string tuples !{!"rsp"} (named registers)
+    std::map<std::string, DIType> ditypes;          // "!40" -> debug type node (full -g only)
+    std::map<std::string, std::vector<std::string>> md_tuples;  // "!41" -> {"!42", "null", ...} (ref-only tuples)
+    std::vector<DIParamVar> diparams;               // parameter DILocalVariables (full -g only)
     const Function* find(std::string_view name) const;
     const Global* find_global(std::string_view name) const;
 };
@@ -423,7 +446,33 @@ struct AutoHarness {
     uint64_t elems = 16;           // default element count of an array-like pointee
     uint64_t unknown_bytes = 64;   // default size when the pointee type is not determined
     int max_objects = 32;          // objects per pointer parameter
+    // --pir-declared-types: a pointee without type evidence in the IR (and a nested pointer field) gets the type
+    // and size of its declaration from the unit's debug information (full -g), a named assumption
+    bool declared_types = false;
+    bool priv_areas = false;       // --pir-priv-areas: netdev_priv-style private areas past the struct end (named)
+    bool index_field_bounds = false;  // --pir-index-field-bounds: an array-index field is in [0, N-1] (named)
 };
+
+// --pir-param-preconditions FILE (docs/PIR.md "Parameter preconditions"): one precondition of one parameter of one
+// function. TSV, 6 columns: function, parameter (name, or 0-based index), condition, scope, status, source.
+// condition: "valid N" (a pointer parameter points to the start of a valid object of at least N bytes), "type S"
+// (... of struct S: "struct foo", "%struct.foo" or "foo"), "nonnull" (implied by the automatic harness: recorded,
+// adds nothing), "range A B" (an integer parameter, signed, A <= v <= B). scope: "*" or a substring of the unit's
+// path. Each row used is a named assumption ("param-precondition: ..."), minimised to the rows the proof needs.
+struct ParamPrecondition {
+    std::string function;      // IR name
+    std::string param;         // name or 0-based index
+    std::string kind;          // valid | type | nonnull | range
+    int64_t a = 0, b = 0;
+    std::string type_name;     // kind type: "%struct.foo"
+    std::string condition;     // as written
+    std::string scope, status, source;
+};
+PRISM_API std::vector<ParamPrecondition> load_param_preconditions(const std::filesystem::path& file, std::string& error);
+// The named assumption of a row used: "param-precondition: FUNCTION(PARAM) CONDITION (--pir-param-preconditions; ...)";
+// param_precondition_key is its prefix up to and including " (" (how the minimiser finds a row's use).
+PRISM_API std::string param_precondition_text(const ParamPrecondition& r);
+PRISM_API std::string param_precondition_key(const ParamPrecondition& r);
 
 // --ops-table FILE (docs/PIR.md "Indirect calls through ops tables"): one field of a
 // known ops table. struct_type is the IR spelling of the struct ("%struct.NAME"); index
@@ -545,6 +594,8 @@ struct TranslateOptions {
     bool icall_havoc = false;
     // --pir-field-invariants: field value invariants applied to automatic-harness objects
     std::vector<FieldInvariant> field_invariants;
+    // --pir-param-preconditions: the rows whose scope matches this unit (all functions)
+    std::vector<ParamPrecondition> param_preconditions;
     // --callee-contracts FILE (docs/HARNESS_PHASE2.md): assume-guarantee stubs for callees that have no body
     // (IR name -> contract). A callee with a body, or a kernel spec, is never replaced by one.
     std::map<std::string, CalleeContract> callee_contracts;
@@ -793,6 +844,9 @@ struct Frontend {
     // pir stage): searched before libstdc++ when non-empty (docs/PIR.md
     // "C++ library models"). Empty: the platform library only.
     std::filesystem::path cxx_models;
+    // --pir-declared-types: lower with -g (full debug information: the declared types of parameters and struct
+    // members) instead of -gline-tables-only. Metadata only: the instructions are the same.
+    bool full_debug = false;
 };
 PRISM_API Frontend find_frontend(const Config& cfg);
 

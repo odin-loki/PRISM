@@ -111,6 +111,10 @@ struct Config {
     bool pir_lock_wrappers = false;     // --pir-lock-wrappers: acquire-only / release-only roots are lock wrappers (named)
     bool pir_builtin_contracts = false;  // --pir-builtin-contracts: contracts for llvm.read_register / prefetch / objectsize (needs --kernel-api)
     bool pir_icall_havoc = false;       // --pir-icall-havoc: unresolved indirect calls are a havoc of all memory (named)
+    bool pir_declared_types = false;    // --pir-declared-types: harness pointees without type evidence take their declared type (-g, named)
+    bool pir_priv_areas = false;        // --pir-priv-areas: a private area past the struct end is sized (allocation or its struct, named)
+    bool pir_index_field_bounds = false;  // --pir-index-field-bounds: a field indexing an in-object array [N x T] is in [0, N-1] (named)
+    std::filesystem::path pir_param_preconditions;  // --pir-param-preconditions FILE: per-parameter preconditions (named, minimised)
     // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
     // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.
     std::string pir_lock_contracts;

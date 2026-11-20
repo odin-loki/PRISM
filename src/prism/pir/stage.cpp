@@ -858,6 +858,7 @@ Frontend find_frontend(const Config& cfg) {
     fe.clangxx = cfg.llvm_tool("clang++");
     fe.opt = cfg.llvm_tool("opt");
     fe.lli = cfg.llvm_tool("lli");
+    fe.full_debug = cfg.pir_declared_types;  // -g: declared types for the harness (metadata only)
     fe.version = "clang";
     if (fe.clang) {
         auto r = prism::exec::run_process({fe.clang->string(), "--version"}, 20.0);
@@ -1527,6 +1528,10 @@ std::optional<std::string> lower_to_ir(const Frontend& fe, const fs::path& src, 
     fl.insert(fl.end(), include_flags.begin(), include_flags.end());
     // A freestanding unit (-nostdinc: a kernel) has no libc to complete: the forced C23
     // declarations (strndup(const char *, size_t)) would clash with its own libkern.h.
+    // --pir-declared-types: full debug information (declared parameter and member types); metadata only
+    if (fe.full_debug)
+        for (auto& x : fl)
+            if (x == "-gline-tables-only") x = "-g";
     if (!is_cxx(src) && std::ranges::find(include_flags, std::string("-nostdinc")) != include_flags.end())
         for (std::size_t k = 0; k + 1 < fl.size(); ++k)
             if (fl[k] == "-include" && fl[k + 1].find("prism_c23_decls.h") != std::string::npos) {
@@ -2689,6 +2694,13 @@ bool has_auto_harness(const Function& fn) {
     return false;
 }
 
+// a --pir-param-preconditions row was used (a scalar "range" row needs the vacuity check too)
+bool has_param_precondition(const Function& fn) {
+    for (const auto& a : fn.assumptions)
+        if (a.starts_with("param-precondition: ")) return true;
+    return false;
+}
+
 // The function with every check removed and one check "a return is reachable" at each return: FAILED (a
 // witness) means some execution satisfies every assumption (harness, requires, assumed library behaviour) and
 // returns; PROVED means none does, so every proof of the function was vacuous.
@@ -2711,7 +2723,7 @@ Function vacuity_variant(const Function& fn) {
 
 void apply_vacuity(Verdict& v, const Function& fn, const CheckOptions& copt) {
     if (v.status != laws::PROVED_ASSUMING && v.status != laws::BOUNDED) return;
-    if (fn.ptr_params.empty() && !has_auto_harness(fn)) return;
+    if (fn.ptr_params.empty() && !has_auto_harness(fn) && !has_param_precondition(fn)) return;
     CheckOptions ro = copt;
     ro.certified = false;
     auto r = check_function(vacuity_variant(fn), ro);
@@ -2872,6 +2884,9 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
     if (cfg.pir_harness_deep) ho.max_objects = 64;
     ho.elems = cfg.pir_harness_elems;
     ho.unknown_bytes = cfg.pir_harness_bytes;
+    ho.declared_types = cfg.pir_declared_types;  // the same plan as the translation (its obligations)
+    ho.priv_areas = cfg.pir_priv_areas;
+    ho.index_field_bounds = cfg.pir_index_field_bounds;
     ho.container_of = cfg.pir_container_of;
     if (topt.ops_auto) {
         ho.ops = &topt.ops_table;
@@ -3075,6 +3090,14 @@ Analyzed run_unit(const Unit& u, const Frontend& fe, const Config& cfg, const Lo
     if (const char* mine = std::getenv("PRISM_PIR_MINE_FIELDS"); mine && *mine) {  // field_mine.cpp
         std::ofstream mf(mine, std::ios::app);
         if (mf) mine_field_stores(mod, u.path.string(), mf);
+    }
+    if (!cfg.pir_param_preconditions.empty()) {  // --pir-param-preconditions (field_mine.cpp): rows in this unit's scope
+        std::string pp_err;
+        auto rows = load_param_preconditions(cfg.pir_param_preconditions, pp_err);
+        if (!pp_err.empty()) throw std::runtime_error("--pir-param-preconditions " + pp_err);
+        const std::string up = u.path.generic_string();
+        for (auto& r : rows)
+            if (r.scope == "*" || up.find(r.scope) != std::string::npos) topt.param_preconditions.push_back(std::move(r));
     }
     if (!cfg.callee_contracts.empty()) {  // --callee-contracts (docs/HARNESS_PHASE2.md)
         std::string cc_err;
