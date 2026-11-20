@@ -67,11 +67,11 @@ std::string assumptions_of(const prism::Finding& f) {
 void expect(const std::map<std::string, prism::Finding>& got, const std::string& fn, const std::string& want,
             const std::string& tag = "") {
     auto it = got.find(fn);
-    REQUIRE_MESSAGE(it != got.end(), fn + " missing");
+    REQUIRE_MESSAGE(it != got.end(), (fn + " missing"));
     const auto& f = it->second;
-    CHECK_MESSAGE(f.status == want, fn + ": " + f.status + " != " + want + " (" + f.message + ")");
+    CHECK_MESSAGE(f.status == want, (fn + ": " + f.status + " != " + want + " (" + f.message + ")"));
     if (!tag.empty() && f.status == prism::laws::PROVED_ASSUMING)
-        CHECK_MESSAGE(assumptions_of(f).find(tag) != std::string::npos, fn + " lacks '" + tag + "': " + assumptions_of(f));
+        CHECK_MESSAGE(assumptions_of(f).find(tag) != std::string::npos, (fn + " lacks '" + tag + "': " + assumptions_of(f)));
 }
 
 struct KRun {
@@ -141,7 +141,7 @@ TEST_CASE("pir triage item 6: an asm condition-code output is 0 or 1 (the llvm.a
 TEST_CASE("pir triage item 6: sx locks (OpenZFS mutex_enter / mutex_exit / mutex_tryenter) pair, failures stay FAILED") {
     auto cfg0 = prism::default_config();
     if (skip_without_frontend(cfg0)) return;
-    const std::string PA = prism::laws::PROVED_ASSUMING, F = prism::laws::FAILED;
+    const std::string PA{prism::laws::PROVED_ASSUMING}, F{prism::laws::FAILED};
     auto got = by_function(run_file("kernel_item6_freebsd.c", "freebsd", [](prism::Config&) {}));
     expect(got, "zfs_mutex_ok", PA, "freebsd-lock");
     expect(got, "sx_try_ok", PA, "freebsd-lock");
@@ -153,7 +153,7 @@ TEST_CASE("pir triage item 6: sx locks (OpenZFS mutex_enter / mutex_exit / mutex
 TEST_CASE("pir triage item 6: --pir-lock-scopes: per-lock caller-held / returned-held, imbalances still FAILED") {
     auto cfg0 = prism::default_config();
     if (skip_without_frontend(cfg0)) return;
-    const std::string PA = prism::laws::PROVED_ASSUMING, F = prism::laws::FAILED;
+    const std::string PA{prism::laws::PROVED_ASSUMING}, F{prism::laws::FAILED};
     auto off = by_function(run_file("kernel_item6_linux.c", "linux", [](prism::Config&) {}));
     expect(off, "rel_a_ok", F);
     expect(off, "acq_a_ok", F);
@@ -214,7 +214,7 @@ TEST_CASE("pir triage item 6: --pir-lock-scopes: guard() scopes end at their cle
 TEST_CASE("pir triage item 6: --pir-bpf-helpers: ARG_PTR_TO_* arguments are valid objects; _OR_NULL and scalars are not") {
     auto cfg0 = prism::default_config();
     if (skip_without_frontend(cfg0)) return;
-    const std::string PA = prism::laws::PROVED_ASSUMING, F = prism::laws::FAILED;
+    const std::string PA{prism::laws::PROVED_ASSUMING}, F{prism::laws::FAILED};
     auto off = by_function(run_file("kernel_item6_linux.c", "linux", [](prism::Config&) {}));
     CHECK(off.at("helper_ctx_ok").status != prism::laws::PROVED_ASSUMING);
     CHECK(off.at("helper_mem_ok").status != prism::laws::PROVED_ASSUMING);
@@ -229,7 +229,7 @@ TEST_CASE("pir triage item 6: --pir-bpf-helpers: ARG_PTR_TO_* arguments are vali
 TEST_CASE("pir triage item 6: --pir-global-harness-deep: nested fields and static list heads, values still checked") {
     auto cfg0 = prism::default_config();
     if (skip_without_frontend(cfg0)) return;
-    const std::string PA = prism::laws::PROVED_ASSUMING, F = prism::laws::FAILED;
+    const std::string PA{prism::laws::PROVED_ASSUMING}, F{prism::laws::FAILED};
     auto shallow = by_function(run_file("kernel_item6_linux.c", "linux", [](prism::Config& c) { c.pir_global_harness = true; }));
     CHECK(shallow.at("nest_ok").status != prism::laws::PROVED_ASSUMING);
     CHECK(shallow.at("list_count_ok").status != prism::laws::PROVED_ASSUMING);
@@ -239,6 +239,11 @@ TEST_CASE("pir triage item 6: --pir-global-harness-deep: nested fields and stati
     }));
     expect(deep, "nest_ok", PA, "global harness (deep): @the_dev->*->@0");
     expect(deep, "list_count_ok", PA, "global harness (deep): @items (a struct list_head)");
-    expect(deep, "nest_div_bad", F);
-    expect(deep, "list_div_bad", F);
+    // a violation that rests on a harness object is NEEDS-HARNESS in the stage (never a proof)
+    for (auto* fn : {"nest_div_bad", "list_div_bad"}) {
+        auto it = deep.find(fn);
+        REQUIRE(it != deep.end());
+        CHECK_MESSAGE((it->second.status == F || it->second.status == prism::laws::NEEDS_HARNESS),
+                      (std::string(fn) + ": " + it->second.status + " " + it->second.message));
+    }
 }

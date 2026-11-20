@@ -508,6 +508,16 @@ constant offset its containing object; `--pir-vacuity` turns a harnessed result 
 returning execution into `NEEDS-HARNESS` (`extra.non_vacuity`). The composition is proved in
 `proofs/Prism/Discharge.lean`.
 
+**Kernel entry state (r1 FALSE triage item 6).** These options are opt-in, need `--kernel-api`, and are named in
+every verdict that uses them (docs/USER_GUIDE.md):
+- `--pir-bpf-helpers`: a BPF helper's `u64` arguments that its `struct bpf_func_proto` (in the unit) types
+  `ARG_PTR_TO_*` without `PTR_MAYBE_NULL` are bound to valid objects (`bind_bpf_helper_args`, translate.cpp). This
+  is the BPF verifier's contract.
+- `--pir-global-harness-deep`: with `--pir-global-harness`, the loads of a harnessed pointer global are the roots of
+  this planner (`plan_harness_roots`), so its nested pointer fields get objects. A `struct list_head` global is empty
+  or holds one node (`Tr::list_head_harness`). The x86 `readl` / `writel` asm gets the `linux-mmio` semantics
+  (`Tr::asm_mmio`).
+
 ## Machine-readable output (`--jsonl FILE`)
 
 `prism UNIT --stage pir --jsonl out.jsonl` appends one line per function (and

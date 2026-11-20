@@ -179,6 +179,7 @@ struct Tr final : pirmem::TrApi {
     // --pir-global-harness-deep (defined after alloc_harness_node)
     void global_harness_nest(Arg obj, const std::string& name) override;
     void list_head_harness(Arg p, const std::string& name) override;
+    uint64_t list_head_pad(const std::string& name) override;
     const ir::Function* root_fn_ = nullptr;  // the analysed function
     Snap snap();
     void restore(const Snap& s);
@@ -581,6 +582,7 @@ struct Tr final : pirmem::TrApi {
             // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
             if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", ptr_w());
             // the ghost lock state, when a lock spec can reach it (translate_lock.inc)
+            root_name_ = f.name;
             if (opt.lock_wrappers && !lock_contracted(f.name)) {
                 const int fx = lock_effects(m, f);
                 lock_wrapper_ = fx == 1 ? 1 : fx == 2 ? 2 : 0;
@@ -2830,14 +2832,21 @@ void bind_bpf_helper_args(Tr& tr, const ir::Function& f, Frame& top) {
             const auto& r = lay.resolve(g.ty);
             // the shape of struct bpf_func_proto: ptr, i8 x 4, i32, the arg-type union (20 bytes), the arg_size union
             if (r.kind != ir::Type::Struct || r.elems.size() < 8 || r.elems[0].kind != ir::Type::Ptr) continue;
+            // the arg_size union: the next field after the arg-type union, past clang's [N x i8] padding
+            unsigned ui = 7;
+            while (ui < r.elems.size() && r.elems[ui].kind == ir::Type::Array && !r.elems[ui].elems.empty() &&
+                   r.elems[ui].elems[0].kind == ir::Type::Int && r.elems[ui].elems[0].bits == 8 &&
+                   lay.store_size(r.elems[ui]) < 8)
+                ++ui;
+            if (ui >= r.elems.size()) continue;
             bool shape = lay.resolve(r.elems[5]).kind == ir::Type::Int && lay.resolve(r.elems[5]).bits == 32 &&
-                         lay.store_size(r.elems[6]) == 20 && lay.store_size(r.elems[7]) == 40;
+                         lay.store_size(r.elems[6]) == 20 && lay.store_size(r.elems[ui]) == 40;
             for (unsigned i = 1; i <= 4 && shape; ++i)
                 shape = lay.resolve(r.elems[i]).kind == ir::Type::Int && lay.resolve(r.elems[i]).bits == 8;
             if (!shape) continue;
             std::map<uint64_t, std::pair<unsigned, uint64_t>> ints;
             flat_leaves(lay, g.ty, g.init[0].v, 0, ints);
-            const uint64_t at = lay.field_offset(r, 6), as = lay.field_offset(r, 7);
+            const uint64_t at = lay.field_offset(r, 6), as = lay.field_offset(r, ui);
             std::array<uint64_t, 5> t{}, s{};
             for (unsigned i = 0; i < 5; ++i) {
                 auto it = ints.find(at + 4 * i);
@@ -2957,6 +2966,24 @@ std::vector<std::pair<const ir::Function*, std::string>> global_load_roots(const
                     if (const auto* h = tr.m.find(in.callee); h && !h->blocks.empty() && !h->is_model)
                         todo.emplace_back(h, d + 1);
             }
+        // a loop's cursor (list_for_each: phi [ head->next, pos->next ]) holds such a value too
+        std::set<std::string> mine;
+        for (auto& [rf, rv] : roots)
+            if (rf == g) mine.insert(rv);
+        for (bool grew = !mine.empty(); grew;) {
+            grew = false;
+            for (auto& b : g->blocks)
+                for (auto& in : b.insts) {
+                    if (in.op != "phi" || in.ty.kind != ir::Type::Ptr || in.result.empty() || mine.count(in.result)) continue;
+                    for (auto& [o, from] : in.incoming)
+                        if (o.v.kind == ir::Value::Local && mine.count(o.v.name)) {
+                            mine.insert(in.result);
+                            roots.emplace_back(g, in.result);
+                            grew = true;
+                            break;
+                        }
+                }
+        }
     }
     return roots;
 }
@@ -3005,6 +3032,19 @@ void Tr::global_harness_nest(Arg obj, const std::string& name) {
             note_assumption("global harness (deep): " + a);
 }
 
+// --pir-global-harness-deep: the list member's offset in the entries of the list_head global @name (the planner's
+// container_of), placed as a pad before the head in its object: container_of(&@name), which list_for_each_entry
+// computes for its end test, then stays inside an object (the encoding has no negative offsets). Named in
+// list_head_harness.
+uint64_t Tr::list_head_pad(const std::string& name) {
+    const auto roots = global_load_roots(*this, name);
+    if (roots.empty()) return 0;
+    std::string why;
+    auto plan = pirmem::plan_harness_roots(m, mt.layout(), roots, "@" + name + ".next", global_harness_options(*this), &why);
+    if (!plan || !plan->root || plan->root->member_off + 16 > plan->root->bytes) return 0;
+    return plan->root->member_off;
+}
+
 // --pir-global-harness-deep: a mutable `struct list_head` global (a static LIST_HEAD, set up by its initialiser and
 // changed only by list operations) is at entry either empty (next == prev == &@name) or a list of one node: a valid
 // object built by the harness planner from how the function uses the entries (container_of: the containing struct),
@@ -3037,6 +3077,11 @@ void Tr::list_head_harness(Arg p, const std::string& name) {
     int ps = newvar(tmpname("lhp"), ptr_w());
     mt.gep(-1, ps, p, ir::parse_type("i8"), {Arg::c(64, 8)}, true, 0);
     mt.store(-1, Arg::v(ps, ptr_w()), prev, Arg::c(1, 1), ptr_ty, 1, 0);
+    if (const uint64_t pad = node ? list_head_pad(name) : 0)
+        note_assumption("global harness (deep): @" + name + " is placed " + std::to_string(pad) +
+                        " bytes into its object (the entries' list member offset), so container_of(&@" + name +
+                        ") of the list's end test is an address of that object; the pad bytes are not program memory "
+                        "and an access to them is not reported");
     note_assumption("global harness (deep): @" + name + " (a struct list_head) is at entry " +
                     (node ? "an empty list (next == prev == &@" + name + ") or a list of one node whose links point back "
                             "to @" + name + " (the node: " + node_text + "); longer lists are not explored"

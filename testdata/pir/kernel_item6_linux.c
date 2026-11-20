@@ -160,7 +160,7 @@ static struct list_head items = { &items, &items };
 int list_count_ok(void) {
     int n = 0;
     for (struct list_head *p = items.next; p != &items; p = p->next) {
-        if (item_of(p)->key == 7) return n;
+        if (item_of(p)->weight == 7) return n;
         n = n < 100 ? n + 1 : n;
     }
     return n;

@@ -95,7 +95,14 @@ struct Analyzer {
         for (auto& b : f.blocks)
             for (auto& in : b.insts)
                 if (in.op == "alloca" && !in.result.empty()) allocas.insert(in.result);
-        std::map<std::string, std::string> slot;  // alloca -> class stored ("" = conflicting or none)
+        // alloca -> the one class stored to it ("" = a store of no class, or two classes). Rebuilt on every pass from
+        // the classes known so far. The instrumentation's initial store (@__prism.uninit.*, stage.cpp instrument) and
+        // undef / poison are not values the program stores.
+        std::map<std::string, std::string> slot;
+        std::set<std::string> sentinel;
+        for (auto& b : f.blocks)
+            for (auto& in : b.insts)
+                if (in.op == "call" && !in.result.empty() && in.callee.starts_with("__prism.uninit")) sentinel.insert(in.result);
         auto keep = [&](const std::string& c) { return params_only ? c : (c.starts_with("#") ? std::string() : c); };
         for (bool changed = true; changed;) {
             changed = false;
@@ -104,22 +111,26 @@ struct Analyzer {
                 pm[r] = c;
                 changed = true;
             };
+            slot.clear();
             for (auto& b : f.blocks)
                 for (auto& in : b.insts) {
-                    if (in.op == "store" && in.ops.size() >= 2 && in.ops[1].v.kind == ir::Value::Local &&
-                        allocas.count(in.ops[1].v.name)) {
-                        auto c = keep(cls_of(in.ops[0], pm));
-                        if (c.starts_with("&")) c.clear();
-                        auto [it, fresh] = slot.emplace(in.ops[1].v.name, c);
-                        if (fresh) {
-                            changed = true;
-                        } else if (it->second != c && !it->second.empty()) {
-                            it->second.clear();
-                            changed = true;
-                        }
-                    } else if (in.op == "load" && !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local) {
-                        if (auto s = slot.find(in.ops[0].v.name); s != slot.end()) {
-                            set(in.result, s->second);
+                    if (in.op != "store" || in.ops.size() < 2 || in.ops[1].v.kind != ir::Value::Local ||
+                        !allocas.count(in.ops[1].v.name))
+                        continue;
+                    const auto& v = in.ops[0].v;
+                    if (v.kind == ir::Value::Undef || v.kind == ir::Value::Poison ||
+                        (v.kind == ir::Value::Local && sentinel.count(v.name)))
+                        continue;
+                    auto c = keep(cls_of(in.ops[0], pm));
+                    if (c.starts_with("&")) c.clear();
+                    auto [it, fresh] = slot.emplace(in.ops[1].v.name, c);
+                    if (!fresh && it->second != c) it->second.clear();
+                }
+            for (auto& b : f.blocks)
+                for (auto& in : b.insts) {
+                    if (in.op == "load" && !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local) {
+                        if (auto sl = slot.find(in.ops[0].v.name); sl != slot.end()) {
+                            set(in.result, sl->second);
                         } else if (auto c = cls_of(in.ops[0], pm); c.starts_with("&")) {
                             set(in.result, c.substr(1));
                         }
@@ -168,7 +179,8 @@ struct Analyzer {
 
     // --pir-lock-scopes: an i1 branch condition that is a constant, or an icmp of two integer constants (after
     // mem2reg, `if (__sleep_us)` of readl_poll_timeout(..., 0, ...) is `icmp ne i64 0, 0`): its value. Exact.
-    static std::optional<bool> const_cond(const ir::Operand& o, const std::map<std::string, const ir::Inst*>& defs) {
+    static std::optional<bool> const_cond(const ir::Operand& o, const std::map<std::string, const ir::Inst*>& defs,
+                                          const std::map<std::string, std::string>* pm = nullptr) {
         if (o.v.kind == ir::Value::Int) return (o.v.bits & 1) != 0;
         if (o.v.kind == ir::Value::Zero) return false;
         if (o.v.kind != ir::Value::Local) return std::nullopt;
@@ -181,6 +193,17 @@ struct Analyzer {
                 if (x.v.kind == ir::Value::Zero || x.v.kind == ir::Value::Null) return uint64_t{0};
                 return std::nullopt;
             };
+            // a pointer whose lock class is a global is that global's address: never NULL
+            auto is_null = [](const ir::Operand& x) {
+                return x.ty.kind == ir::Type::Ptr && (x.v.kind == ir::Value::Null || x.v.kind == ir::Value::Zero);
+            };
+            if (pm && (in.pred == "eq" || in.pred == "ne")) {
+                for (int s = 0; s < 2; ++s) {
+                    const auto& x = in.ops[static_cast<std::size_t>(s)];
+                    const auto& y = in.ops[static_cast<std::size_t>(1 - s)];
+                    if (is_null(y) && x.ty.kind == ir::Type::Ptr && !lock_cls(x, *pm).empty()) return in.pred == "ne";
+                }
+            }
             auto a = val(in.ops[0]), b = val(in.ops[1]);
             if (!a || !b) return std::nullopt;
             const unsigned w = in.ops[0].ty.kind == ir::Type::Int && in.ops[0].ty.bits ? in.ops[0].ty.bits : 64;
@@ -298,7 +321,7 @@ struct Analyzer {
                     }
                 } else if (in.op == "br") {
                     std::optional<bool> k;
-                    if (scopes && in.targets.size() == 2 && !in.ops.empty()) k = const_cond(in.ops[0], defs);
+                    if (scopes && in.targets.size() == 2 && !in.ops.empty()) k = const_cond(in.ops[0], defs, &pm);
                     for (std::size_t ti = 0; ti < in.targets.size(); ++ti)
                         if (!k || ti == (*k ? 0u : 1u))
                             for (auto& h : cur) push(in.targets[ti], h);
