@@ -164,10 +164,13 @@ TEST_CASE("pir callback models: the TSV loader needs 10 columns, a known kind, a
         write("ok.tsv", "# attribution\ninterface\tcontainer\tfield_off\tcallback\tparam\tkind\ta\tb\tstatus\tsource\n"
                         "pci\t%struct.pci_driver\t16\tprobe\t1\tid-entry\t8\t-\tUNVALIDATED\tKlever spec x\n"
                         "net\t%struct.net_device_ops\t*\tndo_*\t0\ttrailing-alloc\talloc_netdev_mqs:0\t%struct.net_device\tU\ts\n"
-                        "irq\tcall:request_irq\t1\thandler\t1\trange\t0\t5\tU\ts\n"),
+                        "irq\tcall:request_irq\t1\thandler\t1\trange\t0\t5\tU\ts\n"
+                        "platform\t%struct.platform_driver\t0\tprobe\t*\tdrvdata\t8\t%struct.device\tU\ts\n"),
         err);
     CHECK(err.empty());
-    REQUIRE(ok.size() == 3);
+    REQUIRE(ok.size() == 4);
+    CHECK(ok[3].param == -1);
+    CHECK(ok[3].kind == "drvdata");
     CHECK(ok[0].field_off == 16);
     CHECK(ok[0].param == 1);
     CHECK(ok[1].field_off == ~uint64_t{0});
@@ -180,6 +183,8 @@ TEST_CASE("pir callback models: the TSV loader needs 10 columns, a known kind, a
     CHECK(has(err, "container"));
     pp::load_callback_models(write("src.tsv", "pci\t%struct.p\t1\tc\t0\trange\t1\t2\tU\t\n"), err);
     CHECK(has(err, "source"));
+    pp::load_callback_models(write("star.tsv", "pci\t%struct.p\t1\tc\t*\trange\t1\t2\tU\ts\n"), err);
+    CHECK(has(err, "bad number"));  // "*" is for drvdata rows only
     pp::load_callback_models(write("rng.tsv", "pci\t%struct.p\t1\tc\t0\trange\t5\t2\tU\ts\n"), err);
     CHECK(has(err, "bad number"));
     pp::load_callback_models(dir / "missing.tsv", err);
@@ -327,6 +332,58 @@ TEST_CASE("pir callback models: stage: models are named assumptions; real violat
         CHECK_MESSAGE(on[f].status == L::NEEDS_HARNESS, (std::string(f) + ": " + on[f].status + " (" + on[f].message + ")"));
         CHECK_MESSAGE(has(on[f].message, "violation only under a drafted or automatic harness"), f);
     }
+}
+
+namespace {
+
+std::map<std::string, prism::Finding> run_file(const char* file, bool models) {
+    auto cfg = prism::default_config();
+    cfg.root = kDir;
+    cfg.jobs = 2;
+    cfg.pir_harness = true;
+    cfg.pir_container_of = true;  // the accessor chain platform_get_drvdata -> dev_get_drvdata (#70)
+    if (models) cfg.pir_callback_models = kDir / "callback_models.tsv";
+    std::map<std::string, prism::Finding> m;
+    for (auto& f : pp::run_pir({kDir / file}, cfg))
+        if (f.function) m[*f.function] = f;
+    return m;
+}
+
+}  // namespace
+
+TEST_CASE("pir callback models: drvdata: probe ran first; driver_data is the probe's allocation, named; violations stay") {
+    if (skip_without_frontend()) return;
+    auto off = run_file("callback_drvdata.c", false);
+    auto on = run_file("callback_drvdata.c", true);
+    for (auto* f : {"my_remove", "my_shutdown", "my_suspend", "my_probe"}) {
+        REQUIRE_MESSAGE(off.contains(f), f);
+        REQUIRE_MESSAGE(on.contains(f), f);
+        CHECK_FALSE(has(extra(off[f], "assumptions"), "driver environment model"));
+    }
+    // model-dependent: without the model driver_data has no type evidence (memset): an arbitrary pointer
+    CHECK_MESSAGE(off["my_remove"].status == L::NEEDS_HARNESS, (off["my_remove"].status + " " + off["my_remove"].message));
+    CHECK_MESSAGE(on["my_remove"].status == L::PROVED_ASSUMING, (on["my_remove"].status + " " + on["my_remove"].message));
+    CHECK(has(extra(on["my_remove"], "assumptions"),
+              "probe ran first and set driver_data to struct priv (from probe @my_probe: devm_kzalloc(..., 32))"));
+    // a violation independent of the model is still reported
+    CHECK(on["my_shutdown"].status == L::NEEDS_HARNESS);
+    CHECK_MESSAGE(has(on["my_shutdown"].message, "INT-DIV-ZERO"), on["my_shutdown"].message);
+    // the harness alone invents an object big enough for the larger view; the model's real allocation shows the overrun
+    CHECK_MESSAGE(off["my_suspend"].status == L::PROVED_ASSUMING, (off["my_suspend"].status + " " + off["my_suspend"].message));
+    CHECK_MESSAGE(on["my_suspend"].status == L::NEEDS_HARNESS, (on["my_suspend"].status + " " + on["my_suspend"].message));
+    CHECK(has(extra(on["my_suspend"], "assumptions"), "driver environment model"));
+    // the probe itself gets no drvdata model
+    CHECK_FALSE(has(extra(on["my_probe"], "assumptions"), "probe ran first"));
+}
+
+TEST_CASE("pir callback models: drvdata: a probe that stores something other than one allocation gives no model") {
+    if (skip_without_frontend()) return;
+    auto off = run_file("callback_drvdata_other.c", false);
+    auto on = run_file("callback_drvdata_other.c", true);
+    REQUIRE(off.contains("other_remove"));
+    REQUIRE(on.contains("other_remove"));
+    CHECK_FALSE(has(extra(on["other_remove"], "assumptions"), "driver environment model"));
+    CHECK(on["other_remove"].status == off["other_remove"].status);
 }
 
 TEST_CASE("pir callback models: cli flag, off by default") {

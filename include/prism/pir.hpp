@@ -470,6 +470,12 @@ PRISM_API bool field_invariant_applies(const FieldInvariant& fi, const std::stri
 //                     calls of those functions, applied only when all of them agree
 //   buffer a          the pointer parameter points to the start of a fresh buffer of `a` bytes, arbitrary contents
 //                     (sysfs show / store get a PAGE_SIZE buffer)
+//   drvdata a b       probe-first ordering: container/field_off name the driver's probe; a function the unit registers at
+//                     another field of that container, in a dev_pm_ops or as a device attribute reads driver_data (byte `a`
+//                     of the device struct `b`, "%struct.device") that the probe set. When the probe's own body stores into
+//                     it (directly or through setters: platform_set_drvdata -> dev_set_drvdata ...) only results of one
+//                     constant-size allocation (devm_kzalloc, kzalloc ...), the harness object of that field is exactly
+//                     that allocation. param "*": every pointer parameter whose harness object holds a `b`
 // field_off "*": every field of the container (with trailing-alloc the struct type check selects the parameters).
 // source: where the precondition comes from ("Klever spec drivers/pci/pci event spec.json", or a kernel document).
 struct CallbackModel {
@@ -480,12 +486,14 @@ struct CallbackModel {
 // The models of one function (resolved against its unit): what translate() applies to parameter `param`.
 struct CallbackBinding {
     int param = 0;
-    std::string kind;          // range | id-entry | trailing-alloc | buffer
+    std::string kind;          // range | id-entry | trailing-alloc | buffer | drvdata (param -1: any pointer parameter)
     int64_t lo = 0, hi = 0;    // range
     std::string global;        // id-entry: the id table global
     uint64_t elem_bytes = 0, count = 0;  // id-entry: element size, number of selectable entries (n - 1)
     uint64_t extra_bytes = 0;  // trailing-alloc: private area; buffer: buffer size
-    std::string struct_type;   // trailing-alloc: the object's struct type
+    std::string struct_type;   // trailing-alloc: the object's struct type; drvdata: the device struct
+    uint64_t field_off = 0;    // drvdata: byte offset of driver_data in the device struct
+    std::string alloc_type;    // drvdata: the struct the probe accesses its allocation as ("" when none)
     std::string text;          // the named assumption
 };
 // Reads a --pir-callback-models file. On failure returns {} and sets error.

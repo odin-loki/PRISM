@@ -20,7 +20,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <ostream>
 #include <regex>
@@ -125,6 +127,48 @@ void mine_field_stores(const ir::Module& m, const std::string& unit, std::ostrea
                 out << j.dump() << '\n';
             }
     }
+    // Constant initialisers (ops tables: `static const struct file_operations fops = { .read = f, ... }`): one line per
+    // pointer field of every struct aggregate, with "init": true, kind "func" (a function address, "value" its name) or
+    // "null" (a field the initialiser leaves out or sets to NULL). Evidence for function-pointer fields that every
+    // instance sets (mine_fields.py `nonnull`); the other rules ignore "init" lines.
+    std::function<void(const std::string&, const ir::Type&, const ir::Value&, int)> walk =
+        [&](const std::string& gname, const ir::Type& ty, const ir::Value& v, int depth) {
+            if (depth > 8 || v.kind != ir::Value::Aggregate) return;
+            try {
+                const auto& rt = lay.resolve(ty);
+                if (rt.kind == ir::Type::Struct) {
+                    for (std::size_t k = 0; k < v.elems.size() && k < rt.elems.size(); ++k) {
+                        const auto& e = v.elems[k];
+                        const auto& fty = lay.field_type(rt, static_cast<unsigned>(k));
+                        if (fty.kind == ir::Type::Ptr && ty.text.starts_with("%struct.")) {
+                            const bool fn = e.v.kind == ir::Value::Global &&
+                                            (m.find(e.v.name) || std::find(m.declarations.begin(), m.declarations.end(),
+                                                                           e.v.name) != m.declarations.end());
+                            const bool null = e.v.kind == ir::Value::Null || e.v.kind == ir::Value::Zero;
+                            if (!fn && !null) continue;
+                            nlohmann::json j;
+                            j["unit"] = unit;
+                            j["fn"] = "@" + gname;
+                            j["struct"] = ty.text;
+                            j["off"] = lay.field_offset(rt, static_cast<unsigned>(k));
+                            j["width"] = lay.store_size(fty);
+                            j["kind"] = fn ? "func" : "null";
+                            if (fn) j["value"] = e.v.name;
+                            j["init"] = true;
+                            out << j.dump() << '\n';
+                        } else if (e.v.kind == ir::Value::Aggregate) {
+                            walk(gname, fty, e.v, depth + 1);
+                        }
+                    }
+                } else if (rt.kind == ir::Type::Array && !rt.elems.empty()) {
+                    for (const auto& e : v.elems) walk(gname, rt.elems[0], e.v, depth + 1);
+                }
+            } catch (const std::exception&) {
+            } catch (const pirmem::Unenc&) {
+            }
+        };
+    for (const auto& g : m.globals)
+        if (!g.init.empty()) walk(g.name, g.ty, g.init[0].v, 0);
 }
 
 namespace {

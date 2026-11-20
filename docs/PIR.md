@@ -1218,7 +1218,8 @@ assumptions and the `--jsonl` record). Tests: `tests/cpp/test_pir_harness2.cpp`.
 
 `--pir-callback-models FILE` (opt-in): preconditions of driver callbacks adapted from the Klever / LDV environment model
 specifications (Apache-2.0): `range` (an integer parameter), `id-entry` (a probe's id points into the driver's own constant id
-table), `trailing-alloc` (a `net_device` / `Scsi_Host` with the private area the unit allocates), `buffer` (a sysfs `show` buffer).
+table), `trailing-alloc` (a `net_device` / `Scsi_Host` with the private area the unit allocates), `buffer` (a sysfs `show` buffer), `drvdata` (probe-first: the other callbacks of a driver get `driver_data` as
+the object the probe's own body allocated and stored).
 A row applies only to a function the unit stores at that ops-struct field or passes to that registration call. Every use is a
 named assumption; a pointer a model binds counts as an invented object (a violation under it is NEEDS-HARNESS). Tests:
 `tests/cpp/test_pir_callback_models.cpp`, `testdata/pir/callback_models.c`.

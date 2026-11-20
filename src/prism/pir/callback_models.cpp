@@ -108,6 +108,131 @@ int64_t sval(const ir::Operand& o) {
     return static_cast<int64_t>(b);
 }
 
+// ---- drvdata: what the driver's probe stores in dev->driver_data ------------------------------------------------
+//
+// A setter stores one of its parameters into the driver_data field (byte `dd` of `devty`), directly or through another
+// setter (platform_set_drvdata -> dev_set_drvdata, pci_set_drvdata, i2c_set_clientdata, usb_set_intfdata ...): the
+// fixpoint gives, per function, the parameter indices it stores there. The probe's stored values must all be the result
+// of one allocator call with a constant size; anything else (netdev_priv(ndev), a field, a phi, a global) gives no model.
+
+// allocator -> index of its size argument (the -O0 call that the source's kzalloc / devm_kzalloc / kmalloc becomes)
+const std::map<std::string, std::size_t>& drvdata_allocators() {
+    static const std::map<std::string, std::size_t> a{
+        {"devm_kzalloc", 1},   {"devm_kmalloc", 1},   {"kzalloc", 0},         {"kmalloc", 0},
+        {"kzalloc_noprof", 0}, {"kmalloc_noprof", 0}, {"kvzalloc", 0},        {"kvzalloc_noprof", 0},
+        {"kvmalloc_noprof", 0}, {"__kmalloc_noprof", 0}};
+    return a;
+}
+
+std::map<std::string, const ir::Inst*> defs_of(const ir::Function& g) {
+    std::map<std::string, const ir::Inst*> d;
+    for (const auto& b : g.blocks)
+        for (const auto& in : b.insts)
+            if (!in.result.empty()) d[in.result] = &in;
+    return d;
+}
+
+bool is_dd_slot(const pirmem::Layout& lay, const std::map<std::string, const ir::Inst*>& defs, const ir::Value& slot,
+                const std::string& devty, uint64_t dd) {
+    std::optional<std::pair<std::string, uint64_t>> k;
+    if (slot.kind == ir::Value::Local) {
+        if (auto it = defs.find(slot.name); it != defs.end() && it->second->op == "getelementptr")
+            k = field_site(lay, it->second->ety, it->second->ops);
+    } else if (slot.kind == ir::Value::ConstExpr && slot.ce_op == "getelementptr") {
+        k = field_site(lay, slot.ce_ty, slot.elems);
+    }
+    return k && k->first == devty && k->second == dd;
+}
+
+std::map<std::string, std::set<std::size_t>> drvdata_setters(const ir::Module& m, const pirmem::Layout& lay,
+                                                             const std::string& devty, uint64_t dd) {
+    std::map<std::string, std::set<std::size_t>> set;
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (const auto& g : m.functions) {
+            const auto defs = defs_of(g);
+            auto param_index = [&](const ir::Value& v) -> std::optional<std::size_t> {
+                if (v.kind != ir::Value::Local) return std::nullopt;
+                for (std::size_t j = 0; j < g.params.size(); ++j)
+                    if (g.params[j].name == v.name) return j;
+                return std::nullopt;
+            };
+            for (const auto& b : g.blocks)
+                for (const auto& in : b.insts) {
+                    if (in.op == "store" && in.ops.size() >= 2 && is_dd_slot(lay, defs, in.ops[1].v, devty, dd)) {
+                        if (auto j = param_index(in.ops[0].v); j && set[g.name].insert(*j).second) changed = true;
+                    } else if ((in.op == "call" || in.op == "invoke") && !in.callee.empty()) {
+                        auto it = set.find(in.callee);
+                        if (it == set.end()) continue;
+                        for (auto k : std::set<std::size_t>(it->second))
+                            if (k < in.ops.size())
+                                if (auto j = param_index(in.ops[k].v); j && set[g.name].insert(*j).second) changed = true;
+                    }
+                }
+        }
+    }
+    for (auto it = set.begin(); it != set.end();) it = it->second.empty() ? set.erase(it) : std::next(it);
+    return set;
+}
+
+struct ProbeData {
+    uint64_t bytes = 0;
+    std::string type;  // "%struct.X" when the probe accesses the object as one, else ""
+    std::string how;   // "devm_kzalloc(..., 120)"
+};
+
+// What `probe` stores in driver_data in its own body: one constant-size allocation (every store agrees), else nullopt
+// and `why`.
+std::optional<ProbeData> probe_drvdata(const pirmem::Layout& lay, const ir::Function& probe,
+                                       const std::map<std::string, std::set<std::size_t>>& setters, const std::string& devty,
+                                       uint64_t dd, std::string& why) {
+    const auto defs = defs_of(probe);
+    std::vector<ir::Value> stored;
+    for (const auto& b : probe.blocks)
+        for (const auto& in : b.insts) {
+            if (in.op == "store" && in.ops.size() >= 2 && is_dd_slot(lay, defs, in.ops[1].v, devty, dd)) {
+                stored.push_back(in.ops[0].v);
+            } else if ((in.op == "call" || in.op == "invoke") && !in.callee.empty()) {
+                if (auto it = setters.find(in.callee); it != setters.end())
+                    for (auto k : it->second)
+                        if (k < in.ops.size()) stored.push_back(in.ops[k].v);
+            }
+        }
+    if (stored.empty()) {
+        why = "the probe @" + probe.name + " does not set driver_data in its own body";
+        return std::nullopt;
+    }
+    std::optional<ProbeData> pd;
+    for (const auto& v : stored) {
+        const ir::Inst* def = nullptr;
+        if (v.kind == ir::Value::Local)
+            if (auto it = defs.find(v.name); it != defs.end()) def = it->second;
+        if (!def || (def->op != "call" && def->op != "invoke") || def->callee.empty()) {
+            why = "the probe @" + probe.name + " stores a value that is not an allocation";
+            return std::nullopt;
+        }
+        auto al = drvdata_allocators().find(def->callee);
+        if (al == drvdata_allocators().end() || al->second >= def->ops.size() || def->ops[al->second].v.kind != ir::Value::Int) {
+            why = "the probe @" + probe.name + " stores the result of @" + def->callee + ", not a constant-size allocation";
+            return std::nullopt;
+        }
+        const uint64_t n = def->ops[al->second].v.bits;
+        if (n == 0 || n > (uint64_t{1} << 24) || (pd && pd->bytes != n)) {
+            why = "the probe @" + probe.name + "'s driver_data allocations do not agree on one size";
+            return std::nullopt;
+        }
+        if (!pd) {
+            pd = ProbeData{n, "", def->callee + "(..., " + std::to_string(n) + ")"};
+            for (const auto& b : probe.blocks)  // the struct the probe accesses the object as
+                for (const auto& in : b.insts)
+                    if (pd->type.empty() && in.op == "getelementptr" && !in.ops.empty() && in.ops[0].v.kind == ir::Value::Local &&
+                        in.ops[0].v.name == v.name && in.ety.kind == ir::Type::Struct && in.ety.text.starts_with("%struct."))
+                        pd->type = in.ety.text;
+        }
+    }
+    return pd;
+}
+
 std::string model_text(const CallbackModel& r, const std::string& fn, const std::string& cond) {
     return "driver environment model: " + r.interface_ + " callback " + r.callback + " (@" + fn + ", parameter " +
            std::to_string(r.param) + "): " + cond + " (from " + r.source + "; --pir-callback-models; status " +
@@ -125,7 +250,7 @@ std::vector<CallbackModel> load_callback_models(const std::filesystem::path& fil
     }
     std::vector<CallbackModel> out;
     std::string line;
-    static const std::set<std::string> kinds{"range", "id-entry", "trailing-alloc", "buffer"};
+    static const std::set<std::string> kinds{"range", "id-entry", "trailing-alloc", "buffer", "drvdata"};
     for (int no = 1; std::getline(in, line); ++no) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#' || line.starts_with("interface\t")) continue;
@@ -157,14 +282,21 @@ std::vector<CallbackModel> load_callback_models(const std::filesystem::path& fil
                 r.field_off = std::stoull(c[2], &used);
                 if (used != c[2].size()) throw std::invalid_argument(c[2]);
             }
-            r.param = std::stoi(c[4], &used);
-            if (used != c[4].size() || r.param < 0) throw std::invalid_argument(c[4]);
+            if (c[4] == "*" && c[5] == "drvdata") {
+                r.param = -1;  // every pointer parameter whose harness object holds the device struct
+            } else {
+                r.param = std::stoi(c[4], &used);
+                if (used != c[4].size() || r.param < 0) throw std::invalid_argument(c[4]);
+            }
             if (r.kind == "range") {
                 (void)std::stoll(r.a);
                 (void)std::stoll(r.b);
                 if (std::stoll(r.a) > std::stoll(r.b)) throw std::invalid_argument("empty range");
             } else if (r.kind == "id-entry") {
                 (void)std::stoull(r.a);
+            } else if (r.kind == "drvdata") {
+                (void)std::stoull(r.a);
+                if (!r.b.starts_with("%struct.")) throw std::invalid_argument("drvdata: b is the device struct");
             } else if (r.kind == "buffer") {
                 if (std::stoull(r.a) == 0 || std::stoull(r.a) > (uint64_t{1} << 24)) throw std::invalid_argument("buffer size");
             }
@@ -206,6 +338,61 @@ std::vector<CallbackBinding> resolve_callback_bindings(const ir::Module& m, cons
         std::vector<const Site*> hits;
         for (const auto& s : sites)
             if (s.container == r.container && (r.field_off == kAnyField || s.off == r.field_off)) hits.push_back(&s);
+        if (r.kind == "drvdata") {
+            // probe-first ordering: the other callbacks of a driver whose probe is registered at (container, field_off)
+            // run after a successful probe and read the driver_data it set. The analysed function must be registered at
+            // another field of that container, in a dev_pm_ops or as a device attribute, and must not be a probe itself.
+            hits.clear();
+            bool is_probe = false;
+            for (const auto& s : sites) {
+                if (s.container == r.container && s.off == r.field_off) is_probe = true;
+                else if (s.container == r.container || s.container == "%struct.dev_pm_ops" ||
+                         s.container == "%struct.device_attribute")
+                    hits.push_back(&s);
+            }
+            if (is_probe || hits.empty() || have.count({-1, "drvdata"})) continue;
+            // the unit's probes for this container: the probe field of its constant instances (top-level globals of the
+            // container type, the way drivers declare them)
+            std::set<std::string> probes;
+            for (const auto& g : m.globals) {
+                if (g.init.empty() || g.ty.text != r.container || g.init[0].v.kind != ir::Value::Aggregate) continue;
+                try {
+                    const auto& rt = lay.resolve(g.ty);
+                    for (std::size_t k = 0; k < g.init[0].v.elems.size(); ++k)
+                        if (lay.field_offset(rt, static_cast<unsigned>(k)) == r.field_off &&
+                            g.init[0].v.elems[k].v.kind == ir::Value::Global)
+                            probes.insert(g.init[0].v.elems[k].v.name);
+                } catch (const pirmem::Unenc&) {
+                }
+            }
+            if (probes.size() != 1) {
+                skip(r, probes.empty() ? "no probe in the unit" : "several probes in the unit");
+                continue;
+            }
+            const auto* probe = m.find(*probes.begin());
+            const uint64_t dd = std::stoull(r.a);
+            std::string why = "probe not found";
+            std::optional<ProbeData> pd;
+            if (probe) pd = probe_drvdata(lay, *probe, drvdata_setters(m, lay, r.b, dd), r.b, dd, why);
+            if (!pd) {
+                skip(r, why);
+                continue;
+            }
+            CallbackBinding b;
+            b.param = -1;
+            b.kind = "drvdata";
+            b.struct_type = r.b;
+            b.field_off = dd;
+            b.extra_bytes = pd->bytes;
+            b.alloc_type = pd->type;
+            b.text = model_text(r, f.name,
+                                "probe ran first and set driver_data to " +
+                                    (pd->type.empty() ? std::string("an object") : "struct " + pd->type.substr(8)) +
+                                    " (from probe @" + probe->name + ": " + pd->how + ")");
+            have.insert({-1, "drvdata"});
+            out.push_back(std::move(b));
+            continue;
+        }
         if (hits.empty()) continue;
         if (static_cast<std::size_t>(r.param) >= f.params.size()) {
             skip(r, "the function has " + std::to_string(f.params.size()) + " parameters");

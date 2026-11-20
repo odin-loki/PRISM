@@ -40,6 +40,7 @@ computes them from the build's own compile command.
 | `id-entry` | byte offset of the id table field in the container | the pointer parameter points to entry 0 .. n-2 of the array that the container instance's field points to (the last entry is the terminator). Applied only when the unit has the container instance as a constant and every instance naming the function names the same constant table in the unit |
 | `trailing-alloc` | `fn:arg,...`, struct type | the parameter's object is a `b` allocated by this driver with its private area: its size is exactly `sizeof(b)` plus the constant argument `arg` of the unit's calls of `fn` (all of them must agree). Applied only when the automatic harness types the parameter as one object of `b` (not an indexed array of it); the harness's own size (which it may have grown to cover the accesses it saw, `2 x %struct.net_device`) is replaced by the allocation's, so an access past the private area is still out of bounds |
 | `buffer` | size | the pointer parameter points to the start of a fresh buffer of `size` bytes, arbitrary initialised contents |
+| `drvdata` | byte offset of `driver_data` in the device struct, the device struct (`%struct.device`); param `*` | probe-first ordering (Klever's scenarios call the other callbacks only after `probe` returned 0, on the same device). The row's container and field name the driver's probe. A function the unit registers at another field of that container, in a `dev_pm_ops` or as a `device_attribute` gets, for each pointer parameter whose harness object holds the device struct (the device itself, or the `platform_device` / `i2c_client` / `pci_dev` a `container_of` took it to), its `driver_data` as exactly the object the probe allocated: "probe ran first and set driver_data to struct X (from probe @fn: devm_kzalloc(..., N))". Applied only when the unit has one probe for the container and the probe's own body stores into `driver_data` (directly or through setters: `platform_set_drvdata` -> `dev_set_drvdata` ...) nothing but results of one constant-size allocation (`devm_kzalloc`, `kzalloc`, `kmalloc` ...); a probe that stores `netdev_priv()`, a static object, a field or a value from a callee gives no model. The field's harness object (typed from the callback's uses by the accessor following of `--pir-container-of`, or left arbitrary when the callback gives no type evidence) gets the allocation's size, so a read past it, also through a larger struct type, is out of bounds |
 
 ## Soundness
 
@@ -52,6 +53,20 @@ computes them from the build's own compile command.
 * A row that matches but cannot be applied (no single constant id table, allocations that disagree on the private
   size, another struct type) adds nothing: the function is checked as without the option.
 * The rows are not checked by PRISM; their status column (`UNVALIDATED` for all rows today) is shown in every assumption.
+
+## Known limitations
+
+* **Randomised struct layouts.** A kernel built with `CONFIG_RANDSTRUCT_FULL` (the r1 Linux build) compiles with
+  `-frandomize-layout-seed-file=...`. PRISM's front end does not take that flag (docs/PIR.md, a unit's own flags), so it
+  analyses clang's **seedless** layout of every randomised struct (`file_operations`, other all-function-pointer structs,
+  `__randomize_layout` ones), not the shipped one. Kernel code must not depend on a randomised layout, so a verdict that
+  does not is unaffected; but `offsetof` / `container_of` arithmetic and constant offsets into randomised structs are
+  analysed on a different layout than the one the kernel runs with. The models file's byte offsets are computed for the
+  same seedless layout (OS-Proving `tools/driver_env_models/resolve_models.py` drops the seed flag), so they match what
+  PRISM analyses.
+* `drvdata` reads the probe's own body only: a probe that allocates in a helper (`foo_init(pdev)`) gets no model.
+* The models are per function. Klever's scenarios also order the callbacks among themselves (suspend before resume,
+  release last); only probe-first is modelled.
 
 ## File format
 
