@@ -61,7 +61,16 @@ jobs:
         include:
           - { shard: 1, first: 1, last: 400 }
           - { shard: 2, first: 401, last: 800 }
-          - { shard: 3, first: 801, last: 100000 }
+          # cases 801+ hold the slow pir cases (one 801-end shard hit the 6 h limit on 3d9e8cc): 100-case shards, and
+          # --duration=true prints each case's time so a case that dominates can be found and split out.
+          - { shard: 3, first: 801, last: 900 }
+          - { shard: 4, first: 901, last: 1000 }
+          - { shard: 5, first: 1001, last: 1100 }
+          - { shard: 6, first: 1101, last: 1200 }
+          - { shard: 7, first: 1201, last: 1300 }
+          - { shard: 8, first: 1301, last: 1400 }
+          - { shard: 9, first: 1401, last: 1500 }
+          - { shard: 10, first: 1501, last: 100000 }
     steps:
       - uses: actions/checkout@v4
       - name: Cache pinned LLVM 23.1.4
@@ -105,7 +114,7 @@ jobs:
         run: cmake --build build
       # Phase-5 Python allow-list gate: tests/cpp/test_deps.cpp (no extra Python step).
       - name: "prism_tests (shard ${{ matrix.shard }}, cases ${{ matrix.first }}-${{ matrix.last }})"
-        run: ./build/prism_tests --first=${{ matrix.first }} --last=${{ matrix.last }}
+        run: ./build/prism_tests --first=${{ matrix.first }} --last=${{ matrix.last }} --duration=true
       - name: SV-COMP archive packager smoke
         if: matrix.shard == 1
         run: ./build/prism svcomp pack --out /tmp/prism-svcomp.tar.gz && tar tzf /tmp/prism-svcomp.tar.gz
