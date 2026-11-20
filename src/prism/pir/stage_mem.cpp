@@ -344,6 +344,20 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
             v.cex_args.clear();
         }
     }
+    // --pir-addrspace: the per-CPU area is arbitrary bytes (the CPU's state is the environment, like the arbitrary values of
+    // mutable globals): a violation in a function that read it (an arbitrary pc_cpuid used as an index) is not a defect report
+    if (v.status == laws::FAILED) {
+        bool pcpu = false;
+        for (auto& a : fn.assumptions) pcpu = pcpu || a.starts_with("addrspace:");
+        if (pcpu) {
+            v.extra["verdict_under_pcpu_model"] = v.status + ": " + v.message;
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "violation with arbitrary per-CPU data (--pir-addrspace: the per-CPU area's contents are arbitrary; the CPU "
+                        "state the function runs in is an unstated precondition): " + v.message;
+            v.cex.clear();
+            v.cex_args.clear();
+        }
+    }
     if (!fn.ptr_params.empty()) {
         std::string pp;
         for (auto& p : fn.ptr_params) pp += (pp.empty() ? "" : ",") + p;

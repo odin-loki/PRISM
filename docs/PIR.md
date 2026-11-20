@@ -1275,8 +1275,11 @@ through `struct pcpu __seg_gs *`) is the current CPU's per-CPU area (one object 
 allocated on first use) at that offset; a pointer to an object (the address of a per-CPU variable) is that object. A
 load of a segment pointer from an internal global initialised to null that no instruction of the unit writes (FreeBSD's
 `static ... __pc = NULL`) is null. An access beyond the area is reported. Named: `addrspace: an access through a segment
-pointer ... no other CPU, interrupt or migration changes the per-CPU data during the function`. `addrspacecast`, `icmp`
-and atomics on segment pointers stay UNENCODED.
+pointer ... no other CPU, interrupt or migration changes the per-CPU data during the function`. As with the arbitrary
+values of mutable globals, the per-CPU contents are the environment: in the pir stage a violation of a function that used
+the area (an arbitrary `pc_cpuid` used as an array index) is `NEEDS-HARNESS` ("violation with arbitrary per-CPU data ...",
+`extra.verdict_under_pcpu_model`), never FAILED and never proved. `addrspacecast`, `icmp` and atomics on segment pointers
+stay UNENCODED.
 
 **Wide integers (`--pir-wide-int`).** Integer types of 65..128 bits (`__int128`, `u128`, and the i72 / i80 / i96
 containers clang loads for a group of bitfields wider than 8 bytes) are bit-vectors of their width inside a function
