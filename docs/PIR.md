@@ -1317,9 +1317,12 @@ from those promotes the function. Off by default:
 | `PRISM_PIR_LOOP_CANDIDATES=FILE` | outside candidates (below), searched alone or with the data-driven ones |
 
 Loops that allocate, free or restore the stack are not attempted, as for
-Houdini (`extra.loop_alloc` counts the statements; on the kernel sample the
-usual case is a stack local of a callee inlined into the loop body, which the
-cut's havoc does not cover; OS-Proving `docs/coverage/LOOP_PROOFS.md`).
+Houdini (`extra.loop_alloc` counts the statements and the allocation kinds).
+On the kernel sample this is the largest blocker (55 of 150 functions), and
+the allocations are `extern` objects that the kernel API models allocate and
+free again inside each iteration (plus stack locals of inlined callees): every
+object is dead again before the back edge, which the cut's havoc does not yet
+model (OS-Proving `docs/coverage/LOOP_PROOFS.md`).
 
 **The CHC system** is read off the cut encoding Houdini uses (every loop,
 nested and sequential). Each loop L gets one predicate `Inv_L(flag, args)`;
