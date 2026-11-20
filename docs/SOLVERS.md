@@ -300,6 +300,39 @@ solver, not a preprocessor that hands a CNF on; GPU local search such as
 NVIDIA's TurboSAT, SAT only and no code; GPU lookahead libraries) was
 surveyed and not adopted; the measurement below shows why.
 
+**Measured (2026-11-20).** The setup:
+
+- the r1 timing sample of the OS-Proving PRISM-by-module run (`docs/coverage/CUBE_AND_CONQUER.md` there has the tables);
+- 40 functions of the timeout and memory-limit groups at the L1 budgets (80 s per function, 12,000 MB, 30 s per query);
+- the hard queries they posed: 17 queries a run left unanswered, replayed one at a time with `--solve-smt2`;
+- a 64-thread machine shared with other jobs (load 40-95).
+
+What it showed:
+
+- **The bit-blast comes first, and it is the cost.** The unanswered queries are QF_BV with wide multiplication and division, 50k to
+  1.7M nodes, giving CNFs of 1.1-6.4M clauses. Z3's `simplify; bit-blast; simplify; tseitin-cnf` takes 16 s idle and 27-135 s on
+  the loaded machine before any SAT solver sees a clause. With a 30 s query timeout the cube member started on 6 of the 17
+  queries and never answered. Neither did any other configuration answer more than plain.
+- **At 120 s per query**:
+  - the portfolio with the CaDiCaL and Kissat binaries answered 8 of 17 (Kissat 5 SAT, CaDiCaL 2 UNSAT, ProbSAT 1);
+  - with the cube member at 8, 16 or 32 threads it answered the same or fewer (7 of 15-16). The cube member never won.
+  - The cube member raised the median resident memory from 2.2 to 3.2 GB, because every thread holds a copy of the CNF. It also
+    raised the median wall time (104 s to 128 s), because it competes with the single-threaded members for cores.
+  - The answers never disagreed between configurations.
+- **The cube engine alone** (8 threads, 120 s, 6 queries) answered 1: SAT on a 3.4M-clause CNF, found by a CaDiCaL cube after
+  82 s of bit-blasting. The other 5 ran out of time with 1-3 open cubes.
+  - On 2.9M-clause CNFs the 8 solver copies reached 8-12 GB. The thread cap by memory budget, from the estimate above,
+    undercounts CaDiCaL's memory by a factor of about 3.
+- **GPU.** Every one of these CNFs has clauses of more than 64 literals (Tseitin form of wide disjunctions). The CUDA walker's
+  scratch is bounded at 64, so the GPU mode ran on none of them ("cuda: clause longer than 64 literals").
+  - On the doctest's planted 3-SAT (2,000 variables), 2,048 GPU walkers take 0.03-0.07 s of kernel time, where one CPU walker
+    takes 0.001-0.003 s.
+  - The GPU does not help these queries, and it cannot help the proofs at all.
+- **The installed solvers matter more than splitting.** r1 (and every run on this machine until 20 Nov) had no CaDiCaL, Kissat
+  or Bitwuzla binary, so its portfolio was Z3 and the CPU ProbSAT walker only. On these queries Z3 answered none at either
+  timeout (its child was killed at its memory cap). All the answers came from the CaDiCaL and Kissat members, plus one from
+  ProbSAT.
+
 ## Tools
 
 The solvers are built from source under `~/.prism/tools/<name>/<commit>/bin/`:
