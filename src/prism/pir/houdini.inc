@@ -2107,12 +2107,18 @@ HoudiniOut Houdini::run_search() {
                     const fs::path sib = self.parent_path() / "prism";  // prism_tests next to prism
                     return fs::exists(sib, ec) ? sib.string() : std::string();
                 }();
+                // the child counts against the process tree's memory budget: it
+                // gets what the tree has left, less a margin, and at most half
+                // the budget; with less than 768 MB left it is not started
+                const uint64_t bmb = membudget::budget_mb();
+                const uint64_t used = membudget::tree_rss_mb();
+                const uint64_t avail = bmb > used ? bmb - used : 0;
                 if (exe.empty()) {
                     why = "no prism binary for the Spacer child (z3-worker)";
+                } else if (bmb > 0 && avail < 768) {
+                    why = "not attempted (memory budget: " + std::to_string(avail) + " MB left)";
                 } else {
-                    const uint64_t bmb = membudget::budget_mb();
-                    const uint64_t used = membudget::peak_rss_mb();
-                    const uint64_t child_mb = bmb == 0 ? 4096 : std::max<uint64_t>(512, bmb > used ? bmb - used : 0);
+                    const uint64_t child_mb = bmb == 0 ? 4096 : std::min<uint64_t>(avail - 256, std::max<uint64_t>(512, bmb / 2));
                     exec::Spec sp;
                     sp.argv = {exe, "z3-worker", tmp.string(), std::to_string(child_mb), "0"};
                     sp.timeout_ms = static_cast<std::uint64_t>((tchc + 5) * 1000);
