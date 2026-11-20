@@ -632,6 +632,7 @@ std::string chc_differential_of(const Function& fn, const EncodeOptions& eo, dou
 // locals of a callee inlined into the loop body.
 std::string loop_alloc_summary(const Function& fn, const CfgInfo& g) {
     int alloc = 0, stack = 0, heap = 0, other = 0, freed = 0, frees = 0, revive = 0, restore = 0;
+    std::map<std::string, int> kinds;
     for (auto& L : g.loops) {
         std::set<int> dsts, freed_vars;
         for (std::size_t b = 0; b < L.body.size(); ++b) {
@@ -639,6 +640,7 @@ std::string loop_alloc_summary(const Function& fn, const CfgInfo& g) {
             for (auto& s : fn.blocks[b].stmts) {
                 if (s.kind == Stmt::Alloc) {
                     ++alloc;
+                    ++kinds[mem_kind_name(s.mkind)];
                     if (s.mkind == MemKind::Stack) ++stack;
                     else if (s.mkind == MemKind::Heap || s.mkind == MemKind::New || s.mkind == MemKind::NewArr) ++heap;
                     else ++other;
@@ -659,5 +661,9 @@ std::string loop_alloc_summary(const Function& fn, const CfgInfo& g) {
     return std::to_string(alloc) + " alloc (" + std::to_string(stack) + " stack, " + std::to_string(heap) + " heap, " +
            std::to_string(other) + " other; " + std::to_string(freed) + " stack freed in the same loop), " +
            std::to_string(frees) + " free, " + std::to_string(revive) + " revive, " + std::to_string(restore) +
-           " stackrestore";
+           " stackrestore" + [&] {
+               std::string k;
+               for (auto& [n, c] : kinds) k += (k.empty() ? "; kinds: " : ", ") + n + " " + std::to_string(c);
+               return k;
+           }();
 }
