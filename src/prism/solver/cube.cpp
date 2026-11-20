@@ -64,14 +64,27 @@ double env_double(const char* name, double dflt) {
 
 }  // namespace
 
+// Gate builds only (CMake PRISM_CUBE_BUILD_DEFAULT): what an unset PRISM_CUBE
+// means. 0 (every normal build): off. 1: the cube member on, joining at once
+// (PRISM_CUBE_AFTER 0), 4 threads. 2: every query by the cube engine alone.
+// The soundness gates run in a clean environment, so these builds are how
+// they exercise the engine.
+#ifndef PRISM_CUBE_BUILD_DEFAULT
+#define PRISM_CUBE_BUILD_DEFAULT 0
+#endif
+
 CubeOptions resolve_cube_options(const CubeOptions& o) {
     CubeOptions r = o;
+    constexpr int build_default = PRISM_CUBE_BUILD_DEFAULT;
+    const char* env_on = std::getenv("PRISM_CUBE");
+    const bool env_set = env_on && *env_on;
     if (r.enabled < 0) {
-        const char* e = std::getenv("PRISM_CUBE");
-        r.enabled = (e && *e && std::string(e) != "0" && std::string(e) != "off") ? 1 : 0;
+        r.enabled = env_set ? ((std::string(env_on) != "0" && std::string(env_on) != "off") ? 1 : 0) : (build_default > 0 ? 1 : 0);
+        if (!env_set && build_default == 2) r.alone = true;
     }
-    if (r.after_s < 0) r.after_s = std::max(0.0, env_double("PRISM_CUBE_AFTER", 2.0));
-    if (r.threads == 0) r.threads = unsigned(std::clamp(env_double("PRISM_CUBE_THREADS", 8.0), 1.0, 256.0));
+    if (r.after_s < 0) r.after_s = std::max(0.0, env_double("PRISM_CUBE_AFTER", build_default > 0 && !env_set ? 0.0 : 2.0));
+    if (r.threads == 0)
+        r.threads = unsigned(std::clamp(env_double("PRISM_CUBE_THREADS", build_default > 0 && !env_set ? 4.0 : 8.0), 1.0, 256.0));
     if (r.conflicts <= 0) r.conflicts = static_cast<long long>(std::max(10.0, env_double("PRISM_CUBE_CONFLICTS", 5000.0)));
     if (r.split.empty()) {
         const char* e = std::getenv("PRISM_CUBE_SPLIT");

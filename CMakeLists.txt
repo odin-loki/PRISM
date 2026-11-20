@@ -475,6 +475,10 @@ endif()
 # ~/.prism/tools/cadical/<manifest commit>/src. PRISM_CADICAL_DIR overrides.
 # Not found: the cube engine is NOTRUN (the note says so), never silent.
 set(PRISM_CADICAL_DIR "" CACHE PATH "CaDiCaL source tree with src/cadical.hpp and build/libcadical.a")
+# Soundness-gate builds only: 1 = the cube member on when PRISM_CUBE is unset,
+# 2 = the cube engine alone (src/prism/solver/cube.cpp). Never in a release.
+set(PRISM_CUBE_BUILD_DEFAULT "0" CACHE STRING "gate builds: what an unset PRISM_CUBE means (0 off, 1 member, 2 alone)")
+set_property(SOURCE src/prism/solver/cube.cpp APPEND PROPERTY COMPILE_DEFINITIONS PRISM_CUBE_BUILD_DEFAULT=${PRISM_CUBE_BUILD_DEFAULT})
 set(_prism_cadical_dir "${PRISM_CADICAL_DIR}")
 if(NOT _prism_cadical_dir)
   set(_prism_tools_home "$ENV{PRISM_TOOLS_DIR}")
