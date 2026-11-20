@@ -590,12 +590,16 @@ marker at or after its first line), `globals-initial` (`main`), `c++`,
 `input_scope` is `function`.
 
 A key is a hash of what is checked, not of the source text: equal keys mean
-the same check, a near match means nothing. One rule is outside every key:
-the error-sink rule (`caller_discharged_asserts`) reads which callers were
-checked in the same process (`PRISM_PIR_ONLY`). It acts only on a FAILED
-`assert:` row of a function without parameters, so a row it could have
-decided (FAILED `assert:`, or `error sink: ...`) must not be transferred;
-every other row of equal keys is.
+the same check, a near match means nothing. Two rules are outside every key,
+because they read which functions were checked in the same process
+(`PRISM_PIR_ONLY`): the error-sink rule (`caller_discharged_asserts`, acts
+only on a FAILED `assert:` row of a function without parameters) and the
+owner rule for clang-folded UB without an IR marker (charged to the checked
+function with the largest line before it, among the functions of this
+process; OS-Proving's r1 has the same job NEEDS-HARNESS in one chunk and
+PROVED-ASSUMING in another). A row either rule decided (FAILED `assert:`,
+`error sink: ...`, "clang-folded UB ... not attributable to an IR
+instruction") must not be transferred; every other row of equal keys is.
 Timing-dependent outcomes (TIMEOUT, budgets) can differ between two runs of
 the same key, as between two runs of the same job. The sizes of the PIR
 structs are pinned by `static_assert` on x86-64 libstdc++: a field added to
