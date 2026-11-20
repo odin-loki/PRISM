@@ -350,8 +350,10 @@ per path and gets the next constant object id (the Lean `next` counter).
   arrays eliminated. A load is an ite chain over the guarded writes before
   it (read-over-write, as `PrismSem/MemEncode.lean` `menc`), writes to other
   objects are skipped when both object ids are known; arbitrary initial bytes
-  are fresh variables with pairwise Ackermann constraints
-  (`a = a' → h = h'`). The VCs are QF_BV.
+  are one uninterpreted function per havoc entry ("Havoc reads as
+  functions" below; the VCs are QF_UFBV), or, in certified mode and
+  `pir_vcs`, fresh variables with pairwise Ackermann constraints
+  (`a = a' → h = h'`; the VCs are QF_BV).
 
 **Value sets (Bv).** Pointers loaded from memory made the read-over-write
 chains of linked structures expensive: every load of `node->next` was a
@@ -395,6 +397,53 @@ before: `map_insert_true` alone did not finish in 600 s). Where an address
 depends on a symbolic index (`vector::insert` at a symbolic position), the
 byte-level chain stays, and so does the cost.
 
+**Havoc reads as functions (Bv, `EncodeOptions::havoc_uf`, default on).**
+Arbitrary memory contents come from *havoc entries*: arbitrary initial bytes
+(mutable globals, `__prism_alloc(…, init 2)`), `havocmem` (an asm `memory`
+clobber, `--pir-icall-havoc`), whole-object havocs (unknown calls, the
+k-induction footprint). A read of such an entry used to be a fresh constant
+`h` plus one constraint `a = a' → h = h'` against every earlier read of the
+same entry (Ackermann's reduction of a function), so an entry read `R` times
+cost `R²/2` constraints. On kernel code that was the memory: in the r1
+memory-limit sample, functions with 1,800–4,500 reads had 1.2–4.0 million
+such constraints when the 3,000 MB budget stopped them (OS-Proving
+`docs/coverage/MEMORY_ENCODING.md`). Now the contents of entry `e` are one
+uninterpreted function `f_e : address → cell` and the read is `f_e(a)`:
+equal addresses read equal values by congruence, which is exactly what the
+pairwise constraints said, so the VCs are equisatisfiable and a model of one
+is a model of the other (the pairwise constants `h` are the values `f_e(a)`).
+Nothing pairwise is built; the solver does the consistency on demand. The
+VCs are then QF_UFBV, not QF_BV: certified mode (the bit-blasted CaDiCaL LRAT
+chain), `pir_vcs` (exported QF_BV VCs) and the bit-blasting portfolio members
+do not take them, so `check_function` turns the option off in certified mode
+and `pir_vcs` never uses it. A model names constants only; `validate_model`
+accepts it when the formula with every constant fixed to its value is
+satisfiable (a ground problem: some interpretation of the functions exists).
+`$PRISM_PIR_HAVOC_UF=0` restores the pairwise constraints, `=1` forces the
+functions. Differential test: `pir mem: differential: havoc reads as functions
+agree with the pairwise constraints on random programs` (200 random programs
+reading a mutable global, an asm-clobbered stack object and an arbitrary heap
+object at symbolic offsets, half of them asserting that two reads of one
+address agree; same verdict and class in both encodings, every
+counterexample validated, and replayed in the interpreter when it does not
+depend on arbitrary memory).
+
+**What still grows: reads through copies.** A read at address `a` through a
+`memcpy` entry whose destination is not a constant reads the source at
+`src + (a − dst)`, a new address term, against the log before the copy, and
+through every earlier copy into the same object again: the number of reads
+grows with the number of copy paths (cdns_torrent_phy_on: 18 copies, 186,656
+reads, 97.6 million log entries walked). With havoc reads as functions this is
+what is left of the encoder's memory on the r1 sample; it is not changed here.
+
+`PRISM_MEM_TRACE=1` prints, per function, `build done … side=N objects=… log=N
+(byte= set= copy= havoc= havocobj= havocall=) reads= walked= copy_reads=
+sym_reads= havoc_reads= ackermann= z3=MB` (and the same as `symmem end` when
+the encoder's state is freed, also after the budget stopped it), one `query
+features nodes=N` line per query, and `stop: <guard>` naming the check that
+ended a function (`extra.memory_stop` in the record says the same with the
+peak RSS).
+
 `tests/cpp/test_pir_mem.cpp` checks that both encodings give the same verdict
 and class on every property (true and false variants) and that the PIR
 interpreter (`interpret`, concrete memory `ConcMem`) reproduces each
@@ -414,7 +463,7 @@ when the unwinding assertion closes, else BOUNDED.
 | `MCond.live` / `inBounds` / `atBase` | `obj.live`; `off + n <= obj.size`; `off == 0` in the free checks |
 | `mrun` `.load`/`.store` UB (dead or out of bounds) | MEM-UAF / MEM-OOB-* / PTR-NULL-DEREF / PTR-INVALID-DEREF checks |
 | `mrun` `.free` UB (dead or not at base) | MEM-DOUBLE-FREE / MEM-INVALID-FREE checks |
-| `MemEncode.menc` select chains, `MSym.WF` congruence | `MemEncoding::Bv` read-over-write + Ackermann constraints |
+| `MemEncode.menc` select chains, `MSym.WF` congruence | `MemEncoding::Bv` read-over-write + havoc contents as functions (congruence) or Ackermann constraints (certified) |
 | `uaf_is_ub`, `double_free_is_ub` | doctests `pir mem: every property …` |
 
 Not covered by the Lean proofs (trusted C++ code): multi-byte little-endian
@@ -1289,7 +1338,8 @@ loop). For a function with memory the header state is the header phis
    violation goes to a live, non-`const` object that already exists.
 2. **Havoc.** At the header, every byte of every footprint object gets an
    arbitrary value and tag (`SymMem::havoc_objects`, both encodings; Bv: one
-   fresh cell per read address with Ackermann constraints). Its
+   function of the address per havoc, or in certified mode one fresh cell per
+   read address with Ackermann constraints). Its
    *initialised* flag becomes `old | arbitrary` when every write in the loop
    initialises the bytes it writes (plain stores with a constant all-ones
    mask, `memset`): a byte that may be uninitialised before the loop stays
@@ -1863,3 +1913,25 @@ key copies, simplifies and prints the whole formula) and one in-process solver
 at a time. Z3's own `memory_max_size` (1.5x the budget) is the last resort; past
 it Z3 is not reused in the process and the remaining functions are re-checked
 in a fresh process (`rerun_after_oom`). Tests: `tests/cpp/test_membudget.cpp`.
+
+**Why a function stops at about 60–65% of the budget.** The memory-limit
+functions of the r1 sample stopped at 7.3–7.9 GB with a 12,000 MB budget and
+at 1.8–2.0 GB with 3,000 MB. The stop is not the 80% RSS trip: the encoder's
+guard (`memory.cpp` `mem_guard`, every read-over-write step) also stops when
+`tree RSS + Z3's estimated heap > budget`, "a full doubling must fit"
+(Z3's term tables double when they fill). Z3's heap is itself part of the
+RSS, so it is counted twice: with Z3 at 55–60% of the process the guard trips
+at RSS ≈ budget / 1.6. Every r1-sample stop traced (`[memtrace] stop:`) was
+this guard ("no room for Z3's next growth"). This headroom is deliberate (one
+doubling overshot the budget in priority_queue_contracts.cpp) and is not
+changed; a larger budget buys about 60% of itself for the encoder. Also: the
+UNKNOWN message's "process RSS" is measured after the function's Z3 context
+is freed (1.6–1.8 GB in the sample, not the 7.5 GB peak); `extra.memory_stop`
+now records the guard and the peak. Two smaller fixes in the same area: the
+portfolio's cache key (a translated, simplified, printed copy of the query,
+three to four times its memory) is skipped when the process plus about 400
+bytes per query node would pass half the budget (a 5M-node query of
+bfq_find_bfqq_for_underused_actuator went from 2.8 to 10.4 GB in the key and
+the watchdog's hard stop ended the run with no record), and the encoder's log
+walk checks the budget every 4,096 entries (a walk of tens of millions of
+entries between two checks also ended in that hard stop).

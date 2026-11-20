@@ -151,6 +151,18 @@ static void mem_guard() {
         throw z3::exception("soft memory cap (memory budget) reached while encoding memory: no room for Z3's next growth");
 }
 
+// Per log entry walked: the budget check of mem_guard every 4096 entries
+// (one read walks the whole log and, through copies, earlier logs again;
+// cdns_torrent_phy_on walked 97M entries, and without a check inside the
+// walk the watchdog's stuck-streak hard stop ended the process, exit 75, no
+// record for the function).
+static void walk_guard() {
+    thread_local unsigned n = 0;
+    if ((++n & 4095u) != 0) return;
+    if (membudget::over_budget())
+        throw z3::exception("soft memory cap (memory budget) reached while encoding memory (log walk)");
+}
+
 // Raw value sets: the options are kept apart even when two have the same
 // value, so terms built the same way (the bytes of one read-over-write
 // chain) have the same guard list and combine position by position.
@@ -913,6 +925,7 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
     if (!caddr && !ko) ++st_.sym_reads;
     z3::expr v = bv(0, cw_);  // never written: value 0, not initialised
     for (std::size_t i = 0; i < upto && i < log_.size(); ++i) {
+        walk_guard();
         auto& e = log_.at(i);
         if (e.kind == Entry::HavocAll) {  // every address (no object or provenance test)
             // arbitrary value and tag; the initialised flag is old | arbitrary, as in HavocObj with keep_init
@@ -1038,6 +1051,7 @@ std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto
     const uint64_t ko = obj_of(a);
     z3::expr v = bv(0, 8 * n);
     for (std::size_t i = 0; i < upto; ++i) {
+        walk_guard();
         auto& e = log_[i];
         if (e.kind == Entry::HavocAll) return std::nullopt;  // byte-level reads handle it
         if (auto kb = known(e.addr); kb && *kb != ko) continue;
