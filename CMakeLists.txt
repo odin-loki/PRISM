@@ -681,7 +681,7 @@ if(PRISM_CUDA)
         set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "nvcc -arch" FORCE)
       endif()
       # probsat.cu: GPU ProbSAT walkers (roadmap 3.3), mirrors src/prism/solver/cnf.cpp.
-      add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu)
+      add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu src/cuda/invdata.cu)
       target_include_directories(prism_cuda PUBLIC "${PRISM_ROOT}/include")
       target_compile_features(prism_cuda PUBLIC cuda_std_17)
       set_target_properties(prism_cuda PROPERTIES
@@ -950,7 +950,7 @@ if(PRISM_TESTS)
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
       tests/cpp/test_pir_budget.cpp tests/cpp/test_pir_parallel.cpp tests/cpp/test_membudget.cpp tests/cpp/test_certified.cpp
-      tests/cpp/test_solver_cert.cpp)
+      tests/cpp/test_solver_cert.cpp tests/cpp/test_pir_chc.cpp)
   endif()
   # PRISM_TESTS_WIN_SUBSET no longer selects sources. On WIN32 it only gates the
   # fake_* stand-in executables and the PRISM_FAKE_* compile definitions the

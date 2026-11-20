@@ -25,13 +25,19 @@
 #include "prism/clock.hpp"
 #include "prism/settings.hpp"
 #include "prism/membudget.hpp"
+#include "prism/exec.hpp"
 #include "prism/pir.hpp"
 
 #include "fp.hpp"
 #include "memory.hpp"
 #include "idioms/idioms.hpp"
+#ifdef PRISM_HAS_CUDA
+#include "prism/cuda_inv.hpp"
+#endif
 
 #include <cstdlib>
+#include <cctype>
+#include <stdexcept>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -48,6 +54,10 @@
 #include <sstream>
 #include <string_view>
 #include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <fstream>
+#include <mutex>
 #include <unordered_map>
 
 #ifdef PRISM_HAS_Z3
@@ -2169,6 +2179,20 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     }
     auto done = [&](Verdict& r) -> Verdict {
         add_metrics(r, meter, rc);
+        // PRISM_PIR_CHC_DIFF=1 (the over-approximation test, docs/PIR.md
+        // "Loop proofs by CHC"): a FAILED function's CHC system must not be
+        // solved "safe" by Spacer. Diagnostics only; never changes the verdict.
+        const bool chc_diff = [] {
+            const char* d = std::getenv("PRISM_PIR_CHC_DIFF");
+            return d && std::string(d) == "1";
+        }();
+        if (chc_diff && r.status == std::string(laws::FAILED)) {
+            try {
+                r.extra["chc_differential"] = chc_differential_of(fn, opt.encode, std::max(1.0, opt.timeout_s));
+            } catch (...) {
+                r.extra["chc_differential"] = "error";
+            }
+        }
         return r;
     };
     if (opt.certified || opt.unwind <= kFirstUnwind + 1) {
@@ -2381,10 +2405,48 @@ static Verdict check_function_mem(const Function& fn, const CheckOptions& opt_in
     }
     race.stop(ks);
     race.stop(hs);
+    // A counterexample of the CHC system (chc.inc) is not a verdict: it is
+    // replayed by the bounded encoding at deeper unwinds, and only that
+    // encoding's own FAILED is reported. A single loop is replayed by the
+    // deepening below; several loops here (doubling up to the deepening
+    // limit while the budget lasts).
+    const bool chc_cex = full.extra.count("chc_cex") != 0;
+    if (chc_cex && !deepen && next == "houdini" && full.status == std::string(laws::BOUNDED)) {
+        const CheckOptions dopt = own_clock(opt.function_budget ? opt.function_budget->left() : 0);
+        for (int u = opt.unwind * 2; u <= std::max(deepen_max, opt.unwind * 2); u *= 2) {
+            if (dopt.function_budget && dopt.function_budget->left() < opt.timeout_s) {
+                full.extra["chc_replay"] = "stopped before unwind " + std::to_string(u) + " (function budget)";
+                break;
+            }
+            if (rcd.units_total > 0 && rcd.units_left() < rcd.cx.units(opt.timeout_s)) break;
+            if (z3_exhausted()) break;
+            CheckOptions d = dopt;
+            d.unwind = u;
+            Verdict dv = check_function_at(fn, d, rcd);
+            if (dv.status == std::string(laws::FAILED)) {
+                meter.merge(md);
+                dv.extra["unwind_requested"] = std::to_string(opt.unwind);
+                dv.extra["unwind_deepened_to"] = std::to_string(u);
+                dv.extra["chc"] = full.extra["chc"];
+                dv.extra["chc_replay"] = "FAILED at unwind " + std::to_string(u) + " (the bounded encoding's own counterexample)";
+                return done(dv);
+            }
+            if (dv.status != std::string(laws::BOUNDED)) {
+                full.extra["chc_replay"] = "stopped at unwind " + std::to_string(u) + " (" + dv.status + ")";
+                break;
+            }
+            full.extra["chc_replay"] = "BOUNDED up to unwind " + std::to_string(u) + " (counterexample not reproduced)";
+        }
+        meter.merge(md);
+    }
     if (deepen) {
         race.join(ds);
         meter.merge(md);
-        if (deep) return done(*deep);
+        if (deep) {
+            if (chc_cex && deep->status == std::string(laws::FAILED))
+                deep->extra["chc_replay"] = "FAILED by the deepening (the bounded encoding's own counterexample)";
+            return done(*deep);
+        }
         if (!deep_bounded.empty()) full.extra["unwind_deepened_to"] = deep_bounded.back() + " (BOUNDED)";
     }
     return done(full);
@@ -2480,6 +2542,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         if (g.loops.empty()) return false;
         if (loops_allocate()) {
             r.extra["invariants_note"] = "not attempted (allocation or free in a loop)";
+            r.extra["loop_alloc"] = loop_alloc_summary(fn, g);
             return false;
         }
         // Every VC is answered (the verdict is BOUNDED): a spent function
@@ -2525,7 +2588,12 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         }
         const prism::clock::Stopwatch th;
         Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s, hl);
-        auto h = hd.run();
+        // PRISM_PIR_CHC=only: the CHC round alone, without the template search (measurements, tests)
+        const bool chc_only = [] {
+            const char* ce = std::getenv("PRISM_PIR_CHC");
+            return ce && std::string(ce) == "only";
+        }();
+        auto h = chc_only ? HoudiniOut{} : hd.run();
         rc.units_spent += h.units;
         if (rc.meter) {
             rc.meter->add(cxl::Phase::Houdini, h.units, false);
@@ -2555,6 +2623,63 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         if (h.concrete_runs > 0)
             r.extra["houdini_concrete"] = std::to_string(h.concrete_dropped) + " of " + std::to_string(h.candidates) +
                                           " candidate(s) falsified by " + std::to_string(h.concrete_runs) + " concrete run(s)";
+        // Loop proofs by CHC (chc.inc, docs/PIR.md "Loop proofs by CHC
+        // (Spacer)"): PRISM_PIR_CHC=1|data asks Spacer after the template
+        // search. Its invariant becomes candidates that Houdini's own base,
+        // step and final queries re-check; only that proof counts. A
+        // counterexample of the CHC system is not a verdict (check_function
+        // replays it with the bounded encoding).
+        if (!h.proved && !(rc.stop && rc.stop->load())) {
+            const int chc_mode = [] {  // read per function (doctests set it)
+                const char* ce = std::getenv("PRISM_PIR_CHC");
+                const std::string s = ce ? ce : "";
+                return s.empty() || s == "0" ? 0 : s == "data" ? 2 : 1;  // 1, only: Spacer
+            }();
+            // outside candidates (PRISM_PIR_LOOP_CANDIDATES) without PRISM_PIR_CHC: mode 4, Houdini over them alone
+            const int chc_mode_eff = chc_mode > 0 ? chc_mode
+                                     : !houdini_data::ext_candidates_for(fn.name).empty() ? 4 : 0;
+            if (chc_mode_eff > 0) {
+                if (budget_out()) {
+                    r.extra["chc"] = fn_budget_note(r);
+                } else {
+                    double hard2 = fn_budget ? std::max(0.0, fn_budget->left()) : -1;
+                    HoudiniLimits hl2 = hl;
+                    if (rc.cx.on()) {
+                        hl2.hard_wall_s = hard2;
+                        hard2 = rc.units_total > 0 ? static_cast<double>(rc.units_left()) / rc.cx.u : -1;
+                    }
+                    const prism::clock::Stopwatch tc;
+                    Houdini hc(fn, g, eo, timeout_s, !rc.cx.on() && hard2 >= 0 ? hard2 : -1, HoudiniEnv{}, hard2, hl2);
+                    auto h2 = hc.run_chc(chc_mode_eff);
+                    rc.units_spent += h2.units;
+                    if (rc.meter) {
+                        rc.meter->add(cxl::Phase::Houdini, h2.units, false);
+                        rc.meter->queries[static_cast<std::size_t>(cxl::Phase::Houdini)] += static_cast<std::uint64_t>(h2.queries);
+                    }
+                    char cb[32];
+                    std::snprintf(cb, sizeof cb, "%.2f", tc.elapsed_s());
+                    r.extra["chc_seconds"] = cb;  // the whole CHC round: Spacer, data candidates, re-check
+                    r.extra["chc"] = h2.chc.empty() ? "not asked: " + h2.why : h2.chc;
+                    if (h2.chc_s >= 0) {
+                        std::snprintf(cb, sizeof cb, "%.2f", h2.chc_s);
+                        r.extra["chc_spacer_seconds"] = cb;
+                    }
+                    if (!h2.data.empty()) r.extra["chc_data"] = h2.data;
+                    if (!h2.ext.empty()) r.extra["loop_candidates"] = h2.ext;
+                    if (h2.data_bounds_ms >= 0) {
+                        std::snprintf(cb, sizeof cb, "%.3f", h2.data_bounds_ms);
+                        r.extra["chc_data_bounds_ms"] = cb;
+                    }
+                    if (h2.data_cpu_ms >= 0) {
+                        std::snprintf(cb, sizeof cb, "%.3f", h2.data_cpu_ms);
+                        r.extra["chc_data_cpu_ms"] = cb;
+                    }
+                    if (h2.chc_cex) r.extra["chc_cex"] = "true";
+                    if (h2.proved) h = std::move(h2);
+                    else r.extra["chc_note"] = "no proof: " + h2.why;
+                }
+            }
+        }
         if (!h.proved) {
             r.extra["invariants_note"] = "no proof from loop invariants: " + h.why;
             if (budget_out())
@@ -2588,6 +2713,15 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         r.extra["k_induction"] = "closed-invariants";
         r.extra["pir_invariants"] = inv.dump();
         r.extra["invariant_checker"] = "z3: Houdini over PIR templates + loop-cut induction (base and step)";
+        if (!h.engine.empty()) {
+            r.message = "every loop cut by " + std::to_string(n) + " inductive invariant(s) proposed by " + h.engine +
+                        " (CHC) and re-checked by Houdini (base, step and final query in PRISM's own solver); no "
+                        "property violated in the cut program; not a bounded-only result";
+            r.extra["invariant_checker"] =
+                "z3: Houdini base/step/final queries over the loop-cut encoding; invariant proposed by " + h.engine;
+            r.extra["invariant_engine"] = h.engine;
+            r.extra["invariant_size"] = std::to_string(h.inv_size);
+        }
         r.extra["invariant_footprint"] = h.footprint;
         r.extra["unwind_closed"] = "true";
         export_invariants(fn, g, h, r);
