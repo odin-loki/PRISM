@@ -549,6 +549,27 @@ bool validate_model(z3::context& c, const z3::expr& f, const std::map<std::strin
         }
         z3::expr r = m.eval(f, true);
         if (r.is_true()) return true;
+        // Uninterpreted functions (pir havoc contents, docs/PIR.md "Havoc
+        // reads as functions"): the model names constants only, so the
+        // completion above picks one interpretation of each function and may
+        // miss. The model holds when the formula with every constant fixed to
+        // its value is satisfiable: then some interpretation of the functions
+        // completes it (a ground congruence problem, no search over the
+        // constants).
+        if (features(f).uf) {
+            z3::solver s(c);
+            s.add(f);
+            for (const auto& k : collect_consts(f)) {
+                auto it = model.find(const_name(k));
+                if (it == model.end()) continue;
+                auto val = detail::parse_literal(c, k.get_sort(), it->second);
+                if (val) s.add(k == *val);
+            }
+            z3::params p(c);
+            p.set("timeout", 30000u);
+            s.set(p);
+            if (s.check() == z3::sat) return true;
+        }
         return fail("model does not satisfy the formula (evaluates to " + r.to_string().substr(0, 80) + ")");
     } catch (const z3::exception& e) {
         return fail(std::string("z3: ") + e.msg());

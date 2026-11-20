@@ -526,6 +526,7 @@ const std::vector<EnvVar>& env_vars() {
     {"PRISM_PIR_MODEL_INLINE_DEPTH", "pir: extra call-inlining depth for PRISM's own library models (kernel specs, libc models; default 16, 0..64): model frames do not count toward PRISM_PIR_INLINE_DEPTH, the inline stack holds at most the sum; 0 = models count like user code"},
     {"PRISM_PIR_LEAN_EXPORT", "pir: directory to export Lean obligations to"},
     {"PRISM_PIR_MEM_MB", "pir: memory budget (MB) when PRISM_MEM_BUDGET_MB is unset"},
+    {"PRISM_PIR_HAVOC_UF", "pir: 1 = havoc memory contents as uninterpreted functions (QF_UFBV, not in certified mode), 0 = off; unset = the default"},
     {"PRISM_PIR_NO_HEADERS", "pir: skip the system-header IR pass (diagnostics)"},
     {"PRISM_PIR_ONLY", "internal: set in pir rerun child processes (the units and functions to re-check)"},
     {"PRISM_PIR_PROGRESS", "pir: file to append lower-start/done progress lines to"},

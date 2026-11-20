@@ -305,6 +305,21 @@ struct Footprint {
 };
 
 struct Encoding {
+    // Freeing the encoding is no reason for the memory watchdog's hard stop
+    // (membudget::teardown_begin): ~Encoding starts the teardown, and this
+    // first member, destroyed after every other one, ends it.
+    struct TeardownEnd {
+        bool on = false;  // set by ~Encoding (not when the constructor threw)
+        ~TeardownEnd() {
+            if (on) membudget::teardown_end();
+        }
+    } teardown_end_;
+    ~Encoding() {
+        membudget::teardown_begin();
+        teardown_end_.on = true;
+    }
+    Encoding(const Encoding&) = delete;
+    Encoding& operator=(const Encoding&) = delete;
     z3::context& c;
     const Function& fn;
     const CfgInfo& g;
@@ -379,6 +394,7 @@ struct Encoding {
                 for (auto& s : b.stmts)
                     if ((s.kind == Stmt::Load || s.kind == Stmt::Store) && s.tag) tags = true;
             mem.emplace(c, eo.memory, tags, assumptions);
+            if (eo.memory == MemEncoding::Bv && eo.havoc_uf) mem->set_havoc_uf(true);
         }
     }
 
@@ -612,8 +628,9 @@ struct Encoding {
                              static_cast<unsigned long long>(membudget::rss_mb() - r0));
         }
         if (prism::settings::mem_trace().is_set())
-            std::fprintf(stderr, "[memtrace] build done nodes=%zu rss=%llu\n", nodes.size(),
-                         static_cast<unsigned long long>(membudget::rss_mb()));
+            std::fprintf(stderr, "[memtrace] build done nodes=%zu rss=%llu side=%zu %s\n", nodes.size(),
+                         static_cast<unsigned long long>(membudget::rss_mb()), assumptions.size(),
+                         mem ? mem->stats_line().c_str() : "");
     }
 
     // A use outside the loop of its definition. LLVM's LCSSA form never has
@@ -2412,6 +2429,13 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
     // pointers): an ILP32 proof is the solver's, never PROVED-CERTIFIED.
     CheckOptions opt_ilp = opt_in;
     if (fn.ptr.w != 64) opt_ilp.certified = false;
+    // Havoc reads as functions (docs/PIR.md): $PRISM_PIR_HAVOC_UF overrides
+    // the option; certified mode needs QF_BV, so it keeps the pairwise
+    // constraints. Every encoding of this function (Houdini's and the
+    // k-induction step's too) uses the same choice.
+    if (const char* hu = prism::settings::cstr(prism::settings::pir_havoc_uf()); hu && *hu)
+        opt_ilp.encode.havoc_uf = std::string(hu) != "0";
+    if (opt_ilp.certified) opt_ilp.encode.havoc_uf = false;
     const CheckOptions& opt = opt_ilp;
     const EncodeOptions& eo = opt.encode;
     Verdict v;
@@ -2701,6 +2725,7 @@ const auto& r = bk.add(label, pre ? std::move(*pre) : solver::solve(c, vc, o));
         }
         if (fn.uses_memory) {
             v.extra["memory"] = eo.memory == MemEncoding::Array ? "array" : "bv";
+            if (eo.memory == MemEncoding::Bv) v.extra["havoc_reads"] = eo.havoc_uf ? "functions" : "ackermann";
             v.extra["objects"] = std::to_string(e.mem->objects());
         }
         v.extra["instances"] = std::to_string(e.nodes.size());
@@ -3345,6 +3370,13 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
         const bool soft = m.find("soft memory cap") != std::string::npos;
         const bool oom = soft || m.find("out of memory") != std::string::npos || m.find("max. memory") != std::string::npos;
         if (oom && !soft) g_z3_oom.store(true);  // past Z3's own limit: no more Z3 in this process
+        // which guard stopped it (the message below is built after the
+        // context is freed, so its RSS is not the peak): docs/PIR.md "Memory budget"
+        if (oom) v.extra["memory_stop"] = m + " (peak RSS " + std::to_string(membudget::peak_rss_mb()) + " MB)";
+        if (prism::settings::mem_trace().is_set())
+            std::fprintf(stderr, "[memtrace] stop: %s (rss now %llu, peak %llu)\n", m.c_str(),
+                         static_cast<unsigned long long>(membudget::rss_mb()),
+                         static_cast<unsigned long long>(membudget::peak_rss_mb()));
         v.status = std::string(oom ? laws::UNKNOWN : laws::ERROR);
         v.message = oom ? (soft ? membudget::over_message("while encoding or solving")
                                 : std::string("Z3 hard memory limit reached; no proof"))
@@ -3364,6 +3396,7 @@ const auto& r = cbook.add(labels.at(i), solver::solve(c, base && all.at(i), budg
 std::vector<Vc> pir_vcs(const Function& fn, int unwind) {
     EncodeOptions eo;
     eo.memory = MemEncoding::Bv;  // QF_BV: the certified back end cannot take arrays
+    eo.havoc_uf = false;          // nor uninterpreted functions
     return pir_vcs(fn, unwind, eo);
 }
 

@@ -51,6 +51,27 @@ SymMem::SymMem(z3::context& c, MemEncoding enc, bool tags, std::vector<z3::expr>
     if (enc_ == MemEncoding::Array) arr_ = z3::const_array(c_.bv_sort(ptr_w()), bv(0, cw_));
 }
 
+std::string SymMem::stats_line() const {
+    uint64_t k[6] = {0, 0, 0, 0, 0, 0};
+    for (auto& e : log_) ++k[static_cast<int>(e.kind)];
+    char buf[512];
+    std::snprintf(buf, sizeof buf,
+                  "objects=%zu log=%zu (byte=%llu set=%llu copy=%llu havoc=%llu havocobj=%llu havocall=%llu) reads=%llu "
+                  "walked=%llu copy_reads=%llu sym_reads=%llu havoc_reads=%llu ackermann=%llu z3=%lluMB",
+                  objs_.size(), log_.size(), (unsigned long long)k[0], (unsigned long long)k[1], (unsigned long long)k[2],
+                  (unsigned long long)k[3], (unsigned long long)k[4], (unsigned long long)k[5],
+                  (unsigned long long)st_.reads, (unsigned long long)st_.walked, (unsigned long long)st_.copy_reads,
+                  (unsigned long long)st_.sym_reads, (unsigned long long)st_.havoc_reads,
+                  (unsigned long long)st_.ackermann, (unsigned long long)(Z3_get_estimated_alloc_size() >> 20));
+    return buf;
+}
+
+SymMem::~SymMem() {
+    if (prism::settings::mem_trace().is_set())
+        std::fprintf(stderr, "[memtrace] symmem end rss=%llu %s\n", static_cast<unsigned long long>(membudget::rss_mb()),
+                     stats_line().c_str());
+}
+
 std::optional<uint64_t> SymMem::known(const z3::expr& e) const {
     uint64_t v = 0;
     if (e.is_numeral() && e.is_numeral_u64(v)) return obj_of(v);
@@ -131,6 +152,17 @@ static void mem_guard() {
     // A full doubling must fit (two jobs may grow at once; rss is sampled).
     if (rss + z3mb > b)
         throw z3::exception("soft memory cap (memory budget) reached while encoding memory: no room for Z3's next growth");
+}
+
+// Per log entry walked: the budget check of mem_guard every 1024 entries
+// (one read walks the whole log and, through copies, earlier logs again;
+// cdns_torrent_phy_on walked 97M entries): the walk itself polls the budget,
+// not only each read_cell_log call (sampled every 256 calls).
+static void walk_guard() {
+    thread_local unsigned n = 0;
+    if ((++n & 1023u) != 0) return;
+    if (membudget::over_budget())
+        throw z3::exception("soft memory cap (memory budget) reached while encoding memory (log walk)");
 }
 
 // Raw value sets: the options are kept apart even when two have the same
@@ -854,6 +886,8 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
     auto key = std::make_tuple(addr_in.id(), upto, use_prov);
     if (auto it = memo_.find(key); it != memo_.end()) return it->second;
     mem_guard();
+    ++st_.reads;
+    st_.walked += std::min(upto, log_.size());
     keep_.push_back(addr_in);
     // Value sets: an address with several possible constants reads each of
     // them (under its guard); one constant is read as that numeral, so the
@@ -890,8 +924,10 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
         return os && std::find(os->begin(), os->end(), obj_of(*caddr)) == os->end();
     };
     auto ko = use_prov ? known(addr) : std::nullopt;
+    if (!caddr && !ko) ++st_.sym_reads;
     z3::expr v = bv(0, cw_);  // never written: value 0, not initialised
     for (std::size_t i = 0; i < upto && i < log_.size(); ++i) {
+        walk_guard();
         auto& e = log_.at(i);
         if (e.kind == Entry::HavocAll) {  // every address (no object or provenance test)
             // arbitrary value and tag; the initialised flag is old | arbitrary, as in HavocObj with keep_init
@@ -939,6 +975,7 @@ z3::expr SymMem::read_cell_log(const z3::expr& addr_in, std::size_t upto, bool u
                     }
                 }
                 auto src = e.src + (addr - e.addr);
+                ++st_.copy_reads;
                 if (use_prov)
                     if (auto ks = known(e.src)) note(src, *ks);
                 v = z3::ite(e.guard && in_range(addr, e.addr, e.len), read_cell_log(src, i, use_prov), v);
@@ -970,6 +1007,24 @@ z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width
     auto key = std::make_pair(e.havoc, addr.id());
     if (auto it = havoc_memo_.find(key); it != havoc_memo_.end()) return it->second;
     mem_guard();
+    ++st_.havoc_reads;
+    if (havoc_uf_) {
+        // one uninterpreted function per havoc entry (and width; an entry is
+        // read at one width, the key only keeps the sorts apart): the
+        // contents are f(addr), so equal addresses read equal values by
+        // congruence, which is what the pairwise constraints below state
+        auto fk = std::make_pair(e.havoc, width);
+        auto it = havoc_fn_.find(fk);
+        if (it == havoc_fn_.end())
+            it = havoc_fn_
+                     .emplace(fk, c_.function((std::string(base) + "f" + std::to_string(fresh_++)).c_str(),
+                                              c_.bv_sort(ptr_w()), c_.bv_sort(width)))
+                     .first;
+        z3::expr h = it->second(addr);
+        keep_.push_back(addr);
+        havoc_memo_.emplace(key, h);
+        return h;
+    }
     auto h = c_.bv_const((std::string(base) + std::to_string(fresh_++)).c_str(), width);
     auto& reads = havoc_reads_[static_cast<std::size_t>(e.havoc)];
     uint64_t x1 = 0, x2 = 0;
@@ -977,6 +1032,7 @@ z3::expr SymMem::havoc_read(const Entry& e, const z3::expr& addr, unsigned width
     for (auto& [a2, h2] : reads) {
         if (n1 && a2.is_numeral() && a2.is_numeral_u64(x2) && x1 != x2) continue;  // never the same address
         side_.push_back(z3::implies(addr == a2, h == h2));
+        ++st_.ackermann;
     }
     reads.emplace_back(addr, h);
     keep_.push_back(addr);
@@ -997,6 +1053,7 @@ std::optional<z3::expr> SymMem::word_at(uint64_t a, unsigned n, std::size_t upto
     const uint64_t ko = obj_of(a);
     z3::expr v = bv(0, 8 * n);
     for (std::size_t i = 0; i < upto; ++i) {
+        walk_guard();
         auto& e = log_[i];
         if (e.kind == Entry::HavocAll) return std::nullopt;  // byte-level reads handle it
         if (auto kb = known(e.addr); kb && *kb != ko) continue;

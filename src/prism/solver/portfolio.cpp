@@ -637,14 +637,24 @@ SolveResult solve_impl(z3::context& c, const z3::expr& formula, const SolveOptio
     // of priority_queue_contracts.cpp's queries pushed a 2 GB process past
     // 3.6 GB and into the kernel's OOM killer). Past half the memory budget
     // the query is solved without the cache, under a key no other query has.
+    // The same when the key's own copies would take the process there (about
+    // 400 bytes per node for the three to four copies): the key of one
+    // 5M-node query (bfq_find_bfqq_for_underused_actuator, 12000 MB budget)
+    // took the process from 2.8 to 10.4 GB without polling the interrupt,
+    // and the watchdog's hard stop ended the run with no record.
     const uint64_t budget = prism::membudget::budget_mb();
-    const bool skip_norm = budget > 0 && prism::membudget::rss_mb() * 2 >= budget;
+    const uint64_t key_mb = static_cast<uint64_t>(ft.nodes) * 400 / (1024 * 1024);
+    const bool skip_norm = budget > 0 && (prism::membudget::rss_mb() + key_mb) * 2 >= budget;
+    if (prism::settings::mem_trace().is_set())
+        std::fprintf(stderr, "[memtrace] query features nodes=%zu rss=%llu skip_key=%d\n", static_cast<std::size_t>(ft.nodes),
+                     static_cast<unsigned long long>(prism::membudget::rss_mb()), skip_norm ? 1 : 0);
     if (skip_norm) {
         static std::atomic<uint64_t> uniq{0};
         norm = "prism-solver-query uncached (memory budget) " + std::to_string(::getpid()) + " " +
                std::to_string(uniq.fetch_add(1)) + " " + std::to_string(now_s());
-        notes.push_back("not cached: the process is over half its memory budget (" +
-                        std::to_string(prism::membudget::rss_mb()) + " of " + std::to_string(budget) + " MB)");
+        notes.push_back("not cached: the process with the cache key's copies (about " + std::to_string(key_mb) +
+                        " MB) is over half its memory budget (" + std::to_string(prism::membudget::rss_mb()) + " of " +
+                        std::to_string(budget) + " MB)");
     } else try {
         norm = normalized_query(c, formula, &canonical);
     } catch (const z3::exception& e) {
