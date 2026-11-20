@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <map>
 #include <random>
 #include <span>
 #include <string>
@@ -451,3 +452,61 @@ TEST_CASE("prism binary: --fail-on=defect is honoured (conflict marker -> exit 1
     std::error_code ec;
     fs::remove_all(td, ec);
 }
+
+#ifndef _WIN32
+// Folded UB without an IR instruction (`(void)(1 << 31);` leaves none at -O0) is charged to the function whose source span
+// contains its line, whatever PRISM_PIR_ONLY selects (OS-Proving docs/coverage/DEDUPE.md: it used to go to the selected
+// function with the largest line before it, so a neighbour was charged and the verdict depended on the chunk).
+TEST_CASE("prism binary: clang-folded UB is charged to its own function under every PRISM_PIR_ONLY selection") {
+    REQUIRE(fs::exists(prism_bin()));
+    std::random_device rd;
+    auto td = fs::temp_directory_path() / ("prism_foldown_" + std::to_string(rd()));
+    fs::create_directories(td);
+    std::ofstream(td / "owner.c") << "int before_fn(int x) { return x & 1; }\n"
+                                     "int owner_fn(int x) {\n"
+                                     "    int y = x & 3;\n"
+                                     "    (void)(1 << 31);\n"
+                                     "    return y;\n"
+                                     "}\n"
+                                     "int after_fn(int x) { return x & 7; }\n";
+    // verdict per function of one run (the --jsonl function records)
+    auto verdicts = [&](const std::vector<std::string>& sel) {
+        std::string only;
+        for (auto& f : sel) only += "owner.c\t" + f + "\n";
+        const auto js = td / "j.jsonl";
+        fs::remove(js);
+        std::string env = sel.empty() ? std::string() : "PRISM_PIR_ONLY=\"$(printf '" + only + "')\" ";
+        std::string cmd = "cd " + q(td) + " && " + env + q(prism_bin()) + " owner.c --no-llm --stage pir --jsonl " + q(js) +
+                          " --out " + q(td / "out") + " > /dev/null 2>&1";
+        (void)std::system(cmd.c_str());
+        std::map<std::string, std::string> v;
+        std::ifstream in(js);
+        for (std::string l; std::getline(in, l);) {
+            if (l.find("\"record\":\"function\"") == std::string::npos) continue;
+            for (const char* fn : {"before_fn", "owner_fn", "after_fn"})
+                if (l.find(std::string("\"function\":\"") + fn + "\"") != std::string::npos) {
+                    auto p = l.find("\"verdict\":\"");
+                    if (p != std::string::npos) v[fn] = l.substr(p + 11, l.find('"', p + 11) - p - 11);
+                }
+        }
+        return v;
+    };
+    auto all = verdicts({});
+    if (!all.count("owner_fn")) {
+        MESSAGE("no clang front end: skipped");
+        fs::remove_all(td);
+        return;
+    }
+    CHECK(all.at("owner_fn") == prism::laws::NEEDS_HARNESS);
+    CHECK(all.at("before_fn") == prism::laws::PROVED);
+    CHECK(all.at("after_fn") == prism::laws::PROVED);
+    for (const auto& sel : std::vector<std::vector<std::string>>{
+             {"owner_fn"}, {"before_fn", "owner_fn"}, {"owner_fn", "after_fn"}, {"before_fn"}, {"before_fn", "after_fn"}}) {
+        auto v = verdicts(sel);
+        for (const auto& f : sel)
+            CHECK_MESSAGE(v[f] == all.at(f), f << " selected with " << sel.size() << " function(s): " << v[f]);
+    }
+    std::error_code ec;
+    fs::remove_all(td, ec);
+}
+#endif

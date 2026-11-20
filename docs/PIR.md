@@ -1296,7 +1296,12 @@ model). Types wider than 512 bits stay UNENCODED (a value's per-byte uninitialis
 `clang-folded UB at line N (...): no IR instruction carries it (folded into a constant), so whether the function reaches
 it is not decided` and `extra.folded_line` / `extra.folded_class` (it was `UNENCODED: clang-folded UB at line N not
 attributable to an IR instruction`). It is never PROVED and never FAILED: the expression may be on a path that is never
-taken. With `--pir-build-semantics` and a `-fwrapv` unit the signed-overflow and signed-shift diagnostics are the wrapped
+taken. The owner is decided over all functions of the unit's main file, not over the ones a process checks
+(`PRISM_PIR_ONLY` chunks, memory re-runs): the function whose source span (cparse start..end) contains the line; when no
+known span contains it, every function whose span is not known (one a macro generates) is charged; with every span known
+the line is at file scope and no function is. Before, the UB went to the selected function with the largest start line
+before it, so the verdict depended on the chunk (OS-Proving docs/coverage/DEDUPE.md). Test: `tests/cpp/test_cli.cpp`
+("clang-folded UB is charged to its own function under every PRISM_PIR_ONLY selection"). With `--pir-build-semantics` and a `-fwrapv` unit the signed-overflow and signed-shift diagnostics are the wrapped
 value and are dropped (#70).
 
 ## Inline assembly (roadmap 2.6)
