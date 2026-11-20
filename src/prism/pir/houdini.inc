@@ -1964,6 +1964,29 @@ HoudiniOut Houdini::run_search() {
         z3::expr_vector av(c);
         for (auto& a : e.assumptions) av.push_back(a);
         const z3::expr A = av.empty() ? c.bool_val(true) : z3::mk_and(av);
+        // Size and memory guard: the clauses repeat the encoding in every rule
+        // and the child gets it as text, so a large cut program (or a process
+        // already near its memory budget) is not handed to Spacer at all.
+        std::string guard;
+        {
+            constexpr std::size_t kMaxNodes = 2'000'000;
+            std::unordered_set<unsigned> seen;
+            std::vector<z3::expr> st{A};
+            for (auto& p : e.props) st.push_back(p.viol);
+            while (!st.empty() && seen.size() <= kMaxNodes) {
+                z3::expr x = st.back();
+                st.pop_back();
+                if (!seen.insert(x.id()).second) continue;
+                if (x.is_app())
+                    for (unsigned i = 0; i < x.num_args(); ++i) st.push_back(x.arg(i));
+                else if (x.is_quantifier())
+                    st.push_back(x.body());
+            }
+            const uint64_t bmb0 = membudget::budget_mb();
+            if (seen.size() > kMaxNodes) guard = "CHC system not built (cut program over 2M AST nodes)";
+            else if (z3_over_soft_cap() || (bmb0 > 0 && membudget::tree_rss_mb() * 2 > bmb0))
+                guard = "CHC system not built (memory: over half of the budget in use)";
+        }
         std::string bad;
         // universal closure over every free constant of a clause
         auto close = [&](const z3::expr& f) -> z3::expr {
@@ -2001,6 +2024,7 @@ HoudiniOut Houdini::run_search() {
         int verdict = -1;  // 1 invariant, 0 counterexample, -1 unknown
         std::string why;
         try {
+            if (!guard.empty()) throw z3::exception(guard.c_str());
             z3::solver hs(c, "HORN");
             z3::params pr(c);
             pr.set("timeout", static_cast<unsigned>(tchc * 1000));
@@ -2217,7 +2241,7 @@ HoudiniOut Houdini::run_search() {
                 }
             }
         } catch (const z3::exception& ex) {
-            why = std::string("z3: ") + ex.msg();
+            why = guard.empty() ? std::string("z3: ") + ex.msg() : guard;
         }
         out.chc_s = tc.elapsed_s();
         char secs[32];
