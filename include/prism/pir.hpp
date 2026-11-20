@@ -440,6 +440,10 @@ struct OpsField {
 // that struct type (a named assumption per row used). TSV: struct ("%struct.NAME"), byte offset, width (bytes),
 // kind, a, b, status, source. Kinds: "valid" (a pointer field points to a fresh object of `a` bytes, arbitrary
 // contents), "nonnull" (a pointer field is not NULL), "range" (an integer field, signed, a <= v <= b).
+// An optional 9th column scopes the row: "fn:GLOB" (the analysed function's name), "unit:GLOB" (the compile unit's
+// path) or "module:GLOB" (the unit's path as well, for a directory such as "*/drivers/net/ethernet/intel/*");
+// empty = every function (global). A row applies only where its scope matches (field_invariant_applies), and the
+// assumption names the scope. '*' and '?' are the glob characters; '*' also matches '/'.
 struct FieldInvariant {
     std::string struct_type;
     uint64_t offset = 0;
@@ -447,7 +451,9 @@ struct FieldInvariant {
     std::string kind;
     int64_t a = 0, b = 0;
     std::string status, source;
+    std::string scope;
 };
+PRISM_API bool field_invariant_applies(const FieldInvariant& fi, const std::string& function, const std::string& unit_path);
 // --pir-callback-models FILE (docs/DRIVER_ENV_MODELS.md): driver environment models. One row is one precondition the
 // kernel core guarantees for one parameter of one kind of driver callback (adapted from the Klever / LDV environment model
 // specifications, Apache-2.0, attribution in the file). TSV, 10 columns:
