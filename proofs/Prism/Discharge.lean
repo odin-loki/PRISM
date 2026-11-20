@@ -88,31 +88,74 @@ theorem site_check_needed :
   · intro h
     rcases h with h | h <;> simp at h
 
+/-- Invocations reachable from an entry function started in any state (what the program does
+when nothing is assumed about how it is entered). -/
+inductive ReachFrom {σ : Type} (P : Prog σ) (entry : Nat → Prop) : Nat → σ → Prop
+  | start (f : Nat) (s : σ) : entry f → ReachFrom P entry f s
+  | call (f : Nat) (s : σ) (g : Nat) (t : σ) :
+      ReachFrom P entry f s → (g, t) ∈ P.calls f s → ReachFrom P entry g t
+
+/-- Grounded (`--pir-discharge-closure`, `prism-qa callsite-discharge`): when every function that
+can be entered from outside the closed world has a precondition that holds in every state (it has
+no harness, `h_entry`), every invocation reachable from any entry state satisfies its precondition
+and its own checks pass. Nothing is assumed: this is the PROVED of a grounded discharge. -/
+theorem grounded_safe {σ : Type} (P : Prog σ) (pre : Nat → σ → Prop) (entry : Nat → Prop)
+    (h_own : ∀ f s, pre f s → P.own f s)
+    (h_site : ∀ f s, pre f s → ∀ c ∈ P.calls f s, pre c.1 c.2)
+    (h_entry : ∀ f s, entry f → pre f s) :
+    ∀ f s, ReachFrom P entry f s → pre f s ∧ P.own f s := by
+  intro f s h
+  have hr : Reach P pre entry f s := by
+    induction h with
+    | start f s he => exact Reach.start f s he (h_entry f s he)
+    | call f s g t _ hc ih => exact Reach.call f s g t ih hc
+  exact assume_guarantee P pre entry h_own h_site f s hr
+
+/-- The grounding hypothesis cannot be dropped: an entry whose precondition is not trivial (a
+harness that is not discharged) can be entered in a state that violates it, and its own check
+fails there. -/
+theorem entry_pre_needed :
+    ∃ (P : Prog Nat) (pre : Nat → Nat → Prop) (entry : Nat → Prop),
+      (∀ f s, pre f s → P.own f s) ∧ (∀ f s, pre f s → ∀ c ∈ P.calls f s, pre c.1 c.2) ∧
+      (∃ f s, ReachFrom P entry f s ∧ ¬ P.own f s) := by
+  refine ⟨⟨fun _ s => s = 1, fun _ _ => []⟩, fun _ s => s = 1, fun f => f = 0, ?_, ?_, 0, 0, ?_, ?_⟩
+  · intro f s h
+    exact h
+  · intro f s _ c hc
+    simp at hc
+  · exact ReachFrom.start 0 0 rfl
+  · intro h
+    simp at h
+
 /-! ## 2. The call-site check is the harness precondition -/
 
-/-- What the harness allocates, as the caller's memory shows it. -/
+/-- What the harness allocates, as the caller's memory shows it. `origin`: the object is a local,
+a heap allocation or one of the caller's own harness objects (not a global, not an object PRISM
+assumed): the harness object of the callee is fresh, distinct from every global, and a real
+argument honours that only then (`ob-origin`). -/
 structure Obj where
   live : Bool
   size : Nat
   align : Nat
   readOnly : Bool
   init : Nat → Bool
+  origin : Bool
 
 /-- Memory: the object table (`none`: the pointer is null or not an object). A pointer is
 (object, byte offset). -/
 abbrev Mem := Nat → Option Obj
 
 /-- The harness precondition of one pointer argument: it points `memberOff` bytes into a live,
-writable object aligned to `align` of at least `bytes` bytes, whose first `bytes` bytes are
-initialised (when `checkInit`; objects over the cap keep that as a stated assumption). -/
+writable object of the right origin (`ob-origin`) aligned to `align` of at least `bytes` bytes,
+whose first `bytes` bytes are initialised (when `checkInit`; objects over the cap keep that as a stated assumption). -/
 def Pre (m : Mem) (p : Nat × Nat) (bytes memberOff align : Nat) (checkInit : Bool) : Prop :=
-  ∃ o, m p.1 = some o ∧ o.live = true ∧ p.2 = memberOff ∧ bytes ≤ o.size ∧ align ≤ o.align ∧
+  ∃ o, m p.1 = some o ∧ o.origin = true ∧ o.live = true ∧ p.2 = memberOff ∧ bytes ≤ o.size ∧ align ≤ o.align ∧
     o.readOnly = false ∧ (checkInit = true → ∀ i, i < bytes → o.init i = true)
 
 /-- The names of the properties the code checks (`MemTr::obligation_object`,
 `MemTr::obligation_distinct`; class HARNESS-OBLIGATION). -/
 def obligationProps : List String :=
-  ["ob-null", "ob-dead", "ob-offset", "ob-size", "ob-align", "ob-const", "ob-init", "ob-distinct"]
+  ["ob-null", "ob-origin", "ob-dead", "ob-offset", "ob-size", "ob-align", "ob-const", "ob-init", "ob-distinct"]
 
 /-- The properties the code reports violated for one pointer argument, in the order it
 checks them. -/
@@ -120,6 +163,7 @@ def violations (m : Mem) (p : Nat × Nat) (bytes memberOff align : Nat) (checkIn
   match m p.1 with
   | none => ["ob-null"]
   | some o =>
+    (if o.origin = false then ["ob-origin"] else []) ++
     (if o.live = false then ["ob-dead"] else []) ++
     (if p.2 ≠ memberOff then ["ob-offset"] else []) ++
     (if o.size < bytes then ["ob-size"] else []) ++
@@ -142,14 +186,14 @@ theorem obligation_iff (m : Mem) (p : Nat × Nat) (bytes memberOff align : Nat) 
   | some o =>
     simp only [List.append_eq_nil_iff, key, Option.some.injEq, exists_eq_left']
     constructor
-    · rintro ⟨⟨⟨⟨⟨h1, h2⟩, h3⟩, h4⟩, h5⟩, h6⟩
-      refine ⟨by simpa using h1, by simpa using h2, by omega, by omega, by simpa using h5, ?_⟩
+    · rintro ⟨⟨⟨⟨⟨⟨h0, h1⟩, h2⟩, h3⟩, h4⟩, h5⟩, h6⟩
+      refine ⟨by simpa using h0, by simpa using h1, by simpa using h2, by omega, by omega, by simpa using h5, ?_⟩
       intro hc i hi
       cases hh : o.init i
       · exact absurd ⟨hc, i, hi, hh⟩ h6
       · rfl
-    · rintro ⟨h1, h2, h3, h4, h5, h6⟩
-      refine ⟨⟨⟨⟨⟨by simpa using h1, by simpa using h2⟩, by omega⟩, by omega⟩, by simpa using h5⟩, ?_⟩
+    · rintro ⟨h0, h1, h2, h3, h4, h5, h6⟩
+      refine ⟨⟨⟨⟨⟨⟨by simpa using h0, by simpa using h1⟩, by simpa using h2⟩, by omega⟩, by omega⟩, by simpa using h5⟩, ?_⟩
       rintro ⟨hc, i, hi, hf⟩
       have := h6 hc i hi
       simp [hf] at this

@@ -776,6 +776,24 @@ each row whose removal keeps the verdict is removed for good (`extra.param_preco
 check (`--pir-vacuity`) then runs on what remains, also for a function whose only assumption is a range row.
 Nothing in the file is checked: a row is an assumption until a call-site check discharges it.
 
+**Call-site discharge to PROVED (docs/HARNESS_GENERATOR.md section 6).** A call site satisfies the harness only
+with an object of the right origin (`ob-origin`: a local, a heap allocation or the caller's own harness object, never
+a global or an assumed object, which the callee's fresh harness object was taken to be distinct from).
+`--pir-discharge-closure` discharges the callers' harnesses too, up the unit's call graph: a callee whose call sites
+all rest on unconditional contexts (callers without an automatic harness, or callers grounded the same way) is
+*grounded*, keeps only what the site checks assumed (listed "at a call site (caller's context): ..."), and is
+`PROVED` when that and its own non-harness assumptions are nothing (`extra.harness_discharge` "discharged and
+grounded", `extra.verdict_before_discharge`). A recursive chain is never grounded; a composition that used an object
+PRISM assumed into existence says so and stays `PROVED-ASSUMING`; mined field invariants (`--pir-field-invariants`)
+are never discharged. Over a whole build, `--pir-discharge-out FILE` writes each unit's call graph (direct calls, and
+indirect calls with their ops-table field when known), harness plans and call-site checks; `--pir-obligations FILE`
+checks other units' plans at a unit's call sites; `prism-qa callsite-discharge --db compile_commands.json
+--complete-db --link linux` decides each candidate over the build. An external Linux function is closed only when it
+is not exported, not address-taken, not named in assembly, the databases are declared to list every object of the
+build (`--complete-db`), and every unit of its link unit (vmlinux or its module: the entry's `link_units`, else
+`-DMODULE` / `KBUILD_MODNAME`) has call-graph facts and is C; exported functions (EXPORT_SYMBOL), and every external
+function with `--link none` (FreeBSD), stay `PROVED-ASSUMING`.
+
 ## Machine-readable output (`--jsonl FILE`)
 
 `prism UNIT --stage pir --jsonl out.jsonl` appends one line per function (and

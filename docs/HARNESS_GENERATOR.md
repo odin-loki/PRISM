@@ -80,6 +80,7 @@ nested ones) becomes, at each call site, the checks of class `HARNESS-OBLIGATION
 | property | what it requires of the pointer the caller passes |
 |---|---|
 | `ob-null` | it points to an object (not null, not a wild value) |
+| `ob-origin` | the object is a local, a heap allocation, or one of the caller's own automatic-harness objects: never a global and never an object PRISM assumed into existence (global harness, `current`, a field-invariant object, an unknown call's result). The harness object is fresh, distinct from every global, and the callee's proof may rest on that (a global it writes directly and reads back); a caller's harness object is accepted because the caller's own discharge checks the same rule one level up |
 | `ob-dead` | the object is live |
 | `ob-offset` | the pointer is at the harnessed offset (0, or the member offset for `container_of`) |
 | `ob-size` | the object has at least the harnessed number of bytes |
@@ -105,7 +106,8 @@ in `extra.harness_discharge`):
 
 1. `g` is `internal`/`private` in the IR (a `static` function): no caller outside the unit.
 2. `g`'s address is not taken: no occurrence of `@g` in the IR other than as the callee of a call, a
-   definition or a declaration (covers function-pointer tables, `module_init` aliases, `llvm.used`).
+   definition or a declaration (covers function-pointer tables, `module_init` aliases, `llvm.used`); and `g`
+   is not named in a module-level or inline `asm` string (assembly can call a symbol without taking its address).
 3. All call sites are known: the direct calls in the unit's IR (including functions from headers).
 4. No recursion: `g` does not reach itself in the call graph (a cycle keeps the assumption). PIR does not
    encode recursion today (`UNENCODED: recursive call`), so such a `g` is never a candidate; the check is
@@ -115,8 +117,9 @@ in `extra.harness_discharge`):
    parameter is a stated precondition, not an invented one: not touched).
 7. The pass has a time budget (`PRISM_DISCHARGE_BUDGET`, 900 s); a call site not reached is not discharged.
 
-**What verdict it permits.** `PROVED-ASSUMING`, never `PROVED` (VERDICTS.md: a rewrite never strengthens a
-formal verdict, and a result resting on an invented assumption is not `PROVED`):
+**What verdict it permits.** `PROVED-ASSUMING`, never `PROVED`, as long as some caller's context is itself an
+invented assumption (with `--pir-discharge-closure` a callee whose callers' contexts are all unconditional is
+`PROVED`: section 6):
 
 * the callers' own assumptions remain: a call site is checked under the state `f` runs in, which for an
   entry function (exported, address-taken, or not discharged itself) is its own harness, still invented.
@@ -267,3 +270,129 @@ What this does not show: that the generator "covers far more functions". On e100
 container_of functions are now analysed but the 389 are dominated by what 2.6 describes. It shows that the
 harness can be made sound where the callers are in the unit, and what is needed to go further.
 
+
+## 6. Whole-build call-site discharge (`--pir-discharge-closure`, `--pir-discharge-out`, `prism-qa callsite-discharge`)
+
+Section 2.2 replaces the invented harness of `g` by checks at its call sites, but leaves `g` resting on the
+assumptions of the contexts those checks ran in. This section closes the argument where it can be closed: when every
+context is itself unconditional, nothing is left and `g` is `PROVED`. Source: `src/prism/pir/discharge.cpp`
+(call graph, grounding, whole-build merge), `stage.cpp discharge_pass`, `src/tools/qa/callsite.cpp`.
+
+### 6.1 Grounding
+
+A call-site check of `g` in a caller `f` is a translation of `f` (its own harness, if it has pointer parameters, and
+every other assumption of `f`'s context: unknown calls, kernel models, ...) in which only the obligations are
+properties. Its result is a `site` with the list of assumptions the translation made. Write `P_x` for the harness of
+`x`. Then `P_g` holds at every invocation of `g` when:
+
+1. `g` is **closed**: every caller is known (below);
+2. every site of `g` is PROVED;
+3. for every site whose translation rested on `f`'s own automatic harness (`caller_harness` non-empty), `P_f` holds
+   at every invocation of `f`, by the same rule (recursively). A caller without an automatic harness has an
+   unconditional context: nothing about how it is entered is assumed.
+
+This is the least fixed point: a cycle (recursion through the callers) is never grounded. `Grounder::ground` computes
+it and collects the **inherited** assumptions: every assumption of every site on the way, except the callers' own
+harness lines (discharged by the rule). The result of `g`:
+
+* `PROVED` (or `PROVED-UNBOUNDED`, from `extra.verdict_before_assumptions`) when `g` is grounded, its own assumptions
+  are only harness lines, no harness part was left unchecked (initialisation over the 1024-byte cap), nothing was
+  inherited, and no proof in the composition used an object PRISM assumed into existence (below). The message says
+  "discharged at every call site ..., each checked in an unconditional context: nothing is assumed";
+  `extra.verdict_before_discharge` keeps the PROVED-ASSUMING it replaced.
+* otherwise `PROVED-ASSUMING`, with the harness lines replaced by "discharged and grounded ..." and the inherited
+  assumptions listed as "at a call site (caller's context): ...".
+
+Lean: `Prism.Discharge.grounded_safe` (if every entry's precondition holds in every state, every reachable
+invocation satisfies its precondition and is safe) and `entry_pre_needed` (an entry with a non-trivial precondition
+can be entered where it fails); `obligation_iff` now includes `ob-origin`.
+
+**Aliasing.** A harness object is fresh: the proof of `g` took it to be distinct from every global and from every
+other object the model allocates. Two rules keep that true after the discharge:
+
+* `ob-origin` (section 2.2 table): the argument is a local, a heap allocation, or one of the caller's own harness
+  objects (accepted because the caller's discharge checks the same rule). A global or an assumed object fails it.
+  `testdata/pir/harness_callsite.c` `leaf_global` is the example: with the global as argument the division is by zero,
+  and the discharge is refused.
+* objects PRISM assumes into existence (pointer results of unknown and indirect calls, asm outputs, the global harness,
+  `current`, field-invariant objects, external objects of library models: `Function::invented_objects`) are also fresh
+  in the model, while the real object may be an argument. A composition that used any such object states it
+  ("objects PRISM assumes into existence ... are distinct from the objects the callers pass") and is never `PROVED`.
+
+**One call, no model of the callee.** When the caller has exactly one call of `g`, no module function it may inline
+calls `g`, it makes no indirect call, the call is on no cycle of its control-flow graph and it does not use `setjmp`,
+the site check ends the path at the call (`TranslateOptions::obligation_stop`). The call is reached at most once per
+execution, so nothing after it is an obligation, and `g` (possibly defined in another unit) is neither inlined nor
+havocked. Otherwise `g` is inlined (defined here) or handled as any declared callee (its unknown-call assumption is
+then inherited). The obligations are emitted at every call of `g`, defined in the unit or only declared.
+
+### 6.2 Closed world
+
+* **In one unit** (`--pir-discharge-closure`): `g` is `internal`, its address is not taken, it is not named in
+  assembly, it is not recursive and it has a call site. External functions are never closed here.
+* **Over a whole build** (`prism-qa callsite-discharge --link linux --complete-db`): additionally an external function
+  `g` of unit `U` is closed when it is not exported and all of its link unit is analysed. The link unit is the
+  database entry's `link_units` (the build's own link map, e.g. from the kbuild `.mod` files:
+  OS-Proving `tools/prism_clusters/link_map.py`), else read from the compile command: `-DMODULE` with
+  `KBUILD_MODNAME` (several names joined by `:` for an object linked into several modules) is that module, anything
+  else is `vmlinux`; a module object whose module is unknown (`module:?`) counts as a member of every module. Linux
+  resolves a module's undefined symbols only against exported ones, so a non-exported external symbol is called only
+  from its own link unit. The databases (`--db`, repeatable: a C database and one of the assembler objects, say) must
+  list every object of the build: `--complete-db` says so, and without it no external function is closed (a database
+  filtered to C, like most `compile_commands.json` files, cannot show the assembler and Rust objects of a module).
+  Refused (the assumption stays, the reason is recorded) when: `g` is weak or linkonce; it is exported or otherwise
+  address-taken in any unit of the link unit (`EXPORT_SYMBOL` takes the address through `__ADDRESSABLE` and names the
+  symbol in asm); it is named in any asm string of the link unit; the link unit has an assembler or other non-C unit
+  (`.S`, `.s`, `.rs`), which can call any symbol; a unit of the link unit has no call-graph facts (not run, or the front
+  end failed: its calls are unknown); a unit is compiled more than once; the name has more than one external definition
+  in the link unit; there is no call site.
+  `--link none` (the default, and the rule for FreeBSD, whose kernel linker resolves a module against every global
+  kernel symbol) closes only static functions.
+* **Indirect calls** are recorded in the call graph (`callgraph.tsv`: `indirect-field` with the struct field and its
+  ops-table targets when the table names them, `indirect-vtable`, `indirect-pointer`), but an address-taken function
+  is never closed: an indirect call through a pointer the analysis cannot bound may reach it.
+* What the closed world does not cover: code outside the configuration (other configurations are separate builds,
+  each decided separately), out-of-tree modules (they can reach only exported symbols, which stay assumptions) and
+  livepatch modules (which may relocate against non-exported symbols; outside the scope of a build's claim).
+
+### 6.3 Running it over a build
+
+Every run needs `--pir-harness --pir-discharge --pir-discharge-out FILE` (the runner's flags otherwise unchanged):
+
+1. **Pass 1**: the units of the build, as for any run. Each unit appends its call graph (`callgraph`), the harness plans
+   of the functions in its discharge work list (`plan`), the call-site checks it could do (`site`, including the
+   in-unit callers of its external functions) and its PROVED-ASSUMING harnessed functions (`candidate`).
+2. **Facts** for units of the link units not run in pass 1: the same command with `PRISM_PIR_ONLY` matching no
+   function (front end and call graph only).
+3. `prism-qa callsite-discharge --in DIR --db compile_commands.json [--db asm.json] --complete-db --link linux --config NAME --out OUT` writes
+   `OUT/decisions.jsonl` (per candidate: `level` `proved` / `grounded` / `discharged` / `none`, the verdict, the
+   assumptions, the reason), `OUT/todo.jsonl` (per unit: the plans of other units' functions to check at its call
+   sites, `callers`, or `facts: true`), `OUT/callgraph.tsv` and `OUT/summary.json`.
+4. **Pass 2** for each `todo` unit: `--pir-obligations PLANS.jsonl` (its `plans`), with `PRISM_PIR_ONLY` matching no
+   function. The unit checks the plans at its call sites, and its callers' own harnesses up its call graph (new
+   plans, new sites). Repeat 3 and 4 until `todo` is empty or stops changing.
+
+`decisions.jsonl` is a new claim (record `callsite-discharge`), composed of pir results that are each a solver verdict
+(the candidate's own proof and every site check), under the theorem above; no recorded row is rewritten. A consumer
+that labels functions takes `level: proved` as `PROVED` for that configuration, and keeps the row's own
+PROVED-ASSUMING otherwise.
+
+**Mined field invariants are never discharged.** `--pir-field-invariants` rows are value assumptions about every
+object of a struct, mined from stores. They are not harness lines: the discharge leaves them in the list, so a result
+that used one stays `PROVED-ASSUMING`, and a site check that ran under one passes it on as an inherited assumption.
+Whether a mined invariant holds needs a whole-build store analysis that sees every write of the field (memcpy,
+`char *` and `void *` stores, casts, unions, uninitialised `kmalloc` memory, other modules and configurations); PRISM
+does not have one, and the call-site check of a field value would still rest on the caller's own harness, which the
+same rows constrain.
+
+### 6.4 Measured (20 Nov, indicative: pre-merge binary)
+
+The 1,225-row PTRPARAM sample of the r1 clusters (OS-Proving `data/coverage/prism_callsite_r1/`, driver
+`tools/prism_clusters/callsite_measure.py`), r2 flags of #65/#69/#70 plus `--pir-discharge-out`, Linux link map from the
+build's `make -n` log, two merge rounds: 232 rows are PROVED-ASSUMING under the automatic harness; **0 become PROVED**;
+23 have their harness discharged at every call site but are not grounded; 209 are not discharged. What blocks them, in
+order: 208 of the 232 rest on other assumptions no call site discharges (unknown calls 121, asm-havoc 77, kernel logging,
+MMIO, locking models, kernel-stop); 124 are address-taken (ops tables, IRQ handlers, EXPORT_SYMBOL) and 8 more sit below
+an address-taken caller; 51 call-site checks are undecided (UNKNOWN, TIMEOUT, BOUNDED) and 10 not encodable; 11 call sites
+really break the harness (ob-offset, ob-size, ob-null, ob-init). The 23 discharged rest on address-taken or undecided
+callers. The next step is therefore entry contracts for address-taken roots (2.4), not more discharge.

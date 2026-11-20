@@ -126,5 +126,7 @@ int docs_check_main(const Args& args);
 // ---- measurement helpers (ports of tools/pir/asm_census.py, scripts/pir_harness_classify.py)
 int asm_census_main(const Args& args);
 int harness_classify_main(const Args& args);
+// whole-build call-site discharge of the automatic harness (callsite.cpp)
+int callsite_discharge_main(const Args& args);
 
 }  // namespace prism::qa

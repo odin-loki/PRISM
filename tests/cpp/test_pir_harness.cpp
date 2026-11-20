@@ -549,7 +549,7 @@ TEST_CASE("pir discharge: the obligation names in the Lean model are the propert
         lean_names.push_back(lean.substr(p + 1, q - p - 1));
         p = q;
     }
-    CHECK(lean_names.size() == 8);
+    CHECK(lean_names.size() == 9);
     for (auto& n : lean_names) CHECK_MESSAGE(code.find("\"" + n + "\"") != std::string::npos, n);
     // and every ob-* property the code emits is in the model
     std::size_t n_code = 0;
@@ -559,5 +559,5 @@ TEST_CASE("pir discharge: the obligation names in the Lean model are the propert
         CHECK_MESSAGE(std::find(lean_names.begin(), lean_names.end(), name) != lean_names.end(), name);
         ++n_code;
     }
-    CHECK(n_code >= 8);
+    CHECK(n_code >= 9);
 }

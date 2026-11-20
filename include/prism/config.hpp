@@ -60,6 +60,17 @@ struct Config {
     // best verdict is PROVED-ASSUMING. Opt-in (Law 6).
     bool pir_harness = false;
     bool pir_discharge = false;     // --pir-discharge: assume-guarantee, harness obligations checked at every call site (docs/HARNESS_GENERATOR.md)
+    // Call-site discharge over the call graph (docs/HARNESS_GENERATOR.md "Whole-build call-site discharge"), with --pir-discharge:
+    //  --pir-discharge-closure: also discharge the harnesses of the callers whose context a call site rests on, up the
+    //    unit's call graph; a callee whose call sites all rest on unconditional contexts is PROVED (grounded)
+    //  --pir-discharge-out FILE: append the unit's call graph, harness plans, call-site checks and candidates (JSONL,
+    //    prism-pir-discharge/1) for prism-qa callsite-discharge; implies the closure, and checks the call sites of
+    //    external functions too (their verdict is decided over the whole build, not here)
+    //  --pir-obligations FILE: harness plans of functions defined in other units (records "plan" of
+    //    --pir-discharge-out): checked at this unit's call sites of them (needs --pir-discharge-out)
+    bool pir_discharge_closure = false;
+    std::filesystem::path pir_discharge_out;
+    std::filesystem::path pir_obligations;
     bool pir_container_of = false;  // --pir-container-of: a parameter used at a negative constant offset gets its containing object
     bool pir_vacuity = false;       // --pir-vacuity: a harnessed function's exit must be reachable under its assumptions
     bool pir_input_hash = false;    // --pir-input-hash: write each function's input key, check nothing (docs/PIR.md "Input key")

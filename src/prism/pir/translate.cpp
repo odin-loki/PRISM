@@ -140,6 +140,9 @@ struct Tr final : pirmem::TrApi {
     std::vector<Stmt> prologue;  // runs before block 0 (globals, pointer-parameter objects)
     std::vector<std::string> model_stack;  // library models being inlined (outermost first)
     std::string top_file;                  // source file of the analysed function
+    // the objects of the root's automatic pointer harness (roots and nested objects, not field-invariant objects):
+    // the only Extern objects a call-site obligation accepts (MemTr::obligation_object, ob-origin)
+    std::vector<Arg> harness_objs;
 
     // ---- control-flow lowering (translate_ctl.inc; docs/PIR.md "Exceptions",
     // "setjmp/longjmp", "Indirect calls", "Inline assembly") ----
@@ -1671,6 +1674,17 @@ struct Tr final : pirmem::TrApi {
             return;
         }
         const bool defined = m.find(n) != nullptr;
+        // --pir-discharge: the callee's harness as properties of this call site, whether the callee is defined in this
+        // unit or only declared (a callee of another unit, --pir-obligations). With obligation_stop the path ends here: the
+        // caller reaches this call at most once on any execution (stage.cpp only_obligation_site), so nothing after it
+        // is an obligation and the callee's effect need not be modelled.
+        if (auto ob = opt.obligations.find(n); ob != opt.obligations.end()) {
+            call_obligations(fr, in, ob->second, cur, line);
+            if (opt.obligation_stop.count(n)) {
+                noreturn = true;
+                return;
+            }
+        }
         // SV-COMP error sinks: a reachable call is the violation whatever the
         // unit's definition does (a static no-op reach_error included).
         if ((n == "__VERIFIER_error" || n == "reach_error") && in.ops.empty()) {
@@ -1816,7 +1830,6 @@ struct Tr final : pirmem::TrApi {
             }
             throw Unenc{"UNENCODED: call @" + n};
         }
-        if (auto ob = opt.obligations.find(n); ob != opt.obligations.end()) call_obligations(fr, in, ob->second, cur, line);
         inline_call(fr, in, cur, line);
     }
 
@@ -1827,7 +1840,7 @@ struct Tr final : pirmem::TrApi {
     void oblige_node(Arg p, const ObligationNode& nd, const std::string& callee, std::vector<Arg>& objs, int cur,
                      int line) {
         const std::string what = "call of @" + callee + ": argument " + nd.name;
-        mt.obligation_object(cur, p, nd.bytes, nd.member_off, nd.align, nd.check_init, what, line);
+        mt.obligation_object(cur, p, nd.bytes, nd.member_off, nd.align, nd.check_init, harness_objs, what, line);
         objs.push_back(p);
         for (const auto& [off, child] : nd.nested) {
             int slot = newvar(tmpname("obslot"), ptr_w());
@@ -1842,6 +1855,11 @@ struct Tr final : pirmem::TrApi {
         std::vector<Arg> objs;
         for (std::size_t i = 0; i < in.ops.size() && i < ob.size(); ++i)
             if (ob[i]) oblige_node(operand(fr, in.ops[i], cur, line), *ob[i], in.callee, objs, cur, line);
+        // a call that passes fewer arguments than the harnessed parameters (an unprototyped call) establishes nothing
+        for (std::size_t i = in.ops.size(); i < ob.size(); ++i)
+            if (ob[i])
+                check(cur, Arg::c(1, 1), "ob-null", "HARNESS-OBLIGATION",
+                      "call of @" + in.callee + ": argument " + ob[i]->name + " is not passed (fewer arguments than parameters)", line);
         for (std::size_t i = 0; i < objs.size(); ++i)
             for (std::size_t j = i + 1; j < objs.size(); ++j)
                 mt.obligation_distinct(cur, objs[i], objs[j], "call of @" + in.callee, line);
@@ -2869,6 +2887,7 @@ std::vector<const ParamPrecondition*> param_rows(const TranslateOptions& o, cons
 // stores the nested pointers: returns the pointer to `n`'s object.
 Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
     auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), n.heap ? MemKind::Heap : MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0, -1, n.align);
+    tr.harness_objs.push_back(obj);
     const auto ptr_ty = ir::parse_type("ptr");
     std::set<uint64_t> bound;  // byte offsets (from the object start) that got an object of their own
     for (const auto& [off, child] : n.nested) {

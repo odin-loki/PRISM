@@ -247,6 +247,7 @@ set(PRISM_SRC
   src/prism/pir/harness.cpp
   src/prism/pir/field_mine.cpp
   src/prism/pir/callback_models.cpp
+  src/prism/pir/discharge.cpp
   src/prism/pir/jsonl.cpp
   src/prism/pir/ir_parser.cpp
   src/prism/pir/libc_format.cpp
@@ -638,6 +639,7 @@ set(_prism_qa_sources
   src/tools/qa/solver_bench.cpp
   src/tools/qa/census.cpp
   src/tools/qa/idioms_mine.cpp
+  src/tools/qa/callsite.cpp
   src/tools/qa/support/yaml_subset.cpp
   src/tools/qa/support/task.cpp
   src/tools/qa/support/replay.cpp
@@ -862,6 +864,7 @@ if(PRISM_TESTS)
     tests/cpp/test_lint_status.cpp
     tests/cpp/test_pir_mem.cpp
     tests/cpp/test_pir_harness.cpp
+    tests/cpp/test_pir_callsite.cpp
     tests/cpp/test_pir_harness2.cpp
     tests/cpp/test_pir_input_key.cpp
     tests/cpp/test_pir_header_fns.cpp

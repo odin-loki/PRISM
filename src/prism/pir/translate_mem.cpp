@@ -1193,6 +1193,11 @@ Arg MemTr::alloc(int b, Arg size, MemKind k, int init, const std::string& what, 
     s.align = align;
     s.msg = what;
     t_.push(b, s);
+    // an object assumed into existence (Function::invented_objects): Extern, not a harness or contract object of the
+    // root's parameters, not a byte-copy temporary (lifetime start, havocked input bytes) whose pointer never escapes
+    if (k == MemKind::Extern && !what.ends_with("(auto harness)") && !what.ends_with("(contract)") &&
+        what != "indeterminate bytes (lifetime start)" && what != "input bytes")
+        t_.fn().invented_objects = true;
     return Arg::v(s.dst, ptr_w());
 }
 
@@ -1279,7 +1284,7 @@ void MemTr::stack_escape_check(int b, Arg ret, const std::vector<Arg>& own, int 
 }
 
 void MemTr::obligation_object(int b, Arg p, uint64_t bytes, uint64_t member_off, unsigned align, bool check_init,
-                              const std::string& what, int line) {
+                              const std::vector<Arg>& own, const std::string& what, int line) {
     mark_memory();
     const char* C = "HARNESS-OBLIGATION";
     Arg kind = t_.assign(b, Op::ObjKind, 8, {p}, "kind");
@@ -1288,6 +1293,24 @@ void MemTr::obligation_object(int b, Arg p, uint64_t bytes, uint64_t member_off,
     Arg oal = t_.assign(b, Op::ObjAlign, ptr_w(), {p}, "oal");
     Arg f = off(b, p);
     t_.check(b, p2(b, Op::Eq, kind, Arg::c(8, 0)), "ob-null", C, what + " is null or does not point to an object", line);
+    // ob-origin: the harness object of the callee is fresh, distinct from every global and from every object PRISM
+    // assumes into existence (global harness, `current`, field-invariant objects, unknown-call results). A real argument
+    // honours that only if it is a local, a heap allocation, or (by the caller's own discharge, which checks the same
+    // rule one level up) one of the caller's harness objects. Anything else (Static, Const, Extern not in `own`, File)
+    // is a violation: conservative about aliasing.
+    {
+        auto K = [&](MemKind m) { return Arg::c(8, static_cast<uint64_t>(m)); };
+        Arg ok = bor(b, p2(b, Op::Eq, kind, K(MemKind::Stack)),
+                     bor(b, p2(b, Op::Eq, kind, K(MemKind::Heap)),
+                         bor(b, p2(b, Op::Eq, kind, K(MemKind::New)), p2(b, Op::Eq, kind, K(MemKind::NewArr)))));
+        Arg po = obj(b, p);
+        for (const auto& o : own) ok = bor(b, ok, p2(b, Op::Eq, po, obj(b, o)));
+        t_.check(b, band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)), p2(b, Op::Eq, ok, Arg::c(1, 0))), "ob-origin", C,
+                 what + " points to an object that is not a local, a heap allocation or one of the caller's own harness "
+                        "objects (a global, or an object PRISM assumed); the callee's proof took its objects to be "
+                        "distinct from every such object",
+                 line);
+    }
     t_.check(b, band(b, p2(b, Op::Ne, kind, Arg::c(8, 0)), p2(b, Op::Eq, live, Arg::c(1, 0))), "ob-dead", C,
              what + " points to a freed object or one whose lifetime ended", line);
     t_.check(b, p2(b, Op::Ne, f, c64(member_off)), "ob-offset", C,

@@ -26,6 +26,7 @@
 #include <set>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -396,6 +397,11 @@ struct Function {
     bool returns_ptr = false;
     std::vector<std::string> ptr_params;   // pointer parameters bound to contract objects
     std::vector<std::string> assumptions;  // PROVED becomes PROVED-ASSUMING when non-empty
+    // an object PRISM assumes into existence (Extern, not one of the root's automatic-harness objects: an unknown or
+    // indirect call's pointer result, an asm output, the global harness, `current`, a field-invariant object, a model's
+    // external object): the model makes it distinct from every other object. The call-site discharge states that as an
+    // assumption (docs/HARNESS_GENERATOR.md "Whole-build call-site discharge"); nothing else reads it.
+    bool invented_objects = false;
     std::vector<std::string> throws;       // library throw calls whose paths end (not modelled)
     std::vector<std::string> libm;         // libm functions whose results are unconstrained
     // Source start (line, column) of the function's own loops (clang's
@@ -609,6 +615,9 @@ struct TranslateOptions {
     // --pir-discharge: a translation that keeps only the obligations of these
     // callees at their direct call sites (every other check is dropped).
     CallObligations obligations;
+    // obligation callees whose call ends the path after its checks (the caller reaches the call at most once on any
+    // execution, so nothing after it is an obligation; the callee is then neither inlined nor havocked)
+    std::set<std::string> obligation_stop;
     bool container_of = false;     // --pir-container-of
     // C++ before C++20 (CWG 1457): a located signed `<<` is UB when the base
     // is negative or the result does not fit the unsigned type; C: past the sign bit.
