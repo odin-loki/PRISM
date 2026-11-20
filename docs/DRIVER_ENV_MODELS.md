@@ -38,7 +38,7 @@ computes them from the build's own compile command.
 |---|---|---|
 | `range` | lo, hi | the integer parameter is in [lo, hi] (signed, at its width) |
 | `id-entry` | byte offset of the id table field in the container | the pointer parameter points to entry 0 .. n-2 of the array that the container instance's field points to (the last entry is the terminator). Applied only when the unit has the container instance as a constant and every instance naming the function names the same constant table in the unit |
-| `trailing-alloc` | `fn:arg,...`, struct type | the parameter's object is a `b` allocated by this driver with its private area: its size is exactly `sizeof(b)` plus the constant argument `arg` of the unit's calls of `fn` (all of them must agree). Applied only when the automatic harness types the parameter as `b`; the harness's own size is replaced, so an access past the private area is still out of bounds |
+| `trailing-alloc` | `fn:arg,...`, struct type | the parameter's object is a `b` allocated by this driver with its private area: its size is exactly `sizeof(b)` plus the constant argument `arg` of the unit's calls of `fn` (all of them must agree). Applied only when the automatic harness types the parameter as one object of `b` (not an indexed array of it); the harness's own size (which it may have grown to cover the accesses it saw, `2 x %struct.net_device`) is replaced by the allocation's, so an access past the private area is still out of bounds |
 | `buffer` | size | the pointer parameter points to the start of a fresh buffer of `size` bytes, arbitrary initialised contents |
 
 ## Soundness

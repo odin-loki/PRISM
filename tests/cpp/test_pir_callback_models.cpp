@@ -87,6 +87,23 @@ entry:
   ret i32 %r
 }
 declare i32 @register_cb(ptr, ptr)
+declare ptr @alloc_ndev_small(i32)
+declare i32 @register_small(ptr)
+define ptr @setup_small() {
+entry:
+  %d = call ptr @alloc_ndev_small(i32 16)
+  %r = call i32 @register_small(ptr @cb_open_small)
+  ret ptr %d
+}
+define i32 @cb_open_small(ptr %d) {
+entry:
+  %m = getelementptr inbounds %struct.ndev, ptr %d, i32 0, i32 0
+  %x = load i32, ptr %m
+  %p = call ptr @priv(ptr %d)
+  %e = getelementptr inbounds i8, ptr %p, i64 28
+  %y = load i32, ptr %e
+  ret i32 %y
+}
 define i32 @cb_open(ptr %d) {
 entry:
   %m = getelementptr inbounds %struct.ndev, ptr %d, i32 0, i32 0
@@ -118,13 +135,14 @@ struct Run {
     std::vector<std::string> assumptions;
 };
 
-Run tr_run(const std::string& fn, std::vector<pp::CallbackModel> rows) {
+Run tr_run(const std::string& fn, std::vector<pp::CallbackModel> rows, bool container_of = false) {
     static std::vector<pp::ir::Module> keep;
     keep.push_back(pp::ir::parse_module(kIr));
     const auto* f = keep.back().find(fn);
     REQUIRE(f != nullptr);
     pp::TranslateOptions o;
     o.auto_harness.on = true;
+    o.container_of = container_of;
     o.callback_models = std::make_shared<const std::vector<pp::CallbackModel>>(std::move(rows));
     auto t = pp::translate(keep.back(), *f, o);
     if (!t.fn) return {std::string(L::NEEDS_HARNESS), t.reason, {}};
@@ -222,6 +240,16 @@ TEST_CASE("pir callback models: trailing-alloc gives the object the private area
     // another struct type: the model does not apply
     auto other = tr_run("cb_open", {row("call:register_cb", 0, 0, "trailing-alloc", "alloc_ndev:0", "%struct.other")});
     CHECK(other.status == L::FAILED);
+    // with --pir-container-of the harness follows priv() and grows the object to cover byte 95 on its own (2 x 64 bytes,
+    // one object): proved without the model; the model replaces that invented size with the allocation's
+    CHECK(tr_run("cb_open", {}, true).status == L::PROVED);
+    auto grown = tr_run("cb_open", {row("call:register_cb", 0, 0, "trailing-alloc", "alloc_ndev:0", "%struct.ndev")}, true);
+    CHECK_MESSAGE(grown.status == L::PROVED, (grown.status + " " + grown.msg));
+    CHECK(has(grown.assumptions, "d points to the start of a valid object of 96 bytes"));
+    // a private area smaller than the access (the unit allocates 16 bytes): out of bounds under the model
+    auto small = tr_run("cb_open_small", {row("call:register_small", 0, 0, "trailing-alloc", "alloc_ndev_small:0", "%struct.ndev")}, true);
+    CHECK_MESSAGE(small.status == L::FAILED, (small.status + " " + small.msg));
+    CHECK(has(small.assumptions, "object size 80 bytes"));
     // an allocator the unit does not call: no size, not applied
     CHECK(tr_run("cb_open", {row("call:register_cb", 0, 0, "trailing-alloc", "alloc_other:0", "%struct.ndev")}).status ==
           L::FAILED);

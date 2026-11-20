@@ -2797,10 +2797,12 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
     auto plan = pirmem::plan_pointer_harness(tr.m, tr.mt.layout(), f, p, ho, why);
     if (!plan) return false;
     // --pir-callback-models trailing-alloc: the object is the driver's own allocation with its private area appended
-    // (net_device + priv): only when the harness object is one element of exactly that struct type, at its start
+    // (net_device + priv): only when the harness object is one object of exactly that struct type, at its start. The
+    // harness may have grown it to cover the accesses it saw past the struct (netdev_priv: "2 x %struct.net_device, one
+    // object"); an indexed pointer (an array of the type) is not one object and is left alone
     std::string trailing_text;
-    if (trailing && plan->root->type_known && plan->root->type.text == trailing->struct_type && plan->root->elems == 1 &&
-        plan->root->member_off == 0) {
+    if (trailing && plan->root->type_known && plan->root->type.text == trailing->struct_type &&
+        plan->root->basis.find(", indexed") == std::string::npos && plan->root->member_off == 0) {
         // exactly the allocation (struct + private area): the harness's own size (from the accesses it sees) is replaced,
         // so an access past the driver's private area is still out of bounds
         const uint64_t want = tr.mt.layout().alloc_size(plan->root->type) + trailing->extra_bytes;
@@ -2808,7 +2810,14 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
         for (const auto& [off, child] : plan->root->nested) need = std::max<uint64_t>(need, off + 8);
         for (const auto& fp : plan->root->fp_fields) need = std::max<uint64_t>(need, fp.offset + 8);
         if (want <= max_obj_size() && need <= want) {
+            plan->root->elems = 1;
             plan->root->bytes = want;
+            // the harness's own line for this object names the size it planned: say which size holds instead
+            const std::string head = p.name + " points to the start of a valid object of ";
+            if (!plan->assumptions.empty() && plan->assumptions.front().starts_with(head))
+                plan->assumptions.front() = head + std::to_string(want) + " bytes (1 x " + plan->root->type.text +
+                                            " and its private area: driver environment model below), 16-byte aligned, "
+                                            "fields initialised with arbitrary values (auto harness)";
             trailing_text = trailing->text + "; object size " + std::to_string(want) + " bytes (replaces the automatic harness size)";
         }
     }
