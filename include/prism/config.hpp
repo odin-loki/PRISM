@@ -104,6 +104,11 @@ struct Config {
     bool pir_ops_auto = false;
     bool pir_addr_values = false;
     bool pir_harness_deep = false;
+    bool pir_build_semantics = false;   // --pir-build-semantics: take the unit's -fwrapv / -fno-strict-overflow (signed + - * << wrap)
+    bool pir_kernel_stops = false;      // --pir-kernel-stops: BUG() / panic() end the path (named), not a FUNC-CONTRACT finding
+    bool pir_kernel_current = false;    // --pir-kernel-current: current / curthread point to a valid object (named)
+    bool pir_global_harness = false;    // --pir-global-harness: mutable pointer globals point to a valid object at entry (named)
+    bool pir_lock_wrappers = false;     // --pir-lock-wrappers: acquire-only / release-only roots are lock wrappers (named)
     bool pir_builtin_contracts = false;  // --pir-builtin-contracts: contracts for llvm.read_register / prefetch / objectsize (needs --kernel-api)
     bool pir_icall_havoc = false;       // --pir-icall-havoc: unresolved indirect calls are a havoc of all memory (named)
     // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of

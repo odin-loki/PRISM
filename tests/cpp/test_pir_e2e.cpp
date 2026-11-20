@@ -624,6 +624,50 @@ TEST_CASE("pir e2e: --compile-commands gives a unit its own flags; warnings and 
     fs::remove_all(tmp, ec);
 }
 
+TEST_CASE("pir e2e: --pir-build-semantics takes the build's -fwrapv / -fno-strict-overflow; shift amounts and division stay UB") {
+    auto base = prism::default_config();
+    if (skip_without_frontend(base)) return;
+    namespace L = prism::laws;
+    auto dir = fs::path(PRISM_SOURCE_DIR) / "testdata" / "pir";
+    const auto unit = dir / "build_semantics.c";
+    for (const char* flag : {"-fno-strict-overflow", "-fwrapv"}) {
+        const auto tmp = cc_scratch("sem");
+        write_text(tmp / "compile_commands.json",
+                   "[{\"directory\":\"" + tmp.generic_string() + "\",\"file\":\"" + unit.generic_string() +
+                       "\",\"arguments\":[\"clang\",\"-std=gnu11\",\"" + flag + "\",\"-c\",\"build_semantics.c\",\"-o\",\"x.o\"]}]");
+        auto cfg = base;
+        cfg.root = dir;
+        cfg.compile_commands = tmp / "compile_commands.json";
+        // without the flag: ISO C, the build's option is not taken
+        auto iso = index(pp::run_pir({unit}, cfg));
+        for (const char* f : {"wrap_add", "wrap_mul", "wrap_sub", "wrap_shl_sign"}) {
+            REQUIRE_MESSAGE(iso.contains({"build_semantics.c", f}), f);
+            CHECK_MESSAGE(iso.at({"build_semantics.c", f})->status == L::FAILED, f);
+        }
+        for (const char* f : {"folded_ovf", "folded_shl"}) {
+            REQUIRE_MESSAGE(iso.contains({"build_semantics.c", f}), f);
+            CHECK_MESSAGE(iso.at({"build_semantics.c", f})->status != L::PROVED, f);
+        }
+        cfg.pir_build_semantics = true;
+        auto sem = index(pp::run_pir({unit}, cfg));
+        for (const char* f : {"wrap_add", "wrap_mul", "wrap_sub", "wrap_shl_sign", "folded_ovf", "folded_shl"}) {
+            REQUIRE_MESSAGE(sem.contains({"build_semantics.c", f}), f);
+            const auto* r = sem.at({"build_semantics.c", f});
+            CHECK_MESSAGE(r->status == L::PROVED, (std::string(flag) + " " + f + ": " + r->status + " " + r->message));
+            const auto fe = r->extra.find("front_end_flags");
+            if (std::string(f) == "wrap_add") CHECK(fe != r->extra.end());  // the unit's note (one function suffices)
+            if (fe != r->extra.end()) CHECK(fe->second.find("taken (--pir-build-semantics): -fwrapv") != std::string::npos);
+        }
+        // shift amount, division by zero and INT_MIN / -1 are undefined in the -fwrapv build too: never proved
+        for (const char* f : {"shift_amount_bad", "div_bad", "min_div_bad"}) {
+            REQUIRE_MESSAGE(sem.contains({"build_semantics.c", f}), f);
+            CHECK_MESSAGE(sem.at({"build_semantics.c", f})->status == L::FAILED, (std::string(flag) + " " + f));
+        }
+        std::error_code ec;
+        fs::remove_all(tmp, ec);
+    }
+}
+
 TEST_CASE("pir e2e: --compile-commands on a preprocessed copy takes only language flags and finds the functions of the .c") {
     auto cfg = prism::default_config();
     if (skip_without_frontend(cfg)) return;

@@ -214,6 +214,21 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-builtin-contracts") {
             ok = in.flag();
             cfg.pir_builtin_contracts = true;
+        } else if (a == "--pir-build-semantics") {
+            ok = in.flag();
+            cfg.pir_build_semantics = true;
+        } else if (a == "--pir-kernel-stops") {
+            ok = in.flag();
+            cfg.pir_kernel_stops = true;
+        } else if (a == "--pir-kernel-current") {
+            ok = in.flag();
+            cfg.pir_kernel_current = true;
+        } else if (a == "--pir-global-harness") {
+            ok = in.flag();
+            cfg.pir_global_harness = true;
+        } else if (a == "--pir-lock-wrappers") {
+            ok = in.flag();
+            cfg.pir_lock_wrappers = true;
         } else if (a == "--pir-icall-havoc") {
             ok = in.flag();
             cfg.pir_icall_havoc = true;
@@ -458,6 +473,13 @@ std::string cli_usage() {
         "  stores; a harness function-pointer field is bound to one of its targets (named assumption).\n"
         "  --pir-addr-values: ptrtoint / inttoptr constant expressions. --pir-harness-deep: depth 4, 64 objects.\n"
         "  --pir-builtin-contracts: with --kernel-api, contracts for llvm.read_register / prefetch / objectsize.\n"
+        "  --pir-build-semantics: with --compile-commands, a unit built with -fwrapv or -fno-strict-overflow\n"
+        "  is checked with that semantics: signed + - * and << wrap (not UB); every other check stays (named).\n"
+        "  --pir-kernel-stops: with --kernel-api, Linux BUG() and panic() / kassert_panic() end the path\n"
+        "  (a named assumption: the verdict covers the paths that do not stop there).\n"
+        "  --pir-kernel-current: with --kernel-api, current (Linux) and curthread (FreeBSD) point to a valid object.\n"
+        "  --pir-global-harness: with --kernel-api, mutable pointer globals (MMIO bases, bus handles) point to a valid object.\n"
+        "  --pir-lock-wrappers: with --kernel-api, an acquire-only or release-only function is a lock wrapper (named).\n"
         "  --pir-icall-havoc: with --kernel-api, an indirect call with more than 16 targets or to a target outside\n"
         "  the address-taken functions is a havoc of all memory with an arbitrary result (named).\n"
         "  --pir-field-invariants FILE: struct field invariants (TSV: struct, offset, width, kind valid|nonnull|range,\n"

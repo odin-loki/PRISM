@@ -39,6 +39,18 @@ static void *fb_alloc(size_t n, int flags) {
     return __prism_alloc(n, PRISM_HEAP, PRISM_UNINIT);
 }
 
+/* OpenZFS SPL (sys/contrib/openzfs/include/os/freebsd/spl/sys/kmem.h): kmem_alloc(size, kmflags) and kmem_zalloc are
+ * zfs_kmem_alloc(size, kmflags [| M_ZERO]), KM_SLEEP is M_WAITOK and KM_NOSLEEP is M_NOWAIT: malloc(9) semantics. */
+void *zfs_kmem_alloc(size_t size, int kmflags) {
+    ASSUME("freebsd-kmem: zfs_kmem_alloc (kmem_alloc / kmem_zalloc) is malloc(9) with KM_SLEEP = M_WAITOK, KM_NOSLEEP = M_NOWAIT (spl/sys/kmem.h)");
+    return fb_alloc(size, kmflags);
+}
+/* void zfs_kmem_free(void *buf, size_t size) (kmem_free): free(9) of a zfs_kmem_alloc object */
+void zfs_kmem_free(void *buf, size_t size) {
+    (void)size;
+    ASSUME("freebsd-free: free of NULL is a no-op, otherwise the pointer must be a live malloc/uma allocation (one allocation kind)");
+    if (buf) __prism_free(buf, PRISM_HEAP);
+}
 /* void *malloc(size_t size, struct malloc_type *type, int flags) */
 void *malloc(size_t size, void *type, int flags) { (void)type; return fb_alloc(size, flags); }
 /* void *mallocarray(size_t nmemb, size_t size, struct malloc_type *type, int flags) */

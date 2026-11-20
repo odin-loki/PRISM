@@ -526,6 +526,7 @@ void MemTr::emit_entry_globals() {
             w.args = {st.off ? ptr_add(-1, p, c64(st.off)) : p, Arg::c(st.w, st.bits), Arg::c(1, 1)};
             t_.push(-1, w);
         }
+        if (e.init == 2) global_harness(p, *e.g, name);
     }
     pending_.clear();
 }
@@ -627,6 +628,7 @@ Arg MemTr::global(const std::string& name) {
     t_.push(-1, s);
     Arg p = Arg::v(s.dst, ptr_w());
     globals_[name] = p;
+    if (init == 2 && !stream) global_harness(p, *g, name);
     if (stream) {
         // stdin/stdout/stderr point to valid FILE objects
         auto f = alloc(-1, c64(216), MemKind::File, 2, name, 0);
@@ -638,6 +640,26 @@ Arg MemTr::global(const std::string& name) {
         emit_init(p, 0, g->ty, g->init[0].v, name);
     }
     return p;
+}
+
+// --pir-global-harness (kernel mode): a pointer global the unit's init / probe code sets (an MMIO base, a bus handle, a
+// driver's singleton) is a valid object at entry instead of arbitrary bytes (NULL included). Only a scalar `ptr`
+// global, not const, with arbitrary entry contents (never in the initial-values recheck); the pointee is
+// kGlobalHarnessBytes arbitrary initialised bytes. One named assumption per global.
+void MemTr::global_harness(Arg p, const ir::Global& g, const std::string& name) {
+    const auto& o = t_.options();
+    if (!o.global_harness || o.kernel_api.empty() || o.globals_initial || g.is_const || g.ty.kind != ir::Type::Ptr) return;
+    constexpr uint64_t kGlobalHarnessBytes = uint64_t{1} << 20;
+    auto obj = alloc(-1, c64(kGlobalHarnessBytes), MemKind::Extern, 2, "@" + name + " (global harness)", 0);
+    Stmt st;
+    st.kind = Stmt::Store;
+    st.args = {p, obj, Arg::c(1, 1)};
+    t_.push(-1, st);
+    const std::string a = "global harness: @" + name + " (a mutable pointer global) points at entry to a valid object of " +
+                          std::to_string(kGlobalHarnessBytes) +
+                          " arbitrary bytes (the unit's init / probe code set it; not checked here)";
+    auto& as = t_.fn().assumptions;
+    if (std::ranges::find(as, a) == as.end()) as.push_back(a);
 }
 
 uint64_t MemTr::init_stores(const ir::Type& ty, const ir::Value& v, uint64_t cap) const {

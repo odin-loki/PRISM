@@ -85,6 +85,27 @@ void Tr::asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std:
     }
     // a memory clobber: the asm may write any memory, so every object's contents are havocked
     if (mem_clobber) mt.havoc_all(cur);
+    // --pir-kernel-current: a %gs read of the running thread (Linux current_task / pcpu_hot, FreeBSD pc_curthread at 0)
+    bool current_read = false;
+    if (opt.kernel_current && in.asm_text.find("%gs:") != std::string::npos && n_direct == 1 && written.empty() && !in.result.empty()) {
+        for (auto& o : in.ops) {
+            if (o.v.kind == ir::Value::Global &&
+                (o.v.name == "current_task" || o.v.name == "const_current_task" || o.v.name == "pcpu_hot"))
+                current_read = opt.kernel_api == "linux" && in.ty.kind == ir::Type::Int && in.ty.bits == ptr_w();
+            if ((o.v.kind == ir::Value::Int || o.v.kind == ir::Value::Zero) && o.v.bits == 0)
+                current_read = current_read || (opt.kernel_api == "freebsd" && in.ty.kind == ir::Type::Ptr);
+        }
+    }
+    if (current_read) {
+        int dst = result_var(fr, in);
+        Arg p = mt.alloc(cur, Arg::c(ptr_w(), kUnknownPtrBytes), MemKind::Extern, 2, "the running thread (current / curthread)", line);
+        if (dst >= 0) emit_assign(cur, dst, Op::Copy, {p});
+        if (in.ty.kind == ir::Type::Int) fr.ptr_ints.insert(in.result);
+        note_assumption("kernel-current: the %gs read of the running thread (Linux current, FreeBSD curthread) at line " +
+                        std::to_string(line) + " is a valid object of " + std::to_string(kUnknownPtrBytes) +
+                        " arbitrary bytes (the running thread exists; never NULL)");
+        return;
+    }
     for (std::size_t i = 0; i < args.size() && i < in.ops.size(); ++i)
         if (in.ops[i].ty.kind == ir::Type::Ptr && written.count(i)) mt.havoc_object_tail(cur, args[i], line);
     // direct outputs: the call's result

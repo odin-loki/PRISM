@@ -204,6 +204,257 @@ TEST_CASE("pir model depth: a small call tree is inlined past inline_depth exact
 }
 #endif
 
+namespace {
+
+KRun stops_run(const std::string& ir, const std::string& fn, bool stops) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(ir));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = "linux";
+    o.kernel_stops = stops;
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+// BUG_ON(d == 0) then 100 / d: Linux x86 BUG() is the ud2 asm with a __bug_table entry, then unreachable
+const char* kBugOn = R"IR(define i32 @bug_on_div(i32 %d) {
+entry:
+  %z = icmp eq i32 %d, 0
+  br i1 %z, label %bug, label %ok
+bug:
+  call void asm sideeffect "1: ud2; .pushsection __bug_table; 2: .long 1b - .; .popsection", ""()
+  unreachable
+ok:
+  %q = sdiv i32 100, %d
+  ret i32 %q
+}
+define i32 @bug_on_div_o0(i32 %d) {
+entry:
+  %z = icmp eq i32 %d, 0
+  br i1 %z, label %bug, label %ok
+bug:
+  call void asm sideeffect "1: .byte 0x0f, 0x0b; .pushsection __bug_table; 2: .long 1b - .; .popsection", ""()
+  br label %dead
+dead:
+  unreachable
+ok:
+  %q = sdiv i32 100, %d
+  ret i32 %q
+}
+define i32 @warn_on_div(i32 %d) {
+entry:
+  %z = icmp eq i32 %d, 0
+  br i1 %z, label %warn, label %ok
+warn:
+  call void asm sideeffect "1: ud2; .pushsection __bug_table; 2: .long 1b - .; .popsection", ""()
+  br label %ok
+ok:
+  %q = sdiv i32 100, %d
+  ret i32 %q
+}
+define i32 @panic_div(i32 %d) {
+entry:
+  %z = icmp eq i32 %d, 0
+  br i1 %z, label %p, label %ok
+p:
+  call void (ptr, ...) @panic(ptr null)
+  unreachable
+ok:
+  %q = sdiv i32 100, %d
+  ret i32 %q
+}
+declare void @panic(ptr, ...)
+)IR";
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-kernel-stops ends the path at BUG() and panic(), named; WARN() continues") {
+    // without the flag: BUG() reaches unreachable (reported), panic has no model here (UNENCODED): never PROVED
+    auto bug0 = stops_run(kBugOn, "bug_on_div", false);
+    CHECK(bug0.status != prism::laws::PROVED);
+    auto pan0 = stops_run(kBugOn, "panic_div", false);
+    CHECK(pan0.status != prism::laws::PROVED);
+    // with it: the path through BUG() / panic() ends; the division on the other path is guarded
+    auto bug = stops_run(kBugOn, "bug_on_div", true);
+    CHECK_MESSAGE(bug.status == prism::laws::PROVED, (bug.status + " " + bug.msg));
+    CHECK(has(bug.assumptions, "kernel-stop: assuming the BUG() / BUG_ON() condition never triggers"));
+    // the -O0 shape: the asm, a branch, then unreachable in the next block
+    auto bug2 = stops_run(kBugOn, "bug_on_div_o0", true);
+    CHECK_MESSAGE(bug2.status == prism::laws::PROVED, (bug2.status + " " + bug2.msg));
+    auto pan = stops_run(kBugOn, "panic_div", true);
+    CHECK_MESSAGE(pan.status == prism::laws::PROVED, (pan.status + " " + pan.msg));
+    CHECK(has(pan.assumptions, "kernel-stop: assuming the @panic condition never triggers"));
+    // WARN(): the same asm without unreachable after it continues, so d == 0 reaches the division
+    auto warn = stops_run(kBugOn, "warn_on_div", true);
+    CHECK_MESSAGE(warn.status == prism::laws::FAILED, (warn.status + " " + warn.msg));
+}
+#endif
+
+namespace {
+
+KRun current_run(const std::string& ir, const std::string& fn, bool cur, const char* api) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(ir));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = api;
+    o.kernel_current = cur;
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+// Linux `current->field`: this_cpu_read_stable(current_task) is an integer asm output, then inttoptr
+const char* kCurrent = R"IR(@current_task = external global ptr
+@other_pcpu = external global ptr
+define i32 @cur_field() {
+entry:
+  %v = call i64 asm "movq %gs:$1, $0", "=r,i,~{dirflag},~{fpsr},~{flags}"(ptr @current_task)
+  %p = inttoptr i64 %v to ptr
+  %f = getelementptr inbounds i8, ptr %p, i64 44
+  %x = load i32, ptr %f
+  ret i32 %x
+}
+define i32 @other_field() {
+entry:
+  %v = call i64 asm "movq %gs:$1, $0", "=r,i,~{dirflag},~{fpsr},~{flags}"(ptr @other_pcpu)
+  %p = inttoptr i64 %v to ptr
+  %f = getelementptr inbounds i8, ptr %p, i64 44
+  %x = load i32, ptr %f
+  ret i32 %x
+}
+)IR";
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-kernel-current makes Linux current a valid object; other per-CPU reads stay arbitrary") {
+    auto off = current_run(kCurrent, "cur_field", false, "linux");
+    CHECK(off.status != prism::laws::PROVED);
+    auto on = current_run(kCurrent, "cur_field", true, "linux");
+    CHECK_MESSAGE(on.status == prism::laws::PROVED, (on.status + " " + on.msg));
+    CHECK(has(on.assumptions, "kernel-current: the %gs read of the running thread"));
+    // a %gs read of another per-CPU variable may be NULL: never proved by this flag
+    auto other = current_run(kCurrent, "other_field", true, "linux");
+    CHECK(other.status != prism::laws::PROVED);
+}
+#endif
+
+namespace {
+
+KRun global_run(const std::string& ir, const std::string& fn, bool harness) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(ir));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = "linux";
+    o.global_harness = harness;
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+// emev2_smu_write-style MMIO: a static base pointer the init code sets, then base + offset
+const char* kMmio = R"IR(@smu_base = internal global ptr null
+@count = internal global i32 0
+define void @smu_write(i32 %v) {
+entry:
+  %b = load ptr, ptr @smu_base
+  %p = getelementptr inbounds i8, ptr %b, i64 16
+  store volatile i32 %v, ptr %p
+  ret void
+}
+define i32 @count_div() {
+entry:
+  %c = load i32, ptr @count
+  %q = sdiv i32 100, %c
+  ret i32 %q
+}
+)IR";
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-global-harness gives mutable pointer globals a valid object; scalars stay arbitrary") {
+    auto off = global_run(kMmio, "smu_write", false);
+    CHECK(off.status != prism::laws::PROVED);
+    auto on = global_run(kMmio, "smu_write", true);
+    CHECK_MESSAGE(on.status == prism::laws::PROVED, (on.status + " " + on.msg));
+    CHECK(has(on.assumptions, "global harness: @smu_base"));
+    // a scalar global is not harnessed: 100 / count can divide by zero
+    auto cnt = global_run(kMmio, "count_div", true);
+    CHECK(cnt.status == prism::laws::FAILED);
+    CHECK_FALSE(has(cnt.assumptions, "global harness"));
+}
+#endif
+
+namespace {
+
+KRun lockw_run(const std::string& ir, const std::string& fn, bool wrappers) {
+    static std::vector<pp::ir::Module> keep;
+    keep.push_back(pp::ir::parse_module_kernel(ir));
+    const auto* f = keep.back().find(fn);
+    REQUIRE(f != nullptr);
+    pp::TranslateOptions o;
+    o.kernel_api = "linux";
+    o.lock_wrappers = wrappers;
+    auto t = pp::translate(keep.back(), *f, o);
+    if (!t.fn) return {std::string(prism::laws::NEEDS_HARNESS), t.reason, {}};
+    auto v = pp::check_function(*t.fn, 4, 30.0);
+    return {v.status, v.message, t.fn->assumptions};
+}
+
+const char* kLockW = R"IR(@big_lock = internal global [8 x i8] zeroinitializer
+declare void @__prism_lock_acquire(ptr, i32)
+declare void @__prism_lock_release(ptr, i32)
+define void @acq_only() {
+entry:
+  call void @__prism_lock_acquire(ptr @big_lock, i32 0)
+  ret void
+}
+define void @rel_only() {
+entry:
+  call void @__prism_lock_release(ptr @big_lock, i32 0)
+  ret void
+}
+define void @acq_rel_leak(i32 %c) {
+entry:
+  call void @__prism_lock_acquire(ptr @big_lock, i32 0)
+  %z = icmp eq i32 %c, 0
+  br i1 %z, label %out, label %rel
+rel:
+  call void @__prism_lock_release(ptr @big_lock, i32 0)
+  br label %out
+out:
+  ret void
+}
+)IR";
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir cluster answers: --pir-lock-wrappers: acquire-only / release-only roots, named; mixed functions still checked") {
+    CHECK(lockw_run(kLockW, "acq_only", false).status == prism::laws::FAILED);
+    CHECK(lockw_run(kLockW, "rel_only", false).status == prism::laws::FAILED);
+    auto a = lockw_run(kLockW, "acq_only", true);
+    CHECK_MESSAGE(a.status == prism::laws::PROVED, (a.status + " " + a.msg));
+    CHECK(has(a.assumptions, "lock-wrapper: @acq_only acquires locks"));
+    auto r = lockw_run(kLockW, "rel_only", true);
+    CHECK_MESSAGE(r.status == prism::laws::PROVED, (r.status + " " + r.msg));
+    // acquires and releases: not a wrapper, the leak on c == 0 is still found
+    CHECK(lockw_run(kLockW, "acq_rel_leak", true).status == prism::laws::FAILED);
+}
+#endif
+
 #ifdef PRISM_HAS_Z3
 TEST_CASE("pir cluster answers: --pir-addr-values: a constant address plus a huge constant offset points to no object") {
     const char* ir = R"IR(define i32 @abs_read() {

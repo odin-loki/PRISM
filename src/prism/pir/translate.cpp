@@ -89,6 +89,8 @@ struct Frame {
     // --kernel-api: the result of an inline asm with three or more direct outputs ({ i32, i32, i32, i32 } of cpuid),
     // one variable per field; only extractvalue reads it (asm_havoc writes every field)
     std::map<std::string, std::vector<int>> tuples;
+    // --pir-kernel-current: integer asm outputs that hold a pointer (Linux `current`: this_cpu_read_stable(current_task))
+    std::set<std::string> ptr_ints;
     // a scalar pair load's field-1 address, numbered between its two fields
     // (the order export_lean's `L pload` gives the Lean frame)
     std::map<std::string, int> pairq;
@@ -212,6 +214,9 @@ struct Tr final : pirmem::TrApi {
     int lk_var_ = -1;                                 // lk_'s preassigned variable (object emitted in run_frame)
     bool lk_pending_ = false;
     static bool reaches_lock_state(const ir::Module& m, const ir::Function& f);
+    static int lock_effects(const ir::Module& m, const ir::Function& f);
+    int lock_wrapper_ = 0;      // --pir-lock-wrappers: 1 acquire-only root, 2 release-only root, 0 neither
+    std::string root_name_;     // the analysed function
     void lock_return_check(int b, int line);
     void emit_lock_state();
     Arg lock_word(int b, unsigned i, int line);
@@ -568,6 +573,11 @@ struct Tr final : pirmem::TrApi {
             // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
             if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", ptr_w());
             // the ghost lock state, when a lock spec can reach it (translate_lock.inc)
+            if (opt.lock_wrappers && !lock_contracted(f.name)) {
+                const int fx = lock_effects(m, f);
+                lock_wrapper_ = fx == 1 ? 1 : fx == 2 ? 2 : 0;
+                root_name_ = f.name;
+            }
             if (reaches_lock_state(m, f) || lock_contracted(f.name)) {
                 lk_var_ = newvar("_lock", ptr_w());
                 lk_pending_ = true;
@@ -857,6 +867,44 @@ struct Tr final : pirmem::TrApi {
                     terminated = true;
                     continue;
                 }
+                if (in.op == "call" && in.is_asm && opt.kernel_stops && !opt.kernel_api.empty() &&
+                    in.asm_text.find("__bug_table") != std::string::npos) {
+                    // --pir-kernel-stops: Linux BUG() is `asm volatile(ASM_UD2 (.byte 0x0f, 0x0b) + a __bug_table entry);
+                    // __builtin_unreachable()`. Only that shape: the asm followed (after other asm statements only, such
+                    // as annotations) by unreachable. WARN() uses the same asm and continues, so it never matches.
+                    // At -O0 the unreachable is often in the next block (`br label %n` then `n: unreachable`): follow
+                    // unconditional branches, a few hops, over result-less asm only.
+                    const ir::Block* cb = &bl;
+                    auto k = static_cast<std::size_t>(&in - bl.insts.data()) + 1;
+                    bool reaches = false;
+                    for (int hops = 0; hops < 4; ++hops) {
+                        while (k < cb->insts.size() && cb->insts[k].op == "call" && cb->insts[k].is_asm &&
+                               cb->insts[k].result.empty())
+                            ++k;
+                        if (k >= cb->insts.size()) break;
+                        const auto& nx = cb->insts[k];
+                        if (nx.op == "unreachable") {
+                            reaches = true;
+                            break;
+                        }
+                        if (nx.op != "br" || nx.targets.size() != 1) break;
+                        const ir::Block* to = nullptr;
+                        for (auto& b2 : fr.f->blocks)
+                            if (b2.name == nx.targets[0]) to = &b2;
+                        if (!to) break;
+                        cb = to;
+                        k = 0;
+                    }
+                    if (reaches) {
+                        note_assumption("kernel-stop: assuming the BUG() / BUG_ON() condition never triggers (line " + std::to_string(line) +
+                                        "): BUG() (ud2 with a __bug_table entry, then unreachable) stops the kernel, the paths that reach "
+                                        "it are not checked, and the verdict holds only for executions in which it never triggers");
+                        out.blocks[static_cast<std::size_t>(cur)].term = Term{};
+                        tail[q] = cur;
+                        terminated = true;
+                        continue;
+                    }
+                }
                 inst(fr, in, cur, l, noreturn);
                 if (noreturn) {
                     // exit/abort/assert: the rest of the block is dead
@@ -1097,7 +1145,9 @@ struct Tr final : pirmem::TrApi {
             check(cur, p2(cur, Op::ShiftOob, a, b), "shift", "INT-SHIFT-UB", "shift amount >= width", line);
             bool signed_c = std::find(opt.signed_shl.begin(), opt.signed_shl.end(),
                                       std::make_pair(l.line, l.col)) != opt.signed_shl.end();
-            if (signed_c && opt.shl_cxx) {
+            if (signed_c && opt.wrapv) {
+                // --pir-build-semantics, -fwrapv build: a signed << wraps like an unsigned one (only the amount is checked)
+            } else if (signed_c && opt.shl_cxx) {
                 check(cur, p2(cur, Op::ShlNuwOvf, a, b), "shift-base", "INT-SHIFT-UB",
                       "signed left shift whose result does not fit the unsigned type (C++ before C++20)", line);
                 check(cur, p2(cur, Op::Slt, a, zero), "shift-base", "INT-SHIFT-UB",
@@ -1297,6 +1347,17 @@ struct Tr final : pirmem::TrApi {
     void call(Frame& fr, const ir::Inst& in, int& cur, ir::DILoc l, bool& noreturn) {
         int line = l.line;
         const auto& n = in.callee;
+        if (opt.kernel_stops && !opt.kernel_api.empty() && (n == "panic" || n == "vpanic" || n == "kassert_panic")) {
+            const auto* def = m.find(n);
+            if (!def || def->is_model || def->blocks.empty()) {
+                // --pir-kernel-stops: the kernel does not return from panic(9) / KASSERT's kassert_panic
+                note_assumption("kernel-stop: assuming the @" + n + " condition never triggers (line " + std::to_string(line) +
+                                "): the kernel does not return from @" + n + ", the paths that call it are not checked, and the verdict "
+                                "holds only for executions in which it is never called");
+                noreturn = true;
+                return;
+            }
+        }
         {
             // undef arguments (refinement finding 4): UB for a noundef
             // parameter; an inlined callee would use the value as one value,
@@ -1532,6 +1593,10 @@ struct Tr final : pirmem::TrApi {
             if (in.ops.empty() || in.ops[0].v.kind != ir::Value::Int) throw Unenc{"UNENCODED: call @" + n};
             auto k = static_cast<std::size_t>(in.ops[0].v.bits);
             std::string cls = "UB-POISON", msg = "undefined behaviour folded by clang";
+            if (k < opt.folded.size() && opt.wrapv && wraps_under_fwrapv(opt.folded[k])) {
+                folded_used.insert(static_cast<int>(k));
+                return;  // -fwrapv build: clang's folded signed overflow / signed shift is the wrapped value, not UB
+            }
             if (k < opt.folded.size()) {
                 cls = opt.folded[k].cls;
                 msg = "undefined behaviour folded by clang: " + opt.folded[k].msg;
@@ -1904,6 +1969,7 @@ struct Tr final : pirmem::TrApi {
     bool is_ptrtoint(Frame& fr, const ir::Operand& o) {
         if (opt.addr_values && o.v.kind == ir::Value::ConstExpr && o.v.ce_op == "ptrtoint") return true;
         if (o.v.kind != ir::Value::Local) return false;
+        if (fr.ptr_ints.count(o.v.name)) return true;
         auto it = fr.defs.find(o.v.name);
         return it != fr.defs.end() && it->second != nullptr && it->second->op == "ptrtoint";
     }
