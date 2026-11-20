@@ -384,3 +384,15 @@ Whether a mined invariant holds needs a whole-build store analysis that sees eve
 `char *` and `void *` stores, casts, unions, uninitialised `kmalloc` memory, other modules and configurations); PRISM
 does not have one, and the call-site check of a field value would still rest on the caller's own harness, which the
 same rows constrain.
+
+### 6.4 Measured (20 Nov, indicative: pre-merge binary)
+
+The 1,225-row PTRPARAM sample of the r1 clusters (OS-Proving `data/coverage/prism_callsite_r1/`, driver
+`tools/prism_clusters/callsite_measure.py`), r2 flags of #65/#69/#70 plus `--pir-discharge-out`, Linux link map from the
+build's `make -n` log, two merge rounds: 232 rows are PROVED-ASSUMING under the automatic harness; **0 become PROVED**;
+23 have their harness discharged at every call site but are not grounded; 209 are not discharged. What blocks them, in
+order: 208 of the 232 rest on other assumptions no call site discharges (unknown calls 121, asm-havoc 77, kernel logging,
+MMIO, locking models, kernel-stop); 124 are address-taken (ops tables, IRQ handlers, EXPORT_SYMBOL) and 8 more sit below
+an address-taken caller; 51 call-site checks are undecided (UNKNOWN, TIMEOUT, BOUNDED) and 10 not encodable; 11 call sites
+really break the harness (ob-offset, ob-size, ob-null, ob-init). The 23 discharged rest on address-taken or undecided
+callers. The next step is therefore entry contracts for address-taken roots (2.4), not more discharge.
