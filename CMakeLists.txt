@@ -681,12 +681,15 @@ if(PRISM_CUDA)
       # nvcc 12 has no C++23; do not inherit CMAKE_CXX_STANDARD 23 (clang++/prism_core).
       set(CMAKE_CUDA_STANDARD 17)
       set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+      # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
+      # Before enable_language: it fills in the compiler's default (CUDA 13:
+      # sm_75, whose code does not load on sm_86: every launch failed with
+      # cudaErrorNoKernelImageForDevice); PTX for 86 keeps newer GPUs working.
+      if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+        set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "nvcc -arch")
+      endif()
       enable_language(CUDA)
       set(_prism_cuda_lang ON)
-      if(NOT CMAKE_CUDA_ARCHITECTURES)
-        # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
-        set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "nvcc -arch" FORCE)
-      endif()
       # probsat.cu: GPU ProbSAT walkers (roadmap 3.3), mirrors src/prism/solver/cnf.cpp.
       add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu src/cuda/invdata.cu)
       target_include_directories(prism_cuda PUBLIC "${PRISM_ROOT}/include")

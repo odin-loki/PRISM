@@ -390,12 +390,17 @@ void Houdini::data_candidates(HoudiniOut& out) {
             bool done = false;
             const prism::clock::Stopwatch tb;
 #ifdef PRISM_HAS_CUDA
-            if (want != "cpu") {
+            // a device that failed once (no GPU, no kernel image, an address-space limit) is not asked again
+            static std::atomic<bool> cuda_bad{false};
+            if (want != "cpu" && !cuda_bad.load()) {
                 double kms = -1;
                 if (prism::cuda::direction_bounds(flat.data(), ns, nf, idx.data(), coef.data(), nd, K, mn.data(), mx.data(),
                                                   &kms) == 0) {
                     done = true;
                     device = "cuda";
+                } else {
+                    cuda_bad = true;
+                    device = "cpu (CUDA failed)";
                 }
             }
 #endif
