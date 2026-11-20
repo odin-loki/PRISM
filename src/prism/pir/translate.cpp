@@ -2689,8 +2689,9 @@ Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
                 }
             }
             const std::string a = "field-invariant: " + n.name + "->@" + std::to_string(fi.offset) + " (" + fi.struct_type +
-                                  " at byte " + std::to_string(fi.offset) + ") " + what + " (--pir-field-invariants; status " +
-                                  fi.status + "; source " + fi.source + "; not checked here)";
+                                  " at byte " + std::to_string(fi.offset) + ") " + what + " (--pir-field-invariants; scope " +
+                                  (fi.scope.empty() ? std::string("global") : fi.scope) + "; status " + fi.status + "; source " +
+                                  fi.source + "; not checked here)";
             if (std::find(tr.out.assumptions.begin(), tr.out.assumptions.end(), a) == tr.out.assumptions.end())
                 tr.out.assumptions.push_back(a);
         }

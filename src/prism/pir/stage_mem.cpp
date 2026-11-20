@@ -119,6 +119,15 @@ std::vector<std::string> static_init_functions(const ir::Module& m) {
 TranslateOptions function_options(const TranslateOptions& base, const ir::Function& irf, UnitInfo& unit, int line,
                                   const Config& cfg, const std::string& source_name) {
     TranslateOptions o = base;
+    // --pir-field-invariants: only the rows whose scope matches this function and unit (FieldInvariant::scope)
+    if (!o.field_invariants.empty()) {
+        std::vector<FieldInvariant> in_scope;
+        const std::string upath = unit.path.generic_string();
+        for (const auto& fi : o.field_invariants)
+            if (field_invariant_applies(fi, irf.name, upath) || (!source_name.empty() && field_invariant_applies(fi, source_name, upath)))
+                in_scope.push_back(fi);
+        o.field_invariants = std::move(in_scope);
+    }
     o.strict_aliasing = cfg.strict_aliasing;
     o.fp_checks = cfg.fp_checks;
     o.kernel_api = cfg.pir_kernel_api;

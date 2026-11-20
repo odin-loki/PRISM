@@ -127,6 +127,30 @@ void mine_field_stores(const ir::Module& m, const std::string& unit, std::ostrea
     }
 }
 
+namespace {
+bool glob_match(const char* p, const char* s) {
+    for (; *p; ++p, ++s) {
+        if (*p == '*') {
+            while (p[1] == '*') ++p;
+            if (!p[1]) return true;
+            for (; *s; ++s)
+                if (glob_match(p + 1, s)) return true;
+            return false;
+        }
+        if (!*s || (*p != '?' && *p != *s)) return false;
+    }
+    return !*s;
+}
+}  // namespace
+
+bool field_invariant_applies(const FieldInvariant& fi, const std::string& function, const std::string& unit_path) {
+    if (fi.scope.empty()) return true;
+    const auto colon = fi.scope.find(':');
+    const std::string kind = fi.scope.substr(0, colon), pat = fi.scope.substr(colon + 1);
+    if (kind == "fn") return glob_match(pat.c_str(), function.c_str());
+    return glob_match(pat.c_str(), unit_path.c_str());  // unit: and module: both match the unit's path
+}
+
 std::vector<FieldInvariant> load_field_invariants(const std::filesystem::path& file, std::string& error) {
     error.clear();
     std::ifstream in(file);
@@ -167,6 +191,13 @@ std::vector<FieldInvariant> load_field_invariants(const std::filesystem::path& f
         if (fi.status.empty() || fi.source.empty()) {
             error = file.string() + ":" + std::to_string(no) + ": status and source are required";
             return {};
+        }
+        if (c.size() > 8 && !c[8].empty()) {
+            fi.scope = c[8];
+            if (!fi.scope.starts_with("fn:") && !fi.scope.starts_with("unit:") && !fi.scope.starts_with("module:")) {
+                error = file.string() + ":" + std::to_string(no) + ": scope must be fn:GLOB, unit:GLOB or module:GLOB (or empty)";
+                return {};
+            }
         }
         if ((fi.kind == "valid" || fi.kind == "nonnull") && fi.width != 8) {
             error = file.string() + ":" + std::to_string(no) + ": a pointer invariant has width 8";
