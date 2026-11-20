@@ -253,13 +253,33 @@ std::string run_row_json(const fs::path& unit, const fs::path& cdb, bool model_o
     // The unit's `main` only: PRISM_PIR_ONLY is the stage's own per-function filter ("<unit file>\t<function>").
     // (It also makes the stage leave with exit 75 when its memory watchdog gives up: the parent reports that as UNKNOWN.)
     const std::string only = unit.filename().string() + "\tmain\n";
+    // The variables are this call's: put back what the process had when it returns (the stage re-reads
+    // PRISM_PIR_ONLY whenever it changes, so a leftover selection would hide every later unit's functions)
+    struct EnvRestore {
+        std::vector<std::pair<std::string, std::optional<std::string>>> saved;
+        void set(const char* k, const std::string& v, bool overwrite) {
+            const char* old = std::getenv(k);
+            saved.emplace_back(k, old ? std::optional<std::string>(old) : std::nullopt);
+            if (old && !overwrite) return;
 #ifdef _WIN32
-    _putenv_s("PRISM_PIR_ONLY", only.c_str());
-    _putenv_s("PRISM_PIR_INLINE_DEPTH", "24");
+            _putenv_s(k, v.c_str());
 #else
-    setenv("PRISM_PIR_ONLY", only.c_str(), 1);
-    setenv("PRISM_PIR_INLINE_DEPTH", "24", 0);
+            setenv(k, v.c_str(), 1);
 #endif
+        }
+        ~EnvRestore() {
+            for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
+#ifdef _WIN32
+                _putenv_s(it->first.c_str(), it->second ? it->second->c_str() : "");
+#else
+                if (it->second) setenv(it->first.c_str(), it->second->c_str(), 1);
+                else unsetenv(it->first.c_str());
+#endif
+            }
+        }
+    } env_restore;
+    env_restore.set("PRISM_PIR_ONLY", only, true);
+    env_restore.set("PRISM_PIR_INLINE_DEPTH", "24", false);
     Config cfg = cfg_in;
     cfg.root = unit.parent_path();
     if (!cdb.empty()) cfg.compile_commands = cdb;

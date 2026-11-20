@@ -19,6 +19,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -75,13 +76,32 @@ private:
 };
 
 // A tiny real FORGE model (built once per process) for engine-level tests.
+// The tiny model is built from FORGE's source tree (its model blueprint templates, under the build's _deps): a
+// prism_tests binary copied without its build directory (the cloud gate VM) cannot build it. `why` says so.
+inline const std::string& tiny_fpk_error() {
+    static const std::string err = [] {
+        try {
+            auto path = std::filesystem::temp_directory_path() / "prism_forge_tiny.fpk";
+            forge_test::make_tiny_model(path.string());
+            return std::string();
+        } catch (const std::exception& e) {
+            return std::string("NOTRUN: the tiny FORGE model cannot be built here (") + e.what() +
+                   "; FORGE's source tree from the build directory is needed)";
+        }
+    }();
+    return err;
+}
+
 inline std::filesystem::path tiny_fpk() {
     static const std::filesystem::path p = [] {
         auto path = std::filesystem::temp_directory_path() / "prism_forge_tiny.fpk";
-        forge_test::make_tiny_model(path.string());
+        if (!tiny_fpk_error().empty()) throw std::runtime_error(tiny_fpk_error());
         return path;
     }();
     return p;
 }
+
+// true (with a MESSAGE) when the tiny model cannot be built: the test is skipped, not failed
+#define PRISM_SKIP_WITHOUT_TINY_FPK()                             do {                                                              if (!prism_test::tiny_fpk_error().empty()) {                      MESSAGE(prism_test::tiny_fpk_error());                        return;                                                   }                                                         } while (0)
 
 }  // namespace prism_test

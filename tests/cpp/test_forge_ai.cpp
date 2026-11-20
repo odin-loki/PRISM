@@ -9,6 +9,7 @@
 namespace sd = prism::stages_detail;
 
 TEST_CASE("forge ai: the tiny .fpk opens and the engine binds to FORGE") {
+    PRISM_SKIP_WITHOUT_TINY_FPK();
     const auto fpk = prism_test::tiny_fpk();
     CHECK(prism::forge_llm::is_fpk(fpk));
     prism::Config cfg;
@@ -21,6 +22,7 @@ TEST_CASE("forge ai: the tiny .fpk opens and the engine binds to FORGE") {
 }
 
 TEST_CASE("forge ai: a completion on the tiny model returns tokens, no error") {
+    PRISM_SKIP_WITHOUT_TINY_FPK();
     prism::forge_llm::Request req;
     req.messages = {{"system", "be brief"}, {"user", "hi"}};
     req.max_new = 4;
@@ -33,6 +35,7 @@ TEST_CASE("forge ai: a completion on the tiny model returns tokens, no error") {
 }
 
 TEST_CASE("forge ai: a grammar-constrained completion only emits the grammar's language") {
+    PRISM_SKIP_WITHOUT_TINY_FPK();
     prism::forge_llm::Request req;
     req.messages = {{"user", "yes or no?"}};
     req.grammar = "root ::= \"yes\" | \"no\"\n";
@@ -44,6 +47,7 @@ TEST_CASE("forge ai: a grammar-constrained completion only emits the grammar's l
 }
 
 TEST_CASE("forge ai: embedding with a generative .fpk is a vector or a clear error, never a crash") {
+    PRISM_SKIP_WITHOUT_TINY_FPK();
     // FORGE main pools a generative model's hidden states; older FORGE refused.
     std::string err;
     auto v = prism::forge_llm::embed(prism_test::tiny_fpk(), "int x;", &err);

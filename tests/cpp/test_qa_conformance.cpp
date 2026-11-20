@@ -836,6 +836,15 @@ TEST_CASE("qa conformance: certified summary counts loop-free true functions") {
 // ---------------------------------------------------------------- release gate
 
 TEST_CASE("qa conformance: a wrong proof fails the release gate") {
+    // the scorer runs a fake engine built next to prism_tests (a binary copied alone, as on the cloud gate VM, has none)
+#ifdef _WIN32
+    if (!fs::exists(self_dir() / "fake_prism.exe")) {
+#else
+    if (!fs::exists(self_dir() / "fake_prism")) {
+#endif
+        MESSAGE("NOTRUN: fake_prism is not next to prism_tests (build the prism_tests target's helpers)");
+        return;
+    }
     QaTmp tmp;
     auto run = [&](const std::string& status) {
         fs::path fake = fake_engine(tmp.dir, "fake_" + status, {status});
@@ -862,6 +871,15 @@ TEST_CASE("qa conformance: a wrong proof fails the release gate") {
 }
 
 TEST_CASE("qa conformance: a timed-out PRISM run kills its solver in another process group") {
+    // the scorer runs a fake engine built next to prism_tests (a binary copied alone, as on the cloud gate VM, has none)
+#ifdef _WIN32
+    if (!fs::exists(self_dir() / "fake_prism.exe")) {
+#else
+    if (!fs::exists(self_dir() / "fake_prism")) {
+#endif
+        MESSAGE("NOTRUN: fake_prism is not next to prism_tests (build the prism_tests target's helpers)");
+        return;
+    }
     // POSIX: the solver is in a process group of its own; WIN32: a second
     // process the Job Object holds. Either way the scorer's timeout ends it.
     QaTmp tmp;

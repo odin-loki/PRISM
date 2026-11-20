@@ -527,6 +527,7 @@ TEST_CASE("agent: a failed model call keeps its error; a good answer keeps its t
 }
 #ifndef _WIN32  // setenv
 TEST_CASE("agent: Fuzz4All uses the run's model settings, not built-in defaults") {
+    PRISM_SKIP_WITHOUT_TINY_FPK();
     auto td = agent_tmp("fuse-cfg");
     std::ofstream(td / "f.c") << "int f(int x) {\n    return x + 1;\n}\n";
     auto fns = prism::extract_functions(td / "f.c", "f.c");
