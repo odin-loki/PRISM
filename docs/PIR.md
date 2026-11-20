@@ -538,6 +538,24 @@ the function accesses (as before), and that is tagged: `harness-size-from-access
 constant offset accessed (N bytes; the type evidence and defaults gave M) (auto harness)`. Such a proof rests on an
 assumption taken from the access it checks; the tag lets a merge count those proofs separately and review them.
 
+**Containers from casts.** A declaration smaller than a struct the code uses the object as at offset 0 (`tcp_sk(sk)`:
+a `struct sock *` read as `struct tcp_sock`; `container_of` over a first member) is not used: the object is that
+larger struct, never smaller than the evidence, and the choice is its own line `container-type-from-cast: P is treated
+as %struct.T (N bytes; a getelementptr uses it at offset 0 in FN line L; larger than its declared or first-used type)
+(--pir-declared-types; not checked here)`, so a reviewer sees the type confusion it assumes. It is minimised with the
+declared types.
+
+### Freed harness objects (`--pir-heap-freed`)
+
+A harness object (a parameter's or a nested field's) that the function passes, at its start, to a free function
+(`kfree`, `kvfree`, `vfree`, `kfree_sensitive`, `devm_kfree`, `kmem_cache_free`, `free`, ... or the models'
+`__prism_free` of the heap kind) is allocated as a live heap object instead of a parameter object, and a field without
+type evidence is bound (an object of the declared or default size) instead of staying arbitrary. Named:
+`heap-object: P is heap-allocated (freed by kfree in FN line L): its harness object is a live heap allocation of N
+bytes (--pir-heap-freed; not checked here)`; minimised like the other options (`extra.heap_freed_not_needed`). The
+free itself is still checked: a second free is `MEM-DOUBLE-FREE`, a free of an interior pointer or of an object that
+is not one of these is `MEM-INVALID-FREE`.
+
 ### Private areas past the struct end (`--pir-priv-areas`)
 
 `netdev_priv(dev)`, `shost_priv`, `wiphy_priv` and friends return the object's address plus the aligned struct size:

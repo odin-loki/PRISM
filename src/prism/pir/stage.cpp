@@ -2887,6 +2887,7 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
     ho.declared_types = cfg.pir_declared_types;  // the same plan as the translation (its obligations)
     ho.priv_areas = cfg.pir_priv_areas;
     ho.index_field_bounds = cfg.pir_index_field_bounds;
+    ho.heap_freed = cfg.pir_heap_freed;
     ho.container_of = cfg.pir_container_of;
     if (topt.ops_auto) {
         ho.ops = &topt.ops_table;

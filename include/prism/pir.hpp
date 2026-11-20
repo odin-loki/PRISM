@@ -451,6 +451,7 @@ struct AutoHarness {
     bool declared_types = false;
     bool priv_areas = false;       // --pir-priv-areas: netdev_priv-style private areas past the struct end (named)
     bool index_field_bounds = false;  // --pir-index-field-bounds: an array-index field is in [0, N-1] (named)
+    bool heap_freed = false;       // --pir-heap-freed: an object the function frees is a heap allocation (named)
 };
 
 // --pir-param-preconditions FILE (docs/PIR.md "Parameter preconditions"): one precondition of one parameter of one

@@ -239,6 +239,9 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-index-field-bounds") {
             ok = in.flag();
             cfg.pir_index_field_bounds = true;
+        } else if (a == "--pir-heap-freed") {
+            ok = in.flag();
+            cfg.pir_heap_freed = true;
         } else if (a == "--pir-param-preconditions") {
             auto v = in.take_nonempty();
             if ((ok = v.has_value())) cfg.pir_param_preconditions = fs::absolute(*v);
@@ -471,6 +474,8 @@ std::string cli_usage() {
         "  object to its end: from a visible allocation's private size, else the area struct (a named assumption).\n"
         "  --pir-index-field-bounds: an integer field of a harness object that indexes an in-object array [N x T]\n"
         "  is in [0, N-1] at entry (a named assumption, not discharged).\n"
+        "  --pir-heap-freed: a harness object the function passes to kfree / kvfree / vfree / free is a live heap\n"
+        "  allocation (a named assumption); double frees and frees of non-heap or interior pointers are still checked.\n"
         "  --pir-param-preconditions FILE: per-parameter preconditions (TSV: function, parameter, condition\n"
         "  valid N|type S|nonnull|range A B, scope, status, source), one named assumption per row used, minimised.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"

@@ -28,6 +28,8 @@ struct Use {
     int64_t neg_base = 0;               // that base's offset from the parameter
     std::map<int64_t, ir::Type> pos_struct;  // offset -> struct type of the first getelementptr based there (a > 0)
     uint64_t max_struct0 = 0;  // largest struct type a getelementptr uses at offset 0 (tcp_sk(sk): struct tcp_sock over a struct sock)
+    std::string max_struct0_ty, max_struct0_at;  // that struct and where (function, line)
+    std::string freed_at;  // --pir-heap-freed: the object itself is passed to a free function (function, line)
     // --pir-index-field-bounds: (index field offset, width) -> (array element count, array offset, where)
     std::map<std::pair<int64_t, unsigned>, std::tuple<uint64_t, int64_t, std::string>> index_fields;
     std::map<uint64_t, std::vector<Root>> ptr_fields;  // byte offset -> pointer values loaded from there
@@ -178,6 +180,12 @@ std::optional<int64_t> returned_field(const ir::Module& m, const Layout& lay, co
     return off;
 }
 
+// " line N" of an instruction (its !dbg location), or ""
+std::string where_line(const ir::Module& m, const ir::Inst& in) {
+    auto it = m.locs.find(in.dbg);
+    return it == m.locs.end() || it->second.line <= 0 ? std::string() : " line " + std::to_string(it->second.line);
+}
+
 void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, const std::string& rootname,
               int64_t base, int depth, bool container, Use& u,
               std::set<std::pair<const ir::Function*, std::string>>& visited) {
@@ -245,7 +253,11 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                     u.pos_struct[a] = in.ety;  // --pir-priv-areas: a struct based past the start (a private area)
                 if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a == 0 &&
                     lay.resolve(in.ety).kind == ir::Type::Struct)  // the largest struct the object is used as
-                    u.max_struct0 = std::max<uint64_t>(u.max_struct0, lay.alloc_size(in.ety));
+                    if (const uint64_t sz = lay.alloc_size(in.ety); sz > u.max_struct0) {
+                        u.max_struct0 = sz;
+                        u.max_struct0_ty = in.ety.text;
+                        u.max_struct0_at = g.name + where_line(m, in);
+                    }
                 if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a < 0) {
                     u.negative = true;
                     u.min_neg = std::min(u.min_neg, a);
@@ -302,6 +314,19 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                             break;
                         }
                     }
+                }
+                // --pir-heap-freed: the object itself (offset 0) is passed to a free function
+                if (in.op == "call" && !in.callee.empty() && u.freed_at.empty()) {
+                    static const std::map<std::string, std::size_t> kFree{
+                        {"__prism_free", 0}, {"kfree", 0},      {"kvfree", 0},        {"vfree", 0},
+                        {"kfree_sensitive", 0}, {"kvfree_sensitive", 0}, {"kzfree", 0}, {"free", 0},
+                        {"devm_kfree", 1},   {"kmem_cache_free", 1}, {"kmem_free", 0}, {"zfs_kmem_free", 0}};
+                    if (auto it = kFree.find(in.callee); it != kFree.end() && it->second < in.ops.size() &&
+                        is_local(in.ops[it->second], alias, &a) && a == 0 &&
+                        (in.callee != "__prism_free" ||
+                         (in.ops.size() >= 2 && in.ops[1].v.kind == ir::Value::Int &&
+                          in.ops[1].v.bits == static_cast<uint64_t>(MemKind::Heap))))
+                        u.freed_at = in.callee + " in " + g.name + where_line(m, in);
                 }
                 if (in.op == "call" && !in.callee.empty() && depth < 3) {
                     const auto* callee = m.find(in.callee);
@@ -508,6 +533,10 @@ struct Builder {
                 // the largest struct the object is used as at offset 0 is type evidence too (not access-sized)
                 const uint64_t ev = (opt.declared_types && !container && !u.indexed) ? u.max_struct0 : 0;
                 n->bytes = std::max({n->elems * esz, priv_end, ev});
+                if (ev > type_bytes && ev > priv_end)
+                    plan.assumptions.push_back("container-type-from-cast: " + name + " is treated as " + u.max_struct0_ty +
+                                               " (" + std::to_string(ev) + " bytes; a getelementptr uses it at offset 0 in " +
+                                               u.max_struct0_at + "; larger than its declared or first-used type) (--pir-declared-types; not checked here)");
                 if (priv_end > type_bytes) plan.assumptions.push_back(priv_line);
                 // sized from the very accesses being checked: says little, so it is tagged for separate counting/review
                 if (!container && n->bytes > typed)
@@ -532,6 +561,15 @@ struct Builder {
         } catch (const Unenc& e) {
             if (depth == 0) fail = e.reason;
             return nullptr;
+        }
+        // --pir-heap-freed: the function passes this object to a free function: it is a heap allocation (named), so the
+        // free is checked against a live heap object (a second free, a free of an interior or non-heap pointer: caught)
+        if (opt.heap_freed && !u.freed_at.empty() && !container) {
+            n->type_known = true;  // bound even without type evidence: an object of the size chosen above
+            n->heap = true;
+            plan.assumptions.push_back("heap-object: " + name + " is heap-allocated (freed by " + u.freed_at +
+                                       "): its harness object is a live heap allocation of " + std::to_string(n->bytes) +
+                                       " bytes (--pir-heap-freed; not checked here)");
         }
         ++plan.objects;
         plan.depth_reached = std::max(plan.depth_reached, depth);

@@ -42,6 +42,8 @@ struct HarnessOptions {
     bool priv_areas = false;
     // --pir-index-field-bounds: an integer field of the object that indexes an in-object array [N x T] is in [0, N-1]
     bool index_field_bounds = false;
+    // --pir-heap-freed: an object the function passes to kfree / kvfree / free ... is a heap allocation (named)
+    bool heap_freed = false;
 };
 
 // A function-pointer field of a harness object bound to the targets of its ops-table entry.
@@ -77,6 +79,7 @@ struct HarnessNode {
         std::string where;  // "%struct.S field K"
     };
     std::vector<IndexBound> index_bounds;
+    bool heap = false;  // --pir-heap-freed: allocated as a heap object (the function frees it)
     // why a pointer field the function loads has no object of its own (recorded, see unbound_lines)
     int cut_depth = 0;     // past the depth bound
     int cut_cap = 0;       // over the object cap

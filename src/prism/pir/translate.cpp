@@ -2723,7 +2723,7 @@ std::vector<const ParamPrecondition*> param_rows(const TranslateOptions& o, cons
 // Allocates the objects of an automatic pointer harness (harness.cpp) and
 // stores the nested pointers: returns the pointer to `n`'s object.
 Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
-    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0);
+    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), n.heap ? MemKind::Heap : MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0);
     const auto ptr_ty = ir::parse_type("ptr");
     std::set<uint64_t> bound;  // byte offsets (from the object start) that got an object of their own
     for (const auto& [off, child] : n.nested) {
@@ -2839,6 +2839,7 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
     ho.declared_types = tr.opt.auto_harness.declared_types;
     ho.priv_areas = tr.opt.auto_harness.priv_areas;
     ho.index_field_bounds = tr.opt.auto_harness.index_field_bounds;
+    ho.heap_freed = tr.opt.auto_harness.heap_freed;
     // --pir-param-preconditions: "valid N" / "type S" rows set the parameter's own object
     std::vector<const ParamPrecondition*> used;
     for (const auto* r : param_rows(tr.opt, f, p)) {

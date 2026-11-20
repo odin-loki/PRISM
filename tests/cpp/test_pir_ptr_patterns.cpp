@@ -505,5 +505,56 @@ TEST_CASE("pir ptr patterns: a declaration smaller than a struct the code uses a
     CHECK_MESSAGE(r.status == prism::laws::PROVED, (r.status + " " + r.msg));
     CHECK_FALSE(has(r.assumptions, "declared-type:"));
     CHECK(has(r.assumptions, "points to the start of a valid object of 32 bytes"));
+    CHECK(has(r.assumptions, "container-type-from-cast: sk is treated as %struct.tcp_sock (32 bytes; a getelementptr uses it at offset 0 in rd_tcp"));
+}
+#endif
+
+namespace {
+
+// h->buf is only passed to the heap free (no type evidence): without --pir-heap-freed it stays arbitrary
+const char* kFreed = R"IR(%struct.h = type { ptr, ptr }
+declare void @__prism_free(ptr, i32)
+define void @rel(ptr %h) {
+entry:
+  %f = getelementptr inbounds %struct.h, ptr %h, i32 0, i32 0
+  %b = load ptr, ptr %f
+  call void @__prism_free(ptr %b, i32 2)
+  ret void
+}
+define void @rel_twice(ptr %h) {
+entry:
+  %f = getelementptr inbounds %struct.h, ptr %h, i32 0, i32 0
+  %b = load ptr, ptr %f
+  call void @__prism_free(ptr %b, i32 2)
+  call void @__prism_free(ptr %b, i32 2)
+  ret void
+}
+define void @rel_inner(ptr %h) {
+entry:
+  %f = getelementptr inbounds %struct.h, ptr %h, i32 0, i32 1
+  call void @__prism_free(ptr %f, i32 2)
+  ret void
+}
+)IR";
+
+pp::TranslateOptions freed(bool on) {
+    pp::TranslateOptions o;
+    o.auto_harness.heap_freed = on;
+    return o;
+}
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir ptr patterns: --pir-heap-freed: a freed harness field is a heap object, named; double free and non-heap free still FAILED") {
+    CHECK(run(kFreed, "rel", freed(false)).status == prism::laws::FAILED);
+    auto r = run(kFreed, "rel", freed(true));
+    CHECK_MESSAGE(r.status == prism::laws::PROVED, (r.status + " " + r.msg));
+    CHECK(has(r.assumptions, "heap-object: h->@0 is heap-allocated (freed by __prism_free in rel)"));
+    // freed twice: the second free of the heap object is a double free
+    auto d = run(kFreed, "rel_twice", freed(true));
+    CHECK(d.status == prism::laws::FAILED);
+    // a pointer into the (non-heap) parameter object is freed: still an invalid free
+    CHECK(run(kFreed, "rel_inner", freed(true)).status == prism::laws::FAILED);
 }
 #endif

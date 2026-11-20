@@ -136,6 +136,7 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     o.auto_harness.declared_types = cfg.pir_declared_types;
     o.auto_harness.priv_areas = cfg.pir_priv_areas;
     o.auto_harness.index_field_bounds = cfg.pir_index_field_bounds;
+    o.auto_harness.heap_freed = cfg.pir_heap_freed;
     // C++ library code (constructors, accessors) nests deeper than C helpers
     if (unit.cxx) o.inline_depth = std::max(o.inline_depth, 12);
     // PRISM_PIR_INLINE_DEPTH: raise (or lower) the call-inlining depth; the module harness needs more (docs/DEVICE_MODEL.md)
@@ -369,7 +370,9 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
         const char* key;
     } kOpts[] = {{&AutoHarness::declared_types, "declared-type: ", "the declared types", "declared_types_not_needed"},
                  {&AutoHarness::priv_areas, "priv-area: ", "the private areas", "priv_areas_not_needed"},
-                 {&AutoHarness::index_field_bounds, "index-field-bound: ", "the index-field bounds", "index_field_bounds_not_needed"}};
+                 {&AutoHarness::index_field_bounds, "index-field-bound: ", "the index-field bounds", "index_field_bounds_not_needed"},
+                 {&AutoHarness::declared_types, "container-type-from-cast: ", "the declared types (cast containers)", "declared_types_not_needed"},
+                 {&AutoHarness::heap_freed, "heap-object: ", "the heap objects of freed pointers", "heap_freed_not_needed"}};
     for (const auto& op : kOpts) {
     if (ah_kept.*op.flag &&
         (v.status == laws::PROVED || v.status == laws::PROVED_ASSUMING || v.status == laws::PROVED_UNBOUNDED ||
