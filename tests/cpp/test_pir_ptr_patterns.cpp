@@ -475,3 +475,35 @@ TEST_CASE("pir ptr patterns: --pir-index-field-bounds: an array-index field is i
     CHECK(run(kIndexField, "put_after_set", ifb(true)).status == prism::laws::FAILED);
 }
 #endif
+
+namespace {
+
+// tcp_sk(sk): sk is declared `struct sock *` (16 bytes) and used as the larger struct tcp_sock that embeds it first
+const char* kSubtype = R"IR(%struct.sock = type { [16 x i8] }
+%struct.tcp_sock = type { %struct.sock, i64, i64 }
+define i64 @rd_tcp(ptr %sk) !dbg !50 {
+entry:
+  %f0 = getelementptr inbounds %struct.sock, ptr %sk, i32 0, i32 0
+  %x0 = load i8, ptr %f0
+  %f = getelementptr inbounds %struct.tcp_sock, ptr %sk, i32 0, i32 2
+  %x = load i64, ptr %f
+  ret i64 %x
+}
+!1 = !DIFile(filename: "t.c", directory: "/tmp")
+!50 = distinct !DISubprogram(name: "rd_tcp", scope: !1, file: !1, line: 1, unit: !0)
+!51 = !DILocalVariable(name: "sk", arg: 1, scope: !50, file: !1, line: 1, type: !52)
+!52 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !53, size: 64)
+!53 = distinct !DICompositeType(tag: DW_TAG_structure_type, name: "sock", file: !1, line: 3, size: 128, elements: !54)
+!54 = !{}
+)IR";
+
+}  // namespace
+
+#ifdef PRISM_HAS_Z3
+TEST_CASE("pir ptr patterns: a declaration smaller than a struct the code uses at offset 0 is not used (tcp_sk)") {
+    auto r = run(kSubtype, "rd_tcp", declared(true));
+    CHECK_MESSAGE(r.status == prism::laws::PROVED, (r.status + " " + r.msg));
+    CHECK_FALSE(has(r.assumptions, "declared-type:"));
+    CHECK(has(r.assumptions, "points to the start of a valid object of 32 bytes"));
+}
+#endif

@@ -27,6 +27,7 @@ struct Use {
     std::optional<ir::Type> neg_struct; // struct type of a getelementptr based at a negative offset (the container)
     int64_t neg_base = 0;               // that base's offset from the parameter
     std::map<int64_t, ir::Type> pos_struct;  // offset -> struct type of the first getelementptr based there (a > 0)
+    uint64_t max_struct0 = 0;  // largest struct type a getelementptr uses at offset 0 (tcp_sk(sk): struct tcp_sock over a struct sock)
     // --pir-index-field-bounds: (index field offset, width) -> (array element count, array offset, where)
     std::map<std::pair<int64_t, unsigned>, std::tuple<uint64_t, int64_t, std::string>> index_fields;
     std::map<uint64_t, std::vector<Root>> ptr_fields;  // byte offset -> pointer values loaded from there
@@ -242,6 +243,9 @@ void scan_one(const ir::Module& m, const Layout& lay, const ir::Function& g, con
                 if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a > 0 &&
                     !u.pos_struct.count(a) && lay.resolve(in.ety).kind == ir::Type::Struct)
                     u.pos_struct[a] = in.ety;  // --pir-priv-areas: a struct based past the start (a private area)
+                if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a == 0 &&
+                    lay.resolve(in.ety).kind == ir::Type::Struct)  // the largest struct the object is used as
+                    u.max_struct0 = std::max<uint64_t>(u.max_struct0, lay.alloc_size(in.ety));
                 if (in.op == "getelementptr" && in.ops.size() >= 1 && is_local(in.ops[0], alias, &a) && a < 0) {
                     u.negative = true;
                     u.min_neg = std::min(u.min_neg, a);
@@ -447,7 +451,7 @@ struct Builder {
             const bool none = !u.struct_ty && !u.scalar_ty;
             const bool use_decl = opt.declared_types && decl && decl->bytes && decl->composite && !container &&
                                   !(depth == 0 && opt.root_type) && !(u.struct_ty && u.indexed) &&
-                                  !(u.struct_ty && lay.alloc_size(*u.struct_ty) > decl->bytes);
+                                  u.max_struct0 <= decl->bytes;
             // --pir-priv-areas: a struct based at the end of the object (within 128 bytes of alignment) is a private
             // area (netdev_priv, shost_priv, ...): the object reaches its end. The struct end is the declared size or
             // the evidence struct's; without either there is no end to find a tail after.
@@ -498,10 +502,12 @@ struct Builder {
                     plan.assumptions.push_back(priv_line);
                 }
             } else {
-                const uint64_t typed = std::max(type_bytes, priv_end);
+                const uint64_t typed = std::max({type_bytes, priv_end, (!container && !u.indexed) ? u.max_struct0 : uint64_t{0}});
                 // a struct plus its private area is a fully typed object: an access past the area is a violation
                 if (!container && !priv_end) n->elems = std::max<uint64_t>(n->elems, (u.max_end + esz - 1) / esz);
-                n->bytes = std::max(n->elems * esz, priv_end);
+                // the largest struct the object is used as at offset 0 is type evidence too (not access-sized)
+                const uint64_t ev = (opt.declared_types && !container && !u.indexed) ? u.max_struct0 : 0;
+                n->bytes = std::max({n->elems * esz, priv_end, ev});
                 if (priv_end > type_bytes) plan.assumptions.push_back(priv_line);
                 // sized from the very accesses being checked: says little, so it is tagged for separate counting/review
                 if (!container && n->bytes > typed)
