@@ -226,6 +226,54 @@ TEST_CASE("pir triage item 6: --pir-bpf-helpers: ARG_PTR_TO_* arguments are vali
     expect(on, "helper_mem_bad", F);
 }
 
+// Law 6 for integers used as pointers: a cast of a parameter (or another unknown input) is an unconstrained address, so a
+// violation through it is NEEDS-HARNESS; a cast of a constant or of a value computed inside the function stays FAILED
+TEST_CASE("pir: an integer parameter used as a pointer is NEEDS-HARNESS (Law 6); a constant or computed one stays FAILED") {
+    auto cfg0 = prism::default_config();
+    if (skip_without_frontend(cfg0)) return;
+    const std::string NH{prism::laws::NEEDS_HARNESS}, F{prism::laws::FAILED};
+    // without --pir-bpf-helpers the u64 arguments have no stated precondition: never FAILED, never proved
+    auto off = by_function(run_file("kernel_item6_linux.c", "linux", [](prism::Config&) {}));
+    for (const char* fn : {"helper_ctx_ok", "helper_mem_ok", "helper_ctx_null_bad", "helper_scalar_bad", "helper_mem_bad"}) {
+        CAPTURE(fn);
+        REQUIRE(off.count(fn));
+        CHECK_MESSAGE(off.at(fn).status == NH, off.at(fn).message);
+        CHECK(off.at(fn).message.find("int-to-pointer parameter: violation only under an unconstrained address") !=
+              std::string::npos);
+    }
+    // the same without --kernel-api (plain C)
+    auto user = by_function(run_file("kernel_item6_linux.c", "", [](prism::Config&) {}));
+    REQUIRE(user.count("helper_scalar_bad"));
+    CHECK(user.at("helper_scalar_bad").status == NH);
+    // a constant (ERR_PTR(-12)) and an address computed from a local object stay FAILED
+    auto pi = by_function(run_file("kernel_ptrint.c", "linux", [](prism::Config&) {}));
+    for (const char* fn : {"errptr_bad", "opaque_bad"}) {
+        CAPTURE(fn);
+        REQUIRE(pi.count(fn));
+        CHECK_MESSAGE(pi.at(fn).status == F, pi.at(fn).message);
+    }
+    auto pu = by_function(run_file("kernel_ptrint.c", "", [](prism::Config&) {}));
+    REQUIRE(pu.count("opaque_bad"));
+    CHECK(pu.at("opaque_bad").status == F);
+    // the verifier contract states the argument may be anything (ARG_ANYTHING, _OR_NULL): a defect, FAILED (the test above)
+}
+
+// Without --kernel-api the lock primitives are the single-threaded library contracts (no ghost lock state), so the
+// lock-contract markers are not encoded: a declared entry lock that the function releases is not LOCK-HELD-ON-RETURN
+TEST_CASE("pir: lock-contract markers need --kernel-api (no false LOCK-HELD-ON-RETURN in user mode)") {
+    auto cfg0 = prism::default_config();
+    if (skip_without_frontend(cfg0)) return;
+    auto user = by_function(run_file("kernel_lock_contract.c", "", [](prism::Config&) {}));
+    REQUIRE(user.count("release_entry_ok"));
+    CHECK(user.at("release_entry_ok").status == prism::laws::NEEDS_HARNESS);
+    CHECK(user.at("release_entry_ok").message.find("lock contract markers need --kernel-api") != std::string::npos);
+    auto kern = by_function(run_file("kernel_lock_contract.c", "linux", [](prism::Config&) {}));
+    REQUIRE(kern.count("release_entry_ok"));
+    CHECK(kern.at("release_entry_ok").status == prism::laws::PROVED_ASSUMING);
+    REQUIRE(kern.count("entry_held_on_return_bad"));
+    CHECK(kern.at("entry_held_on_return_bad").status == prism::laws::FAILED);
+}
+
 TEST_CASE("pir triage item 6: --pir-global-harness-deep: nested fields and static list heads, values still checked") {
     auto cfg0 = prism::default_config();
     if (skip_without_frontend(cfg0)) return;

@@ -264,6 +264,33 @@ struct Tr final : pirmem::TrApi {
     void atomic_add(int b, Arg delta, int line);
     void rcu_add(int b, Arg delta, int line);
     bool lock_root(const Frame& fr) const { return !frames.empty() && &fr == frames.front(); }
+    // --pir-bpf-helpers: parameters of the analysed helper whose bpf_func_proto types them as any value (ARG_ANYTHING)
+    // or a pointer that may be NULL: the contract states they are arbitrary, so a violation through them is a defect
+    std::set<std::string> bpf_free_params_;
+    // An integer that comes from a parameter or another unknown input (a load, a call result): its value is the
+    // caller's or the environment's. Constants and values computed from them (and from ptrtoint of known objects) are
+    // not. Law 6: an integer-to-pointer cast of such a value is an unconstrained address.
+    bool int_from_input(Frame& fr, const ir::Operand& o, int depth = 0) {
+        if (depth > 64) return true;
+        if (o.v.kind != ir::Value::Local) return false;  // constants and constant expressions
+        auto it = fr.defs.find(o.v.name);
+        if (it == fr.defs.end() || it->second == nullptr) {
+            // a parameter of this frame: the analysed function's (contract-stated free under --pir-bpf-helpers, else
+            // an input), or an inlined callee's (its argument's origin is not followed: an input)
+            return !(lock_root(fr) && bpf_free_params_.count(o.v.name));
+        }
+        const ir::Inst& in = *it->second;
+        static const std::set<std::string> kPure{"add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr", "zext",
+                                                 "sext", "trunc", "udiv", "sdiv", "urem", "srem", "select", "phi",
+                                                 "freeze", "bitcast"};
+        if (in.op == "ptrtoint") return false;  // the address of an object the function has
+        if (!kPure.count(in.op)) return true;   // load, call, ... : unknown
+        for (const auto& x : in.ops)
+            if (int_from_input(fr, x, depth + 1)) return true;
+        for (const auto& [x, from] : in.incoming)
+            if (int_from_input(fr, x, depth + 1)) return true;
+        return false;
+    }
 
     static std::string model_display(const std::string& n) {
         static const std::map<std::string, std::string> k{
@@ -2414,6 +2441,10 @@ struct Tr final : pirmem::TrApi {
             }
             note_assumption("inttoptr-opaque: integer-to-pointer cast of a value that is not a ptrtoint result (line " +
                             std::to_string(line) + ")");
+            if (!iv.is_const && int_from_input(fr, o))
+                note_assumption("int-to-pointer parameter: the integer converted to a pointer at line " + std::to_string(line) +
+                                " comes from a parameter or another unknown input; that it is a valid address is the "
+                                "caller's precondition (Law 6)");
             if (iv.is_const) {
                 emit_assign(cur, result_var(fr, in), Op::Copy, {Arg::c(ptr_w(), iv.bits)});
                 return true;
@@ -2562,6 +2593,9 @@ struct Tr final : pirmem::TrApi {
             return;
         }
         if (n == "__prism_lock_entry" || n == "__prism_lock_exit") {
+            // Without --kernel-api the lock primitives are the single-threaded library contracts (models/kernel/
+            // kernel.cpp: no ghost lock state), so a declared entry lock could never be released: not encoded
+            if (opt.kernel_api.empty()) throw Unenc{"UNENCODED: call @" + n + " (lock contract markers need --kernel-api)"};
             // contract markers: read only in the analysed function (translate_lock.inc)
             if (lock_root(fr)) lock_declare(cur, n == "__prism_lock_entry", arg(0), n == "__prism_lock_entry" ? arg(1) : Arg::c(1, 0), line);
             return;
@@ -3074,6 +3108,9 @@ void bind_bpf_helper_args(Tr& tr, const ir::Function& f, Frame& top) {
         const auto& p = f.params[i];
         if (conflict[i] || p.ty.kind != ir::Type::Int || p.ty.bits != ptr_w()) continue;
         const uint64_t t = (*types)[i], base = t & 0xff;
+        // the proto allows any value here (ARG_ANYTHING, or a pointer that may be NULL): used as a pointer, a violation
+        // is a defect the verifier lets through, not a missing precondition
+        if (base == 9 || (kPtrKinds.count(base) && (t & kMaybeNull))) tr.bpf_free_params_.insert(p.name);
         auto k = kPtrKinds.find(base);
         if (k == kPtrKinds.end() || (t & (kMaybeNull | kMemUser | kMemPercpu))) continue;
         Arg size = Arg::c(64, kUnknownPtrBytes);

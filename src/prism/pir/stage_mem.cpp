@@ -602,6 +602,20 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
             v.cex_args.clear();
         }
     }
+    // Law 6 for integers used as pointers: an integer-to-pointer cast of a parameter or another unknown input is an
+    // unconstrained address (translate.cpp int_from_input); a violation in such a function needs a precondition that is
+    // not stated, as for a pointer parameter. A cast of a constant or of a value computed inside stays FAILED.
+    if (v.status == laws::FAILED) {
+        bool i2p = false;
+        for (auto& a : fn.assumptions) i2p = i2p || a.starts_with("int-to-pointer parameter:");
+        if (i2p) {
+            v.extra["verdict_under_int_to_ptr"] = v.status + ": " + v.message;
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "int-to-pointer parameter: violation only under an unconstrained address (" + v.message + ")";
+            v.cex.clear();
+            v.cex_args.clear();
+        }
+    }
     // --pir-addrspace: the per-CPU area is arbitrary bytes (the CPU's state is the environment, like the arbitrary values of
     // mutable globals): a violation in a function that read it (an arbitrary pc_cpuid used as an index) is not a defect report
     if (v.status == laws::FAILED) {

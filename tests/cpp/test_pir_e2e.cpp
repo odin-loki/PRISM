@@ -639,7 +639,9 @@ TEST_CASE("pir e2e: --pir-build-semantics takes the build's -fwrapv / -fno-stric
         cfg.root = dir;
         cfg.compile_commands = tmp / "compile_commands.json";
         // without the flag: ISO C, the build's option is not taken
-        auto iso = index(pp::run_pir({unit}, cfg));
+        // index() points into the rows: keep them alive (a temporary here left dangling pointers)
+        const auto iso_rows = pp::run_pir({unit}, cfg);
+        auto iso = index(iso_rows);
         for (const char* f : {"wrap_add", "wrap_mul", "wrap_sub", "wrap_shl_sign"}) {
             REQUIRE_MESSAGE(iso.contains({"build_semantics.c", f}), f);
             CHECK_MESSAGE(iso.at({"build_semantics.c", f})->status == L::FAILED, f);
@@ -649,7 +651,9 @@ TEST_CASE("pir e2e: --pir-build-semantics takes the build's -fwrapv / -fno-stric
             CHECK_MESSAGE(iso.at({"build_semantics.c", f})->status != L::PROVED, f);
         }
         cfg.pir_build_semantics = true;
-        auto sem = index(pp::run_pir({unit}, cfg));
+        // index() points into the rows: keep them alive (a temporary here left dangling pointers)
+        const auto sem_rows = pp::run_pir({unit}, cfg);
+        auto sem = index(sem_rows);
         for (const char* f : {"wrap_add", "wrap_mul", "wrap_sub", "wrap_shl_sign", "folded_ovf", "folded_shl"}) {
             REQUIRE_MESSAGE(sem.contains({"build_semantics.c", f}), f);
             const auto* r = sem.at({"build_semantics.c", f});
@@ -709,13 +713,15 @@ TEST_CASE("pir e2e: --ops-table checks an indirect call against the targets of i
     cfg.root = dir;
     // without the option the unit's 19 address-taken functions exceed the 16-target limit: UNENCODED
     {
-        auto got = index(pp::run_pir({dir / "ops_table.c"}, cfg));
+        const auto rows = pp::run_pir({dir / "ops_table.c"}, cfg);  // index() points into the rows
+        auto got = index(rows);
         REQUIRE(got.contains({"ops_table.c", "ops_div_bad"}));
         CHECK(got.at({"ops_table.c", "ops_div_bad"})->status != prism::laws::FAILED);
         CHECK(got.at({"ops_table.c", "ops_safe_ok"})->status != prism::laws::PROVED);
     }
     cfg.ops_table = dir / "ops_table.tsv";
-    auto got = index(pp::run_pir({dir / "ops_table.c"}, cfg));
+    const auto rows = pp::run_pir({dir / "ops_table.c"}, cfg);  // index() points into the rows
+    auto got = index(rows);
     REQUIRE(got.contains({"ops_table.c", "ops_safe_ok"}));
     CHECK(got.at({"ops_table.c", "ops_safe_ok"})->status == prism::laws::PROVED);
     REQUIRE(got.contains({"ops_table.c", "ops_div_bad"}));
