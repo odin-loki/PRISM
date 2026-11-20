@@ -3016,27 +3016,18 @@ void residual_lines(const ObligationNode& o, std::vector<std::string>& out) {
     for (const auto& [off, c] : o.nested) residual_lines(*c, out);
 }
 
-// The unit's internal (static) definitions and the symbols whose address is used, from the IR text. Shared by
-// discharge_pass and the input key (--pir-input-hash), so both read linkage the same way.
+// The unit's internal (static) definitions and the symbols the discharge pass treats as callable from elsewhere
+// (address taken, or named in inline / module assembly), from discharge::unit_graph: the input key
+// (--pir-input-hash) reads linkage exactly as discharge_pass does.
 struct LinkInfo {
     std::set<std::string> internal, taken;
 };
-LinkInfo link_info(const std::string& ir_text) {
+LinkInfo link_info(const ir::Module& mod, const std::string& ir_text, const std::vector<OpsField>& ops) {
+    const auto ug = discharge::unit_graph(mod, ir_text, ops);
     LinkInfo li;
-    for (const auto& line : split_lines(ir_text)) {
-        if (!line.starts_with("define ")) continue;
-        auto at = line.find('@');
-        if (at == std::string::npos) continue;
-        std::size_t e = 0;
-        const auto name = ir_symbol_at(line, at, &e);
-        const auto pre = " " + line.substr(0, at);
-        if (pre.find(" internal ") != std::string::npos || pre.find(" private ") != std::string::npos) li.internal.insert(name);
-    }
-    for (std::size_t at = ir_text.find('@'); at != std::string::npos; at = ir_text.find('@', at + 1)) {
-        std::size_t e = 0;
-        const auto name = ir_symbol_at(ir_text, at, &e);
-        if (e >= ir_text.size() || ir_text[e] != '(') li.taken.insert(name);  // not a call, define or declare: its address is used
-    }
+    li.internal = ug.internal;
+    li.taken = ug.taken;
+    li.taken.insert(ug.asm_tokens.begin(), ug.asm_tokens.end());
     return li;
 }
 
@@ -3459,10 +3450,10 @@ static_assert(sizeof(Stmt) == 216, "pir::Stmt changed: update inkey::stmt");
 static_assert(sizeof(Phi) == 32, "pir::Phi changed: update inkey::function");
 static_assert(sizeof(Term) == 72, "pir::Term changed: update inkey::function");
 static_assert(sizeof(Block) == 152, "pir::Block changed: update inkey::function");
-static_assert(sizeof(Function) == 408, "pir::Function changed: update inkey::function");
+static_assert(sizeof(Function) == 448, "pir::Function changed: update inkey::function");
 static_assert(sizeof(PtrModel) == 32, "pir::PtrModel changed: update inkey::function");
-static_assert(sizeof(CheckOptions) == 304, "pir::CheckOptions changed: update inkey::check_options");
-static_assert(sizeof(EncodeOptions) == 4, "pir::EncodeOptions changed: update inkey::check_options");
+static_assert(sizeof(CheckOptions) == 328, "pir::CheckOptions changed: update inkey::check_options");
+static_assert(sizeof(EncodeOptions) == 8, "pir::EncodeOptions changed: update inkey::check_options");
 #endif
 
 void arg(W& w, const Arg& a) {
@@ -3550,9 +3541,11 @@ void function(W& w, const Function& fn, bool loc) {
     w.u(fn.ptr.max_objects);
     w.u(fn.ptr.fn_obj_base);
     w.i(fn.mutable_globals);
+    strs(w, fn.mutable_global_names);
     w.i(fn.returns_ptr);
     strs(w, fn.ptr_params);
     strs(w, fn.assumptions);
+    w.i(fn.invented_objects);
     strs(w, fn.throws);
     strs(w, fn.libm);
     // loop locations reach only the exported invariants (a location > 0 is exported); without coordinates the key
@@ -3577,6 +3570,9 @@ void check_options(W& w, const CheckOptions& c) {
     w.d(c.certify_budget_s);
     w.d(c.function_budget_s);
     w.i(c.function_budget != nullptr);
+    w.i(c.complexity);
+    w.d(c.function_units_s);
+    w.i(c.jobs);
     w.i(static_cast<bool>(c.debug_before_query));
     w.i(c.use_cache);
     // cache_dir, max_parallel (hardware threads), tool_dirs/tool_paths (where the solvers are) and refuse_tools_under
@@ -3585,6 +3581,7 @@ void check_options(W& w, const CheckOptions& c) {
     w.u(c.tool_paths.size());
     for (auto& [k, v] : c.tool_paths) w.s(k);
     w.i(static_cast<int>(c.encode.memory));
+    w.i(c.encode.havoc_uf);
     w.i(c.houdini_budget != nullptr);
     if (c.houdini_budget) w.d(c.houdini_budget->total_s);
     strs(w, c.only_props);
@@ -3796,10 +3793,10 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         std::vector<int> starts;           // DISubprogram lines of the unit's own functions, sorted
         // Folded UB not carried by an instruction of the function can still decide its row (the end of this
         // function): an entry with line > 0 by equality with the row's line (the function's first line or its
-        // violation's, both before the next function's first line); an entry with line <= 0 by the owner rule (the
-        // row with the largest line at or before it, which can be any earlier function). A function is clear of
-        // both when no entry with line > 0 lies in [its line, the next function's line) and no entry with line <= 0
-        // lies at or after its line.
+        // violation's, both before the next function's first line); an entry with line <= 0 by the owner rule
+        // (finalize_unit owner_of: the source span that contains it, else every function whose span is not known).
+        // A function is clear of both when no entry with line > 0 lies in [its line, the next function's line) and
+        // the unit has no entry with line <= 0.
         bool folded_reaches(const std::vector<FoldedUb>& folded, int line) const {
             if (folded.empty()) return false;
             if (line <= 0) return true;
@@ -3807,7 +3804,9 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
             const int next = nx == starts.end() ? std::numeric_limits<int>::max() : *nx;
             for (const auto& x : folded) {
                 if (x.line > 0 && x.line >= line && x.line < next) return true;
-                if (x.line <= 0 && -x.line >= line) return true;
+                // an entry with line <= 0 goes to the function whose source span contains it, or to every function
+                // whose span is not known (finalize_unit owner_of): any function of the unit may be charged
+                if (x.line <= 0) return true;
             }
             return false;
         }
@@ -3828,6 +3827,10 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
 #endif
         w.i(cfg.pir_vacuity);
         w.i(cfg.pir_discharge);
+        w.i(cfg.pir_discharge_closure);
+        w.i(!cfg.pir_discharge_out.empty());
+        w.s(cfg.pir_obligations.empty() ? std::string() : sha256_hex(read_file(cfg.pir_obligations)));
+        w.i(cfg.pir_header_fns);
         w.i(cfg.pir_harness);
         w.i(cfg.strict_aliasing);
         w.s(cfg.pir_kernel_api);
@@ -3837,7 +3840,7 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         inkey::env(w);
         kctx->base = std::move(w.o);
         kctx->unit_sha = sha256_hex(inkey::stable_ir(*ir) + "\n\x01source\n" + read_file(pre_main ? low.cc_main : u.path));
-        kctx->link = link_info(*ir);
+        kctx->link = link_info(mod, *ir, topt.ops_table);
         for (const auto& fn : mod.functions) {
             if (fn.is_declaration || fn.is_model) continue;
             for (const auto& b : fn.blocks)
@@ -3987,14 +3990,18 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
             std::vector<std::string> unit_why;
             // the harness discharge (discharge_pass) changes only a PROVED-ASSUMING row under an automatic harness of
             // a static, not address-taken function called in the unit: its callers decide it
-            if (cfg.pir_discharge && cfg.pir_harness && internal && !taken && has_callers && has_auto_harness(fn))
+            // (--pir-discharge-closure, --pir-discharge-out and --pir-obligations read more of the unit, and other
+            // units' plans: any harnessed function's row is then the unit's)
+            const bool wide = cfg.pir_discharge_closure || !cfg.pir_discharge_out.empty() || !cfg.pir_obligations.empty();
+            if (cfg.pir_discharge && cfg.pir_harness && has_auto_harness(fn) && (wide || (internal && !taken && has_callers)))
                 unit_why.push_back("discharge");
             // Not scoped: the error-sink rule (caller_discharged_asserts) reads which callers were checked in the
             // same process, which no key can cover. It acts only on a FAILED "assert:" row (and makes it "error
             // sink: ..."); the row before it is the check's own, so equal keys agree on whether it can act. Such
             // rows must not be transferred (docs/PIR.md "Input key").
             if (kctx->lock_named.count(*f.function) || kctx->lock_named.count(irf.name)) unit_why.push_back("lock-order");
-            if (kctx->folded_reaches(folded, sub.line)) unit_why.push_back("folded-ub");
+            if (kctx->folded_reaches(folded, sub.line) || (!rec.header_file.empty() && !low.folded_other.empty()))
+                unit_why.push_back("folded-ub");
             if (fopt.globals_initial) unit_why.push_back("globals-initial");
             if (is_cxx(u.path)) unit_why.push_back("c++");
             if (cfg.allow_exec) unit_why.push_back("translation-validation");  // replays the unit's own IR (lli)
@@ -4213,6 +4220,12 @@ void finalize_unit(Analyzed& res, const Unit& u, const Frontend& fe, const Lower
     // --pir-input-hash: nothing was checked, so the passes over checked rows below have nothing to do (what they
     // read is in the keys' scope)
     if (cfg.pir_input_hash && !recs.empty()) return;
+    // the unit's main file, as prepare_unit saw it (the folded-UB owner rule below reads every function of it)
+    const auto& mod = *res.mod;
+    std::error_code src_ec;
+    const bool pre_main = !low.cc_main.empty() && fs::is_regular_file(low.cc_main, src_ec);
+    const auto unit_name = (pre_main ? low.cc_main : u.path).filename().string();
+    const std::map<std::string, std::vector<std::pair<int, int>>> fn_spans;  // empty: owner_of reads the spans itself
     // Folded UB that no instruction carries: the function cannot be proved.
     // Its owner is decided over ALL functions of the unit's main file, never only the ones this process checks
     // (PRISM_PIR_ONLY chunks, re-runs): the function whose source span (cparse start..end line) contains the line. When
