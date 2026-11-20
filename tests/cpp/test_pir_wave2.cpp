@@ -420,6 +420,14 @@ entry:
   %r = trunc i128 %q to i64
   ret i64 %r
 }
+define i64 @addovf(i64 %a) {
+entry:
+  %x = sext i64 %a to i128
+  %s = shl i128 %x, 64
+  %q = add nsw i128 %s, %s
+  %r = trunc i128 %q to i64
+  ret i64 %r
+}
 define i64 @divmin(i1 %c) {
 entry:
   %y = select i1 %c, i128 -170141183460469231731687303715884105728, i128 5
@@ -491,7 +499,15 @@ TEST_CASE("pir wave2: --pir-wide-int: 128-bit bit-vectors; INT128_MIN / -1 and o
     CHECK(u.status == prism::laws::NEEDS_HARNESS);
     CHECK(u.msg.find("wider than 64 bits") != std::string::npos);
     CHECK_MESSAGE(run(kWide, "mulhi", on).status == prism::laws::PROVED, all(run(kWide, "mulhi", on)));
-    CHECK(run(kWide, "sq", on).status == prism::laws::FAILED);
+    {
+        // (x * x) * x * x at 128 bits overflows, but the query needs a strong bit-vector solver (bitwuzla): with Z3 alone
+        // it can time out. It must never be proved; an i128 overflow that every solver decides fast must be FAILED
+        auto sq = run(kWide, "sq", on);
+        CHECK_MESSAGE((sq.status == prism::laws::FAILED || sq.status == prism::laws::UNKNOWN), all(sq));
+        auto ao = run(kWide, "addovf", on);
+        CHECK_MESSAGE(ao.status == prism::laws::FAILED, all(ao));
+        CHECK(ao.msg.find("INT-SIGNED-OVF") != std::string::npos);
+    }
     auto d = run(kWide, "divmin", on);
     CHECK_MESSAGE(d.status == prism::laws::FAILED, all(d));
     CHECK(d.msg.find("INT-SIGNED-OVF") != std::string::npos);

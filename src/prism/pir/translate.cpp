@@ -3161,11 +3161,18 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
             plan->root->elems = 1;
             plan->root->bytes = want;
             // the harness's own line for this object names the size it planned: say which size holds instead
+            // (not always the first line: size tags such as harness-size-from-access come before it). The access-sized
+            // tag of the root no longer applies: its size is the allocation's
             const std::string head = p.name + " points to the start of a valid object of ";
-            if (!plan->assumptions.empty() && plan->assumptions.front().starts_with(head))
-                plan->assumptions.front() = head + std::to_string(want) + " bytes (1 x " + plan->root->type.text +
-                                            " and its private area: driver environment model below), 16-byte aligned, "
-                                            "fields initialised with arbitrary values (auto harness)";
+            const std::string size_tag = "harness-size-from-access: " + p.name + " sized ";
+            std::erase_if(plan->assumptions, [&](const std::string& a) { return a.starts_with(size_tag); });
+            for (auto& a : plan->assumptions)
+                if (a.starts_with(head)) {
+                    a = head + std::to_string(want) + " bytes (1 x " + plan->root->type.text +
+                        " and its private area: driver environment model below), " + std::to_string(plan->root->align) +
+                        "-byte aligned, fields initialised with arbitrary values (auto harness)";
+                    break;
+                }
             trailing_text = trailing->text + "; object size " + std::to_string(want) + " bytes (replaces the automatic harness size)";
         }
     }
@@ -3210,10 +3217,13 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
                 for (const auto& [off, c] : child->nested) need = std::max<uint64_t>(need, child->member_off + off + 8);
                 if (child->member_off == 0 && need <= S) {
                     const std::string head = child->name + " points to the start of a valid object of ";
+                    const std::string size_tag = "harness-size-from-access: " + child->name + " sized ";
+                    std::erase_if(plan->assumptions, [&](const std::string& a) { return a.starts_with(size_tag); });
                     for (auto& a : plan->assumptions)
                         if (a.starts_with(head))
                             a = head + std::to_string(S) + " bytes (the object probe allocated: driver environment model " +
-                                "below), 16-byte aligned, fields initialised with arbitrary values (auto harness)";
+                                "below), " + std::to_string(child->align) +
+                                "-byte aligned, fields initialised with arbitrary values (auto harness)";
                     child->bytes = S;
                     ok = true;
                 }
