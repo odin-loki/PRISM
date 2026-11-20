@@ -37,7 +37,8 @@ const std::map<std::string, std::string>& folding_flags() {
 
 }  // namespace
 
-std::vector<FoldedUb> parse_folded_clang_diagnostics(const std::string& text, const fs::path& src) {
+std::vector<FoldedUb> parse_folded_clang_diagnostics(const std::string& text, const fs::path& src,
+                                                     std::vector<std::pair<std::string, FoldedUb>>* other) {
     std::vector<FoldedUb> out;
     for (auto& line : split_lines(text)) {
         auto w = line.find(": warning: ");
@@ -54,17 +55,18 @@ std::vector<FoldedUb> parse_folded_clang_diagnostics(const std::string& text, co
         if (c1 == std::string::npos) continue;
         auto path = head.substr(0, c1);
         fs::path diag(path);
-        if (diag != src) {
+        bool main = diag == src;
+        if (!main) {
             std::error_code ec;
-            bool ok = fs::equivalent(diag, src, ec);
-            if (!ok)
-                ok = diag.lexically_normal().generic_string() == src.lexically_normal().generic_string();
-            if (!ok && diag.filename() == src.filename()) {
+            main = fs::equivalent(diag, src, ec);
+            if (!main)
+                main = diag.lexically_normal().generic_string() == src.lexically_normal().generic_string();
+            if (!main && diag.filename() == src.filename()) {
                 const auto dpar = diag.parent_path();
                 const auto spar = src.parent_path();
-                if (dpar.empty() || dpar == "." || dpar.filename() == spar.filename()) ok = true;
+                if (dpar.empty() || dpar == "." || dpar.filename() == spar.filename()) main = true;
             }
-            if (!ok) continue;
+            if (!main && !other) continue;
         }
         FoldedUb f;
         try {
@@ -75,7 +77,8 @@ std::vector<FoldedUb> parse_folded_clang_diagnostics(const std::string& text, co
         }
         f.cls = it->second;
         f.msg = line.substr(w + 11, lb - w - 11) + " [" + flag + "]";
-        out.push_back(std::move(f));
+        if (main) out.push_back(std::move(f));
+        else other->emplace_back(path, std::move(f));
     }
     return out;
 }

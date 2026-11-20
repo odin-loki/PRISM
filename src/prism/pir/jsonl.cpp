@@ -111,6 +111,8 @@ json jsonl_record(const Finding& f, const Config& cfg) {
     r["engine_version"] = PRISM_VERSION;
 #endif
     r["verdict"] = f.status;
+    // --pir-header-fns: the function's own file (its start line is that file's)
+    if (auto s = get(f, "header_file"); !s.empty()) r["header_file"] = s;
     const std::string lvl = proof_level(f);
     r["level"] = lvl.empty() ? json(nullptr) : json(lvl);
     const bool mem = hit_memory_limit(f);
