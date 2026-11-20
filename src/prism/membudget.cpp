@@ -270,7 +270,8 @@ void watchdog() {
             const uint64_t b = budget_mb();
             if (encoding && b > 0 && tree_rss_mb() < b + b / 2) {
                 streak.reset();  // a later phase's streak starts when that phase does
-                g_trips.fetch_add(1);
+                // not counted in trips(): no query was interrupted, the
+                // encoder's own guard names the stop ("while encoding")
                 std::lock_guard<std::mutex> lk(g_wmu);
                 for (auto& [id, r] : g_watches) {
                     r.fired = true;
