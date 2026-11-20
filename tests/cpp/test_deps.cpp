@@ -963,6 +963,11 @@ TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
         if (rel == "tools/svcomp/prism.py") return true;
         // CI bootstrap only (pinned cmake / LLVM fetch before any build exists).
         if (rel == "scripts/fetch_llvm.py" || rel == "scripts/fetch_toolchain.py") return true;
+        // Lean database data tooling (docs/LEANDB.md): pin generator, the fetch-and-import entry point, and the
+        // OS-Proving normaliser it runs unmodified. Data scripts, not the engine.
+        if (rel == "scripts/leandb_make_pin.py" || rel == "scripts/leandb_fetch_local.py" || rel == "tools/leandb/build_lean_db.py" ||
+            rel == "tools/leandb/leanparse.py" || rel == "tools/leandb/eval_premises.py")
+            return true;
         if (!k_python_engine_deleted) {
             for (const char* pre : {"prism/", "tests/", "scripts/", "tools/"})
                 if (rel.starts_with(pre)) return true;
@@ -1008,6 +1013,8 @@ TEST_CASE("deps: tracked .py files match the phase-5 allow-list") {
         }
         std::sort(tracked_outside_vendor.begin(), tracked_outside_vendor.end());
         CHECK(tracked_outside_vendor == std::vector<std::string>{"scripts/fetch_llvm.py", "scripts/fetch_toolchain.py",
+                                                             "scripts/leandb_fetch_local.py", "scripts/leandb_make_pin.py",
+                                                             "tools/leandb/build_lean_db.py", "tools/leandb/eval_premises.py", "tools/leandb/leanparse.py",
                                                              "tools/svcomp/prism.py"});
     }
 }

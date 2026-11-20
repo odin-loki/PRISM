@@ -38,3 +38,7 @@ soundness-out/
 # Model weights are never vendored (FORGE .fpk, GGUF).
 *.fpk
 *.gguf
+
+# Lean DB: local-only shards (sources whose licence does not allow redistribution) and scratch
+data/leandb/local/
+data/leandb/downloads/

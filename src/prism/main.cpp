@@ -1,3 +1,5 @@
+#include "prism/leandb.hpp"
+#include "prism/sim/cli.hpp"
 #include "prism/exec.hpp"
 #include "prism/exit.hpp"
 #include "prism/log.hpp"
@@ -48,6 +50,9 @@ int main(int argc, char** argv) {
         if (sub == "triage") return ai::triage_main(argc - 2, argv + 2);
         // docs/PROOF_LIBRARY.md: earlier verdicts as data (import, vet, stats, lookup)
         if (sub == "library") return library::library_main(argc - 2, argv + 2);
+        // Opt-in symbolic similarity search (docs/SIM_SEARCH.md); never changes a verdict.
+        if (sub == "sim") return sim::sim_main(argc - 2, argv + 2);
+        if (sub == "leandb") return leandb::leandb_main(argc - 2, argv + 2);
     }
     auto parsed = parse_cli(std::span<const char* const>(argv + 1, argc - 1));
     if (!parsed.value) {
