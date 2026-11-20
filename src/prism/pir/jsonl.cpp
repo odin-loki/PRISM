@@ -111,6 +111,9 @@ json jsonl_record(const Finding& f, const Config& cfg) {
     r["engine_version"] = PRISM_VERSION;
 #endif
     r["verdict"] = f.status;
+    // --pir-input-hash (stage.cpp inkey)
+    for (const char* k : {"input_key", "input_key_loc_free", "input_scope"})
+        if (auto s = get(f, k); !s.empty()) r[k] = s;
     const std::string lvl = proof_level(f);
     r["level"] = lvl.empty() ? json(nullptr) : json(lvl);
     const bool mem = hit_memory_limit(f);

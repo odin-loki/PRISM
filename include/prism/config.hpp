@@ -62,6 +62,7 @@ struct Config {
     bool pir_discharge = false;     // --pir-discharge: assume-guarantee, harness obligations checked at every call site (docs/HARNESS_GENERATOR.md)
     bool pir_container_of = false;  // --pir-container-of: a parameter used at a negative constant offset gets its containing object
     bool pir_vacuity = false;       // --pir-vacuity: a harnessed function's exit must be reachable under its assumptions
+    bool pir_input_hash = false;    // --pir-input-hash: write each function's input key, check nothing (docs/PIR.md "Input key")
     int pir_harness_depth = 2;                 // --pir-harness-depth N: nested pointer levels
     unsigned long long pir_harness_elems = 16;  // --pir-harness-elems N: default array-like pointee length
     unsigned long long pir_harness_bytes = 64;  // --pir-harness-bytes N: size when the pointee type is unknown
