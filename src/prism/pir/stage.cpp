@@ -3386,6 +3386,9 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
     topt.kernel_current = cfg.pir_kernel_current;
     topt.global_harness = cfg.pir_global_harness;
     topt.lock_wrappers = cfg.pir_lock_wrappers;
+    topt.lock_scopes = cfg.pir_lock_scopes;
+    topt.bpf_helpers = cfg.pir_bpf_helpers && cfg.pir_kernel_api == "linux";
+    topt.global_harness_deep = cfg.pir_global_harness_deep;
     if (!cfg.ops_table.empty()) {  // --ops-table (docs/PIR.md "Indirect calls through ops tables")
         std::string ops_err;
         topt.ops_table = load_ops_table(cfg.ops_table, ops_err);
@@ -3504,7 +3507,7 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
         if (!cfg.pir_kernel_api.empty()) {
             const auto contracts = cfg.pir_lock_contracts.empty() ? std::vector<LockContract>{}
                                                                   : read_lock_contracts(cfg.pir_lock_contracts);
-            const auto rep = lock_order_report(mod, contracts);
+            const auto rep = lock_order_report(mod, contracts, cfg.pir_lock_scopes);
             for (auto& x : rep.inversions) kctx->lock_named.insert(x.function);
             for (auto& x : rep.cycles)
                 if (!x.functions.empty()) kctx->lock_named.insert(x.functions.back());
@@ -3848,7 +3851,7 @@ void finalize_unit(Analyzed& res, const Unit& u, const Frontend& fe, const Lower
                                                               : read_lock_contracts(cfg.pir_lock_contracts);
         // interrupt context (LOCK-CTX-MISMATCH, SLEEP-IN-ATOMIC in hardirq) and cycles of three or more
         // lock classes (LOCK-ORDER-INVERSION with extra "cycle") come from the same pass
-        const auto rep = lock_order_report(*res.mod, contracts);
+        const auto rep = lock_order_report(*res.mod, contracts, cfg.pir_lock_scopes);
         if (std::getenv("PRISM_LOCK_COVERAGE")) {  // diagnostic only: one line per unit on stderr, no finding
             const auto& cv = rep.coverage;
             std::string kinds, fl;

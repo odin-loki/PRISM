@@ -180,6 +180,11 @@ struct Tr final : pirmem::TrApi {
     int caught_var_ = -1;                             // caught_'s preassigned variable                        // oom_ preassigned, its object not yet emitted
 
     Arg fn_addr(const std::string& name) override;
+    // --pir-global-harness-deep (defined after alloc_harness_node)
+    void global_harness_nest(Arg obj, const std::string& name) override;
+    void list_head_harness(Arg p, const std::string& name) override;
+    uint64_t list_head_pad(const std::string& name) override;
+    const ir::Function* root_fn_ = nullptr;  // the analysed function
     Snap snap();
     void restore(const Snap& s);
     void soft_stop(int b, const std::string& msg, int line);
@@ -206,6 +211,7 @@ struct Tr final : pirmem::TrApi {
     void note_assumption(const std::string& text);
     void asm_havoc(Frame& fr, const ir::Inst& in, int& cur, int line, const std::string& tag = "asm-havoc", const std::string& extra = "");
     bool asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line);
+    bool asm_mmio(Frame& fr, const ir::Inst& in, int& cur, int line);
     void unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line);
     // --pir-icall-havoc: an indirect call not resolved to inlined targets is a havoc of all memory (translate_kernel.inc)
     Arg icall_havoc(int& cur, const ir::Inst& in, unsigned w, int line, const std::string& why);
@@ -230,6 +236,12 @@ struct Tr final : pirmem::TrApi {
     void lock_insert(int b, unsigned base, Arg p, Arg fresh, int line);
     void lock_declare(int b, bool entry, Arg p, Arg spin, int line);
     void lock_table(Frame& fr);
+    void lock_scopes_entry(Frame& fr);
+    // every object's contents become arbitrary, except PRISM's ghost objects (lock state, allocation-failure flag)
+    void havoc_memory(int b, int line);
+    std::vector<Arg> lk_exempt_;  // --pir-lock-scopes: locks the root acquires and never releases (returned held)
+    bool lk_rcu_exempt_ = false;  // --pir-lock-scopes: the root only enters RCU read-side sections (returns inside one)
+    bool lk_pre_exempt_ = false;  // --pir-lock-scopes: the root only disables preemption / bh (returns with it disabled)
     bool lock_contracted(const std::string& fn) const;
     void atomic_add(int b, Arg delta, int line);
     void rcu_add(int b, Arg delta, int line);
@@ -574,6 +586,7 @@ struct Tr final : pirmem::TrApi {
             // allocated eagerly (after oom_), so its object is the LLVM side's too (pir-lean)
             if (pirmem::reaches_caught_slot(m, f)) caught_var_ = newvar("_caught", ptr_w());
             // the ghost lock state, when a lock spec can reach it (translate_lock.inc)
+            root_name_ = f.name;
             if (opt.lock_wrappers && !lock_contracted(f.name)) {
                 const int fx = lock_effects(m, f);
                 lock_wrapper_ = fx == 1 ? 1 : fx == 2 ? 2 : 0;
@@ -716,6 +729,7 @@ struct Tr final : pirmem::TrApi {
                 caught_ = mt.alloc(-1, Arg::c(64, 72), MemKind::Static, 1, "caught exceptions (PRISM)", 0, caught_var_);
             if (lk_pending_) emit_lock_state();  // translate_lock.inc
             if (lk_) lock_table(fr);            // --lock-contracts of this root (translate_lock.inc)
+            if (lk_) lock_scopes_entry(fr);     // --pir-lock-scopes (translate_lock.inc)
         }
         const auto live = normal_blocks(f);
         for (auto& bl : f.blocks)
@@ -2820,6 +2834,125 @@ Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
     return obj;
 }
 
+// --pir-bpf-helpers: integer leaves of a constant initialiser, by byte offset (width in bytes, bits).
+void flat_leaves(const pirmem::Layout& lay, const ir::Type& ty, const ir::Value& v, uint64_t off,
+                 std::map<uint64_t, std::pair<unsigned, uint64_t>>& ints) {
+    const auto& r = lay.resolve(ty);
+    if (v.kind == ir::Value::Int) {
+        if (r.kind == ir::Type::Int) ints[off] = {std::max(1u, r.bits / 8), v.bits};
+        return;
+    }
+    if (v.kind != ir::Value::Aggregate) return;
+    for (std::size_t i = 0; i < v.elems.size(); ++i) {
+        uint64_t eo = off;
+        if (r.kind == ir::Type::Struct) eo += lay.field_offset(r, static_cast<unsigned>(i));
+        else if (r.kind == ir::Type::Array && !r.elems.empty()) eo += i * lay.alloc_size(r.elems[0]);
+        else return;
+        flat_leaves(lay, v.elems[i].ty, v.elems[i].v, eo, ints);
+    }
+}
+
+// --pir-bpf-helpers (Linux): the BPF verifier's argument contract of a helper. A helper is the `.func` of a
+// `struct bpf_func_proto` constant of the unit (include/linux/bpf.h, Linux 6.18: func, four bools, ret_type, then
+// arg1_type..arg5_type as enum bpf_arg_type, then the arg_btf_id / arg_size union). For each argument typed
+// ARG_PTR_TO_* without PTR_MAYBE_NULL (and not a user, per-CPU, arena or callback pointer), the verifier rejects a
+// program that passes NULL or anything but valid memory of that kind, so the parameter (a u64 of the BPF_CALL_x
+// wrapper) is bound to a valid object: of the size argument's bytes for ARG_PTR_TO_MEM followed by
+// ARG_CONST_SIZE[_OR_ZERO], of arg_size bytes for MEM_FIXED_SIZE, otherwise kUnknownPtrBytes arbitrary bytes.
+// One named assumption per argument. Two protos naming the same function must agree on an argument, or it stays free.
+void bind_bpf_helper_args(Tr& tr, const ir::Function& f, Frame& top) {
+    const auto& lay = tr.mt.layout();
+    std::optional<std::array<uint64_t, 5>> types, sizes;
+    std::string proto;
+    bool conflict[5] = {false, false, false, false, false};
+    for (const auto& g : tr.m.globals) {
+        if (g.init.empty() || g.init[0].v.kind != ir::Value::Aggregate || g.init[0].v.elems.empty()) continue;
+        if (g.init[0].v.elems[0].v.kind != ir::Value::Global || g.init[0].v.elems[0].v.name != f.name) continue;
+        try {
+            const auto& r = lay.resolve(g.ty);
+            // the shape of struct bpf_func_proto: ptr, i8 x 4, i32, the arg-type union (20 bytes), the arg_size union
+            if (r.kind != ir::Type::Struct || r.elems.size() < 8 || r.elems[0].kind != ir::Type::Ptr) continue;
+            // the arg_size union: the next field after the arg-type union, past clang's [N x i8] padding
+            unsigned ui = 7;
+            while (ui < r.elems.size() && r.elems[ui].kind == ir::Type::Array && !r.elems[ui].elems.empty() &&
+                   r.elems[ui].elems[0].kind == ir::Type::Int && r.elems[ui].elems[0].bits == 8 &&
+                   lay.store_size(r.elems[ui]) < 8)
+                ++ui;
+            if (ui >= r.elems.size()) continue;
+            bool shape = lay.resolve(r.elems[5]).kind == ir::Type::Int && lay.resolve(r.elems[5]).bits == 32 &&
+                         lay.store_size(r.elems[6]) == 20 && lay.store_size(r.elems[ui]) == 40;
+            for (unsigned i = 1; i <= 4 && shape; ++i)
+                shape = lay.resolve(r.elems[i]).kind == ir::Type::Int && lay.resolve(r.elems[i]).bits == 8;
+            if (!shape) continue;
+            std::map<uint64_t, std::pair<unsigned, uint64_t>> ints;
+            flat_leaves(lay, g.ty, g.init[0].v, 0, ints);
+            const uint64_t at = lay.field_offset(r, 6), as = lay.field_offset(r, ui);
+            std::array<uint64_t, 5> t{}, s{};
+            for (unsigned i = 0; i < 5; ++i) {
+                auto it = ints.find(at + 4 * i);
+                t[i] = it == ints.end() ? 0 : (it->second.second & 0xffffffffu);
+                auto is = ints.find(as + 8 * i);
+                s[i] = is == ints.end() ? 0 : is->second.second;
+            }
+            if (!types) {
+                types = t;
+                sizes = s;
+                proto = g.name;
+            } else {
+                for (unsigned i = 0; i < 5; ++i)
+                    if ((*types)[i] != t[i] || (*sizes)[i] != s[i]) conflict[i] = true;
+                proto += ", " + g.name;
+            }
+        } catch (const Unenc&) {
+        }
+    }
+    if (!types) return;
+    constexpr uint64_t kMaybeNull = 1u << 8, kMemUser = 1u << 11, kMemPercpu = 1u << 12, kMemUninit = 1u << 15,
+                       kFixedSize = 1u << 18;
+    static const std::map<uint64_t, const char*> kPtrKinds{
+        {1, "ARG_CONST_MAP_PTR"},       {2, "ARG_PTR_TO_MAP_KEY"},  {3, "ARG_PTR_TO_MAP_VALUE"},
+        {4, "ARG_PTR_TO_MEM"},          {8, "ARG_PTR_TO_CTX"},      {11, "ARG_PTR_TO_SPIN_LOCK"},
+        {12, "ARG_PTR_TO_SOCK_COMMON"}, {13, "ARG_PTR_TO_SOCKET"},  {14, "ARG_PTR_TO_BTF_ID"},
+        {15, "ARG_PTR_TO_RINGBUF_MEM"}, {17, "ARG_PTR_TO_BTF_ID_SOCK_COMMON"}, {20, "ARG_PTR_TO_STACK"},
+        {21, "ARG_PTR_TO_CONST_STR"},   {22, "ARG_PTR_TO_TIMER"},   {23, "ARG_KPTR_XCHG_DEST"},
+        {24, "ARG_PTR_TO_DYNPTR"}};
+    for (unsigned i = 0; i < 5 && i < f.params.size(); ++i) {
+        const auto& p = f.params[i];
+        if (conflict[i] || p.ty.kind != ir::Type::Int || p.ty.bits != ptr_w()) continue;
+        const uint64_t t = (*types)[i], base = t & 0xff;
+        auto k = kPtrKinds.find(base);
+        if (k == kPtrKinds.end() || (t & (kMaybeNull | kMemUser | kMemPercpu))) continue;
+        Arg size = Arg::c(64, kUnknownPtrBytes);
+        std::string size_text = std::to_string(kUnknownPtrBytes) + " arbitrary bytes (the size is a model bound)";
+        const uint64_t nb = i + 1 < 5 ? ((*types)[i + 1] & 0xff) : 0;
+        if (base == 4 && (t & kFixedSize)) {
+            if (!(*sizes)[i]) continue;
+            size = Arg::c(64, (*sizes)[i]);
+            size_text = std::to_string((*sizes)[i]) + " bytes (MEM_FIXED_SIZE, arg" + std::to_string(i + 1) + "_size)";
+        } else if (base == 4 && (nb == 6 || nb == 7) && !conflict[i + 1] && i + 1 < f.params.size() &&
+                   f.params[i + 1].ty.kind == ir::Type::Int && top.env.count(f.params[i + 1].name)) {
+            Arg n = top.env.at(f.params[i + 1].name);
+            if (n.width < 64) n = tr.assign(-1, Op::ZExt, 64, {n}, "bpfsz");
+            if (nb == 6) tr.assume(-1, tr.assign(-1, Op::Ne, 1, {n, Arg::c(64, 0)}, "bpfsz"));
+            size = n;
+            size_text = "arg" + std::to_string(i + 2) + " (" + f.params[i + 1].name + ") bytes (" +
+                        (nb == 6 ? "ARG_CONST_SIZE: not 0" : "ARG_CONST_SIZE_OR_ZERO") + ")";
+        } else if (base == 4) {
+            continue;  // memory without a size the proto states: left free
+        }
+        const int init = (t & kMemUninit) ? 0 : 2;
+        Arg obj = tr.mt.alloc(-1, size, MemKind::Extern, init, "*" + p.name + " (bpf verifier: " + k->second + ")", 0);
+        top.env[p.name] = obj;
+        top.ptr_ints.insert(p.name);
+        tr.out.assumptions.push_back("bpf verifier: argument arg" + std::to_string(i + 1) + " (" + p.name + ") of @" +
+                                     f.name + " typed " + k->second + ((t & ~uint64_t{0xff}) ? " (with flags)" : "") +
+                                     " in " + proto + " is non-null: a valid object of " + size_text +
+                                     (init ? ", initialised with arbitrary values" : ", uninitialised (MEM_UNINIT)") +
+                                     " (the BPF verifier rejects a program that passes anything else; in-kernel callers "
+                                     "of the helper are not checked here)");
+    }
+}
+
 // Pointer parameter bound to an object built from the IR types (--pir-harness).
 // Returns false (and `why`) when no object can be built.
 bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame& top, std::string* why,
@@ -2961,7 +3094,160 @@ void bind_id_entry(Tr& tr, const ir::Param& p, const CallbackBinding& b, Frame& 
     tr.out.assumptions.push_back(b.text);
 }
 
+// --pir-global-harness-deep: the values loaded from @name at offset 0 (`load ptr, ptr @name`, also through a
+// getelementptr constant expression with all-zero indices) in the analysed function and the unit functions it calls
+// (directly, to the inlining depth): the roots the harness planner follows.
+std::vector<std::pair<const ir::Function*, std::string>> global_load_roots(const Tr& tr, const std::string& name) {
+    std::vector<std::pair<const ir::Function*, std::string>> roots;
+    if (!tr.root_fn_) return roots;
+    auto at_global = [&](const ir::Operand& o) {
+        if (o.v.kind == ir::Value::Global) return o.v.name == name;
+        if (o.v.kind != ir::Value::ConstExpr || o.v.ce_op != "getelementptr" || o.v.elems.empty() ||
+            o.v.elems[0].v.kind != ir::Value::Global || o.v.elems[0].v.name != name)
+            return false;
+        for (std::size_t k = 1; k < o.v.elems.size(); ++k) {
+            const auto& v = o.v.elems[k].v;
+            if (!(v.kind == ir::Value::Zero || (v.kind == ir::Value::Int && v.bits == 0))) return false;
+        }
+        return true;
+    };
+    std::set<const ir::Function*> seen;
+    std::vector<std::pair<const ir::Function*, int>> todo{{tr.root_fn_, 0}};
+    while (!todo.empty()) {
+        auto [g, d] = todo.back();
+        todo.pop_back();
+        if (!seen.insert(g).second) continue;
+        for (auto& b : g->blocks)
+            for (auto& in : b.insts) {
+                if (in.op == "load" && in.ty.kind == ir::Type::Ptr && !in.ops.empty() && !in.result.empty() &&
+                    at_global(in.ops[0]))
+                    roots.emplace_back(g, in.result);
+                if ((in.op == "call" || in.op == "invoke") && !in.callee.empty() && d < tr.opt.inline_depth)
+                    if (const auto* h = tr.m.find(in.callee); h && !h->blocks.empty() && !h->is_model)
+                        todo.emplace_back(h, d + 1);
+            }
+        // a loop's cursor (list_for_each: phi [ head->next, pos->next ]) holds such a value too
+        std::set<std::string> mine;
+        for (auto& [rf, rv] : roots)
+            if (rf == g) mine.insert(rv);
+        for (bool grew = !mine.empty(); grew;) {
+            grew = false;
+            for (auto& b : g->blocks)
+                for (auto& in : b.insts) {
+                    if (in.op != "phi" || in.ty.kind != ir::Type::Ptr || in.result.empty() || mine.count(in.result)) continue;
+                    for (auto& [o, from] : in.incoming)
+                        if (o.v.kind == ir::Value::Local && mine.count(o.v.name)) {
+                            mine.insert(in.result);
+                            roots.emplace_back(g, in.result);
+                            grew = true;
+                            break;
+                        }
+                }
+        }
+    }
+    return roots;
+}
+
+pirmem::HarnessOptions global_harness_options(const Tr& tr) {
+    pirmem::HarnessOptions ho;
+    ho.depth = tr.opt.auto_harness.depth;
+    ho.elems = tr.opt.auto_harness.elems;
+    ho.unknown_bytes = tr.opt.auto_harness.unknown_bytes;
+    ho.max_objects = tr.opt.auto_harness.max_objects;
+    ho.container_of = true;  // a list node is reached through container_of
+    return ho;
+}
+
 }  // namespace
+
+// --pir-global-harness-deep: the pointer fields of a harnessed pointer global's object that the function (or a unit
+// function it calls) loads and uses get objects of their own, typed by those uses as for a pointer parameter (the
+// auto-harness planner, harness.cpp, to its depth bound). The global's own object stays the global harness's
+// kUnknownPtrBytes arbitrary bytes. Each nested object is a named assumption; fields without type evidence stay
+// arbitrary (named too).
+void Tr::global_harness_nest(Arg obj, const std::string& name) {
+    const auto roots = global_load_roots(*this, name);
+    if (roots.empty()) return;
+    auto ho = global_harness_options(*this);
+    ho.container_of = opt.container_of;
+    ho.keep_untyped = true;  // an MMIO base field used only through readl / writel
+    ho.unknown_bytes = kUnknownPtrBytes;
+    std::string why;
+    auto plan = pirmem::plan_harness_roots(m, mt.layout(), roots, "@" + name + "->*", ho, &why);
+    if (!plan || !plan->root || plan->root->member_off) return;
+    const auto ptr_ty = ir::parse_type("ptr");
+    bool any = false;
+    for (const auto& [off, child] : plan->root->nested) {
+        if (off + 8 > kUnknownPtrBytes) continue;
+        Arg c = alloc_harness_node(*this, *child);
+        int slot = newvar(tmpname("gnest"), ptr_w());
+        mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, off)}, true, 0);
+        mt.store(-1, Arg::v(slot, ptr_w()), c, Arg::c(1, 1), ptr_ty, 1, 0);
+        any = true;
+    }
+    if (!any) return;
+    const std::string pre = "@" + name + "->*->@";
+    for (auto& a : plan->assumptions)
+        if (a.starts_with(pre) || a.starts_with("pointer fields of @" + name + "->*->@"))
+            note_assumption("global harness (deep): " + a);
+}
+
+// --pir-global-harness-deep: the list member's offset in the entries of the list_head global @name (the planner's
+// container_of), placed as a pad before the head in its object: container_of(&@name), which list_for_each_entry
+// computes for its end test, then stays inside an object (the encoding has no negative offsets). Named in
+// list_head_harness.
+uint64_t Tr::list_head_pad(const std::string& name) {
+    const auto roots = global_load_roots(*this, name);
+    if (roots.empty()) return 0;
+    std::string why;
+    auto plan = pirmem::plan_harness_roots(m, mt.layout(), roots, "@" + name + ".next", global_harness_options(*this), &why);
+    if (!plan || !plan->root || plan->root->member_off + 16 > plan->root->bytes) return 0;
+    return plan->root->member_off;
+}
+
+// --pir-global-harness-deep: a mutable `struct list_head` global (a static LIST_HEAD, set up by its initialiser and
+// changed only by list operations) is at entry either empty (next == prev == &@name) or a list of one node: a valid
+// object built by the harness planner from how the function uses the entries (container_of: the containing struct),
+// whose link points back to @name in both directions. Longer lists and broken links are not explored (named).
+void Tr::list_head_harness(Arg p, const std::string& name) {
+    const auto ptr_ty = ir::parse_type("ptr");
+    const auto roots = global_load_roots(*this, name);
+    std::optional<Arg> node;
+    std::string node_text;
+    if (!roots.empty()) {
+        std::string why;
+        auto plan = pirmem::plan_harness_roots(m, mt.layout(), roots, "@" + name + ".next", global_harness_options(*this), &why);
+        if (plan && plan->root && plan->root->member_off + 16 <= plan->root->bytes) {
+            node = alloc_harness_node(*this, *plan->root);
+            for (auto& a : plan->assumptions) node_text += (node_text.empty() ? "" : "; ") + a;
+        }
+    }
+    Arg next = p, prev = p;
+    if (node) {
+        Arg one = havoc(-1, 1, false, false);
+        next = assign(-1, Op::Select, ptr_w(), {one, *node, p}, "lh");
+        prev = next;
+        // the node's own links: back to the head
+        mt.store(-1, *node, p, Arg::c(1, 1), ptr_ty, 1, 0);
+        int slot = newvar(tmpname("lhprev"), ptr_w());
+        mt.gep(-1, slot, *node, ir::parse_type("i8"), {Arg::c(64, 8)}, true, 0);
+        mt.store(-1, Arg::v(slot, ptr_w()), p, Arg::c(1, 1), ptr_ty, 1, 0);
+    }
+    mt.store(-1, p, next, Arg::c(1, 1), ptr_ty, 1, 0);
+    int ps = newvar(tmpname("lhp"), ptr_w());
+    mt.gep(-1, ps, p, ir::parse_type("i8"), {Arg::c(64, 8)}, true, 0);
+    mt.store(-1, Arg::v(ps, ptr_w()), prev, Arg::c(1, 1), ptr_ty, 1, 0);
+    if (const uint64_t pad = node ? list_head_pad(name) : 0)
+        note_assumption("global harness (deep): @" + name + " is placed " + std::to_string(pad) +
+                        " bytes into its object (the entries' list member offset), so container_of(&@" + name +
+                        ") of the list's end test is an address of that object; the pad bytes are not program memory "
+                        "and an access to them is not reported");
+    note_assumption("global harness (deep): @" + name + " (a struct list_head) is at entry " +
+                    (node ? "an empty list (next == prev == &@" + name + ") or a list of one node whose links point back "
+                            "to @" + name + " (the node: " + node_text + "); longer lists are not explored"
+                          : "an empty list (next == prev == &@" + name + "): no use of an entry gives a node's type") +
+                    " (its initialiser and the unit's list operations keep it a valid circular list; not checked here)");
+}
 
 std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::string& error) {
     error.clear();
@@ -3072,6 +3358,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         Tr tr(m, opt);
         tr.out.ir_name = f.name;
         tr.out.name = f.name;
+        tr.root_fn_ = &f;
         Frame top;
         top.f = &f;
         // --pir-callback-models: the driver environment models of this function's callback kind(s)
@@ -3108,6 +3395,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
                 tr.out.assumptions.push_back(b->text);
             }
         }
+        if (opt.bpf_helpers && !opt.kernel_api.empty()) bind_bpf_helper_args(tr, f, top);  // --pir-bpf-helpers
         int contracts = 0;
         for (auto* p : ptrs) {
             auto sret = p->attrs.find("sret(");

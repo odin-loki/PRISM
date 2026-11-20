@@ -26,6 +26,9 @@ struct HarnessOptions {
     uint64_t unknown_bytes = 64;   // object size when the function never accesses the pointee's type
     int max_objects = 32;          // objects per parameter (the planner stops nesting past it)
     bool container_of = false;     // a negative constant offset from the parameter: allocate the containing object
+    // --pir-global-harness-deep: a nested pointer field the function uses without type evidence (an MMIO base it only
+    // passes to readl) still gets an object of unknown_bytes arbitrary bytes instead of staying arbitrary
+    bool keep_untyped = false;
     // --pir-ops-auto: the ops tables (explicit and unit-derived). A pointer field the function loads and calls
     // through whose (struct, index) has targets in it is bound to one of them instead of staying arbitrary.
     const std::vector<OpsField>* ops = nullptr;
@@ -73,5 +76,11 @@ struct HarnessPlan {
 // offsets such as container_of, an object too large for the model).
 std::optional<HarnessPlan> plan_pointer_harness(const ir::Module& m, const Layout& lay, const ir::Function& f,
                                                 const ir::Param& p, const HarnessOptions& opt, std::string* why);
+
+// --pir-global-harness-deep: the same planner for an object reached through SSA values of several functions (the
+// loads of a global's pointer, `roots`: function and value name), named `name` in the assumptions.
+std::optional<HarnessPlan> plan_harness_roots(const ir::Module& m, const Layout& lay,
+                                              const std::vector<std::pair<const ir::Function*, std::string>>& roots,
+                                              const std::string& name, const HarnessOptions& opt, std::string* why);
 
 }  // namespace prism::pir::pirmem

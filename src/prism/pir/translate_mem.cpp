@@ -510,15 +510,17 @@ void MemTr::emit_entry_globals() {
         auto e = *entry_global(t_.module(), lay_, name, t_.options().globals_initial);
         mark_memory();
         if (!e.g->is_const) t_.fn().mutable_globals = true;
+        const uint64_t pad = e.init == 2 ? list_pad(*e.g, name) : 0;
         Stmt s;
         s.kind = Stmt::Alloc;
-        s.dst = globals_[name].var;
-        s.args = {c64(e.size)};
+        s.dst = pad ? t_.newvar("@" + name + ".padded", ptr_w()) : globals_[name].var;
+        s.args = {c64(e.size + pad)};
         s.mkind = e.kind;
         s.init = e.init;
         s.align = e.align;
         s.msg = "@" + name;
         t_.push(-1, s);
+        if (pad) ptr_add(-1, Arg::v(s.dst, ptr_w()), c64(pad), globals_[name].var);
         Arg p = globals_[name];
         for (auto& st : e.stores) {  // as emit_init
             Stmt w;
@@ -617,16 +619,18 @@ Arg MemTr::global(const std::string& name) {
     bool big = init == 1 && size > 4096 && !g->init.empty() &&
                init_stores(g->ty, g->init[0].v, kMaxInitStores + 1) > kMaxInitStores;
     if (big) init = 2;
+    const uint64_t pad = init == 2 && !stream ? list_pad(*g, name) : 0;
     Stmt s;
     s.kind = Stmt::Alloc;
-    s.dst = t_.newvar("@" + name, ptr_w());
-    s.args = {c64(size)};
+    s.dst = t_.newvar("@" + name + (pad ? ".padded" : ""), ptr_w());
+    s.args = {c64(size + pad)};
     s.mkind = g->is_const ? MemKind::Const : MemKind::Static;
     s.init = init;
     s.align = std::max(g->align, lay_.align(g->ty));
     s.msg = "@" + name;
     t_.push(-1, s);
     Arg p = Arg::v(s.dst, ptr_w());
+    if (pad) p = ptr_add(-1, p, c64(pad), t_.newvar("@" + name, ptr_w()));
     globals_[name] = p;
     if (init == 2 && !stream) global_harness(p, *g, name);
     if (stream) {
@@ -648,7 +652,12 @@ Arg MemTr::global(const std::string& name) {
 // kGlobalHarnessBytes arbitrary initialised bytes. One named assumption per global.
 void MemTr::global_harness(Arg p, const ir::Global& g, const std::string& name) {
     const auto& o = t_.options();
-    if (!o.global_harness || o.kernel_api.empty() || o.globals_initial || g.is_const || g.ty.kind != ir::Type::Ptr) return;
+    if (!o.global_harness || o.kernel_api.empty() || o.globals_initial || g.is_const) return;
+    if (g.ty.kind == ir::Type::Struct && g.ty.text == "%struct.list_head" && o.global_harness_deep) {
+        t_.list_head_harness(p, name);  // --pir-global-harness-deep: a static LIST_HEAD (translate.cpp)
+        return;
+    }
+    if (g.ty.kind != ir::Type::Ptr) return;
     constexpr uint64_t kGlobalHarnessBytes = uint64_t{1} << 20;
     auto obj = alloc(-1, c64(kGlobalHarnessBytes), MemKind::Extern, 2, "@" + name + " (global harness)", 0);
     Stmt st;
@@ -660,6 +669,14 @@ void MemTr::global_harness(Arg p, const ir::Global& g, const std::string& name) 
                           " arbitrary bytes (the unit's init / probe code set it; not checked here)";
     auto& as = t_.fn().assumptions;
     if (std::ranges::find(as, a) == as.end()) as.push_back(a);
+    if (o.global_harness_deep) t_.global_harness_nest(obj, name);  // pointer fields of the object (translate.cpp)
+}
+
+uint64_t MemTr::list_pad(const ir::Global& g, const std::string& name) {
+    const auto& o = t_.options();
+    if (!o.global_harness || !o.global_harness_deep || o.kernel_api.empty() || o.globals_initial || g.is_const) return 0;
+    if (g.ty.kind != ir::Type::Struct || g.ty.text != "%struct.list_head") return 0;
+    return t_.list_head_pad(name);
 }
 
 uint64_t MemTr::init_stores(const ir::Type& ty, const ir::Value& v, uint64_t cap) const {

@@ -35,6 +35,13 @@ public:
     // address of function @name: a constant pointer to a non-dereferenceable
     // object with id in [fn_obj_base(), max_objects()) (translate_ctl.inc)
     virtual Arg fn_addr(const std::string& name) = 0;
+    // --pir-global-harness-deep (translate.cpp): nested objects of a harnessed pointer global's object `obj`, and the
+    // entry state of a list_head global at `p`. Both run in the prologue; the default does nothing.
+    virtual void global_harness_nest(Arg obj, const std::string& name) { (void)obj; (void)name; }
+    virtual void list_head_harness(Arg p, const std::string& name) { (void)p; (void)name; }
+    // bytes placed before a list_head global in its object (the entry's offset of its list member), so that
+    // container_of(&head) of the loop's end test is representable; 0 = none
+    virtual uint64_t list_head_pad(const std::string& name) { (void)name; return 0; }
 };
 
 // Target data layout (x86-64 defaults, overridden by the module's
@@ -129,6 +136,8 @@ public:
     void emit_entry_globals();
     // --pir-global-harness: a mutable pointer global with arbitrary entry contents points to a valid object
     void global_harness(Arg p, const ir::Global& g, const std::string& name);
+    // --pir-global-harness-deep: the pad before a mutable struct list_head global (0 when not one)
+    uint64_t list_pad(const ir::Global& g, const std::string& name);
     Arg const_gep(int b, const ir::Value& ce, int line);  // constant getelementptr expression
     // --pir-addr-values: constant ptrtoint / inttoptr / bitcast expressions. A pointer is carried as its packed
     // representation, so ptrtoint is that value and `inttoptr (ptrtoint x)` is x; `inttoptr (C)` with C != 0 is the

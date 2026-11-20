@@ -165,6 +165,7 @@ void Tr::lock_return_check(int b, int line) {
     for (auto& h : held) {
         Arg declared = Arg::c(1, 0);
         for (auto& x : exits) declared = bool_or(*this, b, declared, assign(b, Op::Eq, 1, {h, x}, "lk"));
+        for (auto& x : lk_exempt_) declared = bool_or(*this, b, declared, assign(b, Op::Eq, 1, {h, x}, "lk"));
         undeclared = bool_or(*this, b, undeclared, bool_and(*this, b, nonzero(*this, b, h), bool_not(*this, b, declared)));
     }
     if (lock_wrapper_ == 1) {
@@ -185,11 +186,13 @@ void Tr::lock_return_check(int b, int line) {
     check(b, missing, "model", "LOCK-EXIT-MISSING",
           "function is declared (__prism_lock_exit) to return with a lock held, but the lock is released or not taken", line);
     Arg pre = ld(b, lock_word(b, kWPre, line), W, line);
-    check(b, nonzero(*this, b, pre), "model", "PREEMPT-UNBALANCED",
-          "function returns with a preempt or bh count not restored", line);
+    if (!lk_pre_exempt_)
+        check(b, nonzero(*this, b, pre), "model", "PREEMPT-UNBALANCED",
+              "function returns with a preempt or bh count not restored", line);
     Arg rcu = ld(b, lock_word(b, kWRcu, line), W, line);
-    check(b, nonzero(*this, b, rcu), "model", "RCU-HELD-ON-RETURN",
-          "function returns inside an RCU read-side section (rcu_read_lock without rcu_read_unlock)", line);
+    if (!lk_rcu_exempt_)
+        check(b, nonzero(*this, b, rcu), "model", "RCU-HELD-ON-RETURN",
+              "function returns inside an RCU read-side section (rcu_read_lock without rcu_read_unlock)", line);
 }
 
 void Tr::lock_take(int b, Arg p, Arg spin, int line) {
@@ -328,4 +331,77 @@ void Tr::lock_table(Frame& fr) {
     if (any)
         note_assumption("lock-contract-table: the lock contract of --lock-contracts (TSV) for " + fr.f->name +
                         " is trusted (its call sites are not checked)");
+}
+
+// --pir-lock-scopes, root frame only, after lk_ exists. The locks the root's call tree takes and drops through the
+// lock models, by lock class (lock_sites, lock_order.cpp: a global, followed through zero-offset getelementptrs,
+// spinlock_check-style helpers and guard() slots). Per lock, not per function (--pir-lock-wrappers is the whole-function
+// form):
+//   - released somewhere and acquired nowhere in the tree: the caller holds it on entry. It is put in the held set at
+//     entry (with its atomic depth when the release is a spin release), so its release is not LOCK-UNHELD-UNLOCK, a
+//     second release is, and sleeping while it is held is SLEEP-IN-ATOMIC;
+//   - acquired somewhere and released nowhere: the function returns it held by design, so it is not
+//     LOCK-HELD-ON-RETURN (LOCK-DOUBLE still applies).
+// A lock acquired and released anywhere in the tree is checked as before on every path: a path that leaks it is
+// LOCK-HELD-ON-RETURN, a path that drops it unheld is LOCK-UNHELD-UNLOCK. Nothing is called release-only while any
+// acquire has an unclassified lock (and the reverse), so an unseen end never hides an imbalance.
+void Tr::lock_scopes_entry(Frame& fr) {
+    if (!opt.lock_scopes || lock_wrapper_ || !lk_) return;
+    const auto s = lock_sites(m, *fr.f);
+    const int b = head.at(fr.prefix + fr.f->blocks.front().name);
+    const unsigned W = ptr_w();
+    for (const auto& [cl, fx] : s.by_class) {
+        if (std::none_of(m.globals.begin(), m.globals.end(), [&](const ir::Global& g) { return g.name == cl; })) continue;
+        const bool acq = (fx & 1) != 0, rel = (fx & 2) != 0;
+        if (rel && !acq && !s.unknown_acquire) {
+            Arg p = mt.global(cl);
+            Arg dup = lock_contains(b, 0, p, 0);
+            lock_insert(b, 0, p, bool_and(*this, b, nonzero(*this, b, p), bool_not(*this, b, dup)), 0);
+            if (fx & 8) lock_bump(b, kWSpin, Arg::c(W, 1), 0);
+            note_assumption("lock-scope: @" + root_name_ + " releases @" + cl + " and acquires it nowhere in its call tree: "
+                            "its caller holds @" + cl + " on entry" + ((fx & 8) ? " (a spinlock: atomic context)" : "") +
+                            " (not checked here; a second release is still LOCK-UNHELD-UNLOCK)");
+        } else if (acq && !rel && !s.unknown_release) {
+            lk_exempt_.push_back(mt.global(cl));
+            // (named below)
+            note_assumption("lock-scope: @" + root_name_ + " acquires @" + cl + " and releases it nowhere in its call tree: "
+                            "it returns @" + cl + " held to its caller by design (LOCK-HELD-ON-RETURN is not checked for @" +
+                            cl + "; its callers release it)");
+        }
+    }
+    // RCU read-side sections and preempt / bh disabling, per function (they have no lock address)
+    if (s.rcu == 2) {
+        st(b, lock_word(b, kWRcu, 0), Arg::c(W, 1), 0);
+        note_assumption("lock-scope: @" + root_name_ + " leaves RCU read-side sections and enters none in its call tree: "
+                        "its caller is inside one on entry (nesting 1; a second rcu_read_unlock is still RCU-UNBALANCED)");
+    } else if (s.rcu == 1) {
+        lk_rcu_exempt_ = true;
+        note_assumption("lock-scope: @" + root_name_ + " enters RCU read-side sections and leaves none in its call tree: it "
+                        "returns inside one by design (RCU-HELD-ON-RETURN is not checked; its callers leave it)");
+    }
+    if (s.preempt == 1) {
+        lk_pre_exempt_ = true;
+        note_assumption("lock-scope: @" + root_name_ + " disables preemption / bottom halves and enables them nowhere in "
+                        "its call tree: it returns with them disabled by design (PREEMPT-UNBALANCED at the return is not "
+                        "checked; its callers enable them)");
+    }
+}
+
+// A memory havoc (an asm memory clobber, --pir-icall-havoc) makes every object's contents arbitrary. PRISM's ghost
+// objects are not program memory: the lock / context state (lk_) and the allocation-failure flag (oom_) keep their
+// values across it (saved before, stored back after). For an asm statement this is exact; for an unresolved indirect
+// call the icall-havoc assumption says that the callee leaves the analysed function's lock and context state as it
+// found it (noted there when a lock state exists).
+void Tr::havoc_memory(int b, int line) {
+    std::vector<std::pair<Arg, Arg>> saved;
+    if (lk_) {
+        const unsigned W = ptr_w();
+        for (unsigned i = 0; i < kWords; ++i) {
+            Arg a = lock_word(b, i, line);
+            saved.emplace_back(a, ld(b, a, W, line));
+        }
+    }
+    if (oom_ && !oom_pending_) saved.emplace_back(*oom_, ld(b, *oom_, 8, line));
+    mt.havoc_all(b);
+    for (auto& [a, v] : saved) st(b, a, v, line);
 }

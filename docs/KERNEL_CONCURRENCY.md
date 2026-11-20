@@ -412,3 +412,70 @@ fast path plus the call `_sx_xlock_hard` (unmodelled, with `_sx_xunlock_hard`); 
 `__mtx_lock_flags` or an inline fast path with `__mtx_lock_sleep(&m->mtx_lock, v)`, whose operand is the lock word of the
 struct, not the lock object, so naming them would put every mutex in one class (`mtx.#1`) and invent inversions. Not done (FreeBSD mtx_lock macro read in sys/sys/mutex.h line 176 and 181).
 em's lock order is therefore not checked by this pass at all.
+
+## 17. Triage item 6: lock scopes, guard(), caller-held locks (`--pir-lock-scopes`)
+
+The r1 FALSE triage (OS-Proving `data/coverage/prism_false_triage/SUMMARY.md`, pattern 5) found lock findings that
+are modelling gaps, not defects. `--pir-lock-wrappers` (#70) already covers a whole function that only acquires or only
+releases. `--pir-lock-scopes` (with `--kernel-api`) covers the rest. Each part is exact or a named assumption, and
+imbalances whose two ends are both visible are still reported.
+
+**Lock classes through scopes (lock-order pass, exact).** A value's lock class is followed through:
+- a `getelementptr` with all-zero indices (`&lock->rlock` is the lock);
+- a call of a unit function that returns one of its parameters (`spinlock_check`, `class_mutex_constructor`);
+- an `alloca` to which only one lock class is stored (the `guard()` / `scoped_guard` variable). Its address is passed
+  to the cleanup (`class_mutex_destructor`), and the load through it there has the class again.
+
+So the scope-exit release of a `guard(mutex)` ends the hold. Without it, the lock looked held across the rest of the
+function and produced false ABBA pairs "in class_mutex_constructor". The same rules give `spin_lock_irqsave`'s
+`spinlock_check(lock)` its class. A slot with two classes gets none.
+
+**Constant branches (lock-order and hardirq walk, exact).** A `br` on a constant, or on an `icmp` of two integer
+constants, takes only its live edge. After mem2reg, `readl_poll_timeout(..., sleep_us = 0, ...)` has
+`if (__sleep_us) usleep_range(...)` as `icmp ne i64 0, 0`, so the sleep is dead code and is no longer reported as a
+hardirq sleep. With a non-zero `sleep_us` it still is.
+
+**Per-lock caller-held / returned-held (ghost lock state).** `lock_sites` (`lock_order.cpp`) walks the analysed
+function's call tree. It records every acquire and release made through PRISM's lock models by lock class: a global's
+name, followed as above. `lock_scopes_entry` (`translate_lock.inc`) then handles each global lock:
+- *Released somewhere, acquired nowhere in the tree* (`probe_irq_off` releasing `probing_active`): the caller holds
+  it on entry. It is put in the held set at entry, with atomic depth when the release is a spin release. Its release
+  is then not LOCK-UNHELD-UNLOCK, but a second release is, and sleeping before the release is SLEEP-IN-ATOMIC. Named
+  `lock-scope: @f releases @L and acquires it nowhere in its call tree: its caller holds @L on entry ...`.
+- *Acquired somewhere, released nowhere*: it is returned held by design, so it is not LOCK-HELD-ON-RETURN.
+  LOCK-DOUBLE still applies. Named `lock-scope: @f acquires @L and releases it nowhere ...`.
+- *Acquired and released somewhere* (both ends visible): checked on every path as before. A path that leaks it is
+  LOCK-HELD-ON-RETURN, and a path that drops it unheld is LOCK-UNHELD-UNLOCK.
+
+Nothing is called release-only while any acquire in the tree has an unclassified lock (a parameter-derived or
+array-indexed lock, an indirect call, an intrinsic in analysed code), and the reverse also holds. So an unseen end
+never hides an imbalance. RCU and preempt/bh have no lock address, so they are per function:
+- a tree that only leaves RCU sections starts at nesting 1 (a second `rcu_read_unlock` is still RCU-UNBALANCED);
+- one that only enters them is not RCU-HELD-ON-RETURN;
+- one that only disables preemption / bh is not PREEMPT-UNBALANCED at the return.
+
+**Ghost state across memory havocs (always on, exact for asm).** An asm "memory" clobber or an `--pir-icall-havoc`
+call makes every object's contents arbitrary. PRISM's ghost objects (the lock / context state, the allocation-failure
+flag) are not program memory, so they keep their values across the havoc. Before, a `writel` between `spin_lock_irqsave`
+and `spin_unlock_irqrestore` (`sc520_wdt` `wdt_config`) erased the held set, and the release looked unheld. For
+`--pir-icall-havoc` this is named: the arbitrary callee leaves the lock and context state as it found it.
+
+**Condition-code outputs (always on, exact).** An inline asm output `"={@cc<cond>}"` is 0 or 1. Clang states this
+with an `llvm.assume(icmp ult %r, 2)` right after the asm (`btq` in `test_bit`, FreeBSD's `atomic_fcmpset` in
+`mtx_lock` / `sx_xlock`). The asm-havoc model made it an arbitrary byte, so all 102 `assume` FALSE rows (ASSUME/*)
+were that assume failing. The havoc, and the free flag of `asm-exact`, are now limited to {0, 1}.
+
+**sx locks / OpenZFS mutexes (models, exact).** `_sx_xlock` returns 0 (taken) unless `opts` has `SX_INTERRUPTIBLE`
+(0x40). Only then can `_sx_xlock_hard` return an error (`kern_sx.c`). OpenZFS `mutex_enter` (`sx_xlock`, opts 0) used
+to look like it might fail, so the paired `mutex_exit` was LOCK-UNHELD-UNLOCK. `sx_try_xlock_` and `sx_try_xlock_int`
+(`mutex_tryenter`) are now modelled: taken (tracked) or 0.
+
+Not done (left):
+- path-sensitive lock order (a lock taken and released under two separate tests of the same condition: rose route
+  locks, `binder_dec_node_tmpref`);
+- conditional-acquire wrappers that return with the lock held only on success (`qcuefi_acquire`). These have no
+  return-value contract and stay FAILED, as the real-imbalance test requires;
+- locks in arrays or reached through parameters for the per-lock rule.
+
+Toys: `testdata/pir/kernel_item6_linux.c` (scopes), `kernel_item6_freebsd.c` (sx), `kernel_item6_scopes.c` (guard,
+constant branches); tests `tests/cpp/test_pir_triage_item6.cpp`.

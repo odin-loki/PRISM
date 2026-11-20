@@ -627,6 +627,16 @@ struct TranslateOptions {
     // --pir-lock-wrappers (kernel mode): a root that only acquires (only releases) locks on every path is a lock
     // wrapper: LOCK-HELD-ON-RETURN (LOCK-UNHELD-UNLOCK) is not checked for it, as a named assumption
     bool lock_wrappers = false;
+    // --pir-lock-scopes (kernel mode): a lock the root releases and never acquires anywhere in its call tree is held
+    // by its caller on entry (named, per lock); one it acquires and never releases anywhere is returned held (named)
+    bool lock_scopes = false;
+    // --pir-bpf-helpers (Linux kernel mode): a BPF helper (the .func of a bpf_func_proto in the unit) gets, for each
+    // argument the proto types ARG_PTR_TO_* without PTR_MAYBE_NULL, a valid object (named: the BPF verifier)
+    bool bpf_helpers = false;
+    // --pir-global-harness-deep (with --pir-global-harness): pointer fields of a harnessed global's object that the
+    // function loads and uses get their own objects (auto-harness planner), and a list_head global is a valid
+    // circular list (named, per global)
+    bool global_harness_deep = false;
 };
 
 // Ops-table entries derived from the module itself (--pir-ops-auto): every `store ptr @f, getelementptr %struct.T, p, 0, K`
@@ -1010,7 +1020,22 @@ struct LockOrderReport {
     std::vector<HardirqSleep> hardirq_sleeps;
 };
 // The lock-order and interrupt-context pass over the unit (docs/KERNEL_CONCURRENCY.md sections 14 and 15).
-PRISM_API LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockContract>& contracts);
+PRISM_API LockOrderReport lock_order_report(const ir::Module& m, const std::vector<LockContract>& contracts,
+                                            bool scopes = false);
+// --pir-lock-scopes: the locks a root's call tree acquires and releases through PRISM's lock models, by lock class (a
+// global's name, followed through zero-offset getelementptrs, spinlock_check-style helpers and guard() slots): bit 0
+// acquired, bit 1 released, bit 2 a spin acquire, bit 3 a spin release. unknown_*: some acquire (release) has a lock
+// that is not a classified global, or the walk could not see it, so no lock may be called release-only (acquire-only).
+struct LockSites {
+    std::map<std::string, int> by_class;
+    bool unknown_acquire = false;
+    bool unknown_release = false;
+    // RCU read-side nesting and preempt / bh count changes through the models: bit 0 an increment, bit 1 a decrement,
+    // bit 2 a change whose sign is not known (or not seen)
+    int rcu = 0;
+    int preempt = 0;
+};
+PRISM_API LockSites lock_sites(const ir::Module& m, const ir::Function& root);
 PRISM_API std::vector<LockOrderInversion> lock_order_inversions(const ir::Module& m,
                                                                 const std::vector<LockContract>& contracts);
 

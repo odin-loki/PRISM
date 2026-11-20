@@ -395,7 +395,7 @@ struct Builder {
                 continue;
             }
             auto child = build(rs, depth + 1, fname);
-            if (!child || !child->type_known) {
+            if (!child || (!child->type_known && !opt.keep_untyped)) {
                 if (child) {  // no type evidence: its object was counted and listed, take it back
                     --plan.objects;
                     plan.assumptions.pop_back();
@@ -452,6 +452,26 @@ std::optional<HarnessPlan> plan_pointer_harness(const ir::Module& m, const Layou
             a += "; deepest object at level " + std::to_string(b.plan.depth_reached) + " of " + std::to_string(opt.depth) +
                  "; pointer fields left arbitrary: " + std::to_string(cd) + " past the depth bound, " + std::to_string(cc) +
                  " over the object cap of " + std::to_string(opt.max_objects) + ", " + std::to_string(cn) + " without pointee type evidence";
+    return std::move(b.plan);
+}
+
+std::optional<HarnessPlan> plan_harness_roots(const ir::Module& m, const Layout& lay,
+                                              const std::vector<std::pair<const ir::Function*, std::string>>& roots,
+                                              const std::string& name, const HarnessOptions& opt, std::string* why) {
+    if (roots.empty()) {
+        if (why) *why = "no use of the object";
+        return std::nullopt;
+    }
+    Builder b{m, lay, opt, {}, {}};
+    std::vector<Root> rs;
+    for (auto& [f, v] : roots) rs.push_back(Root{f, v});
+    auto root = b.build(rs, 0, name);
+    if (!root) {
+        if (why) *why = b.fail.empty() ? "no harness object" : b.fail;
+        return std::nullopt;
+    }
+    b.plan.root = root;
+    unbound_lines(*root, opt, b.plan.assumptions);
     return std::move(b.plan);
 }
 

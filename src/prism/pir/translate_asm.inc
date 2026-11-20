@@ -606,6 +606,8 @@ bool Tr::asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line) {
             if (!f) {
                 ++nflag_free;
                 havoc(cur, vw, false, false, dv);
+                // an undefined flag is still a flag: the output is 0 or 1
+                assume(cur, assign(cur, Op::Ule, 1, {Arg::v(dv, vw), Arg::c(vw, 1)}, "cc"));
             } else {
                 emit_assign(cur, dv, Op::Copy, {resize(*f, vw)});
             }
@@ -630,7 +632,7 @@ bool Tr::asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line) {
         what += "no other thread, interrupt or device between its accesses";
     if (any_lock) what += "; lock prefix: atomicity not modelled (sequential execution)";
     what += "; flags not named as outputs are clobbered and not modelled";
-    if (nflag_free) what += "; " + std::to_string(nflag_free) + " flag output(s) of an undefined flag are arbitrary";
+    if (nflag_free) what += "; " + std::to_string(nflag_free) + " flag output(s) of an undefined flag are arbitrary (0 or 1)";
     what += "; a memory clobber is a compiler barrier with no effect here";
     note_assumption(what);
     (void)written;
