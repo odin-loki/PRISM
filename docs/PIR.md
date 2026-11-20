@@ -1353,7 +1353,12 @@ crashed inside Z3 (SIGSEGV in `spacer::hypothesis_reducer`, the interpolating
 unsat core) and ignored its timeout; a child is killed and the function
 stays BOUNDED. On `sat` the child also prints each predicate's interpretation
 at named placeholder constants, which the parent parses back.
-`PRISM_PIR_CHC_DUMP=DIR` writes each system as SMT-LIB2 (HORN).
+The child gets what the process tree's memory budget has left (at most half
+of it; not started under 768 MB), and no system is built for a cut program
+over 2M AST nodes or a process already over half its budget (the clauses
+repeat the encoding; two kernel functions with large cut programs ran out of
+budget before this guard). `PRISM_PIR_CHC_DUMP=DIR` writes each system as
+SMT-LIB2 (HORN).
 
 **Nothing Spacer answers is trusted.**
 
@@ -1396,7 +1401,13 @@ read as signed values of their width. Two candidate families:
   arguments with |x| < 2^31 on every sample). `PRISM_PIR_CHC_DEVICE=cpu`
   forces the CPU; `both` runs both, records both times
   (`extra.chc_data_bounds_ms`, `extra.chc_data_cpu_ms`) and drops every
-  candidate if they ever differ.
+  candidate if they ever differ. A device that fails once (no GPU, no kernel
+  image) is not asked again in the process. Measured on the RTX 3090: the
+  kernel is about 500 times faster than one CPU core on 60,000 directions x
+  4,096 samples (2.4 ms against 1.2 s), but creating the CUDA context costs
+  about 0.33 s per process, and kernel functions have at most a few thousand
+  directions (CPU at most 0.13 s), so the CPU loop is faster in practice
+  (OS-Proving `docs/coverage/LOOP_PROOFS.md`).
 
 At most 48 per loop (equalities first, then by terms and coefficient size),
 kind `data`, evaluated over 96-bit integers (no wrap). Each held on the
