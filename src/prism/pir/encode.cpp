@@ -1565,6 +1565,15 @@ bool checker_ran_out(const solver::SolveResult& r) {
            r.note.find("ran out of memory") != std::string::npos || r.note.find("was killed (SIGKILL") != std::string::npos;
 }
 
+// PRISM_PIR_CHC, or the build's default (-DPRISM_PIR_CHC_DEFAULT=data: a
+// test build that gates the CHC round with every suite; unset in releases)
+static const char* chc_env() {
+    const char* e = std::getenv("PRISM_PIR_CHC");
+#ifdef PRISM_PIR_CHC_DEFAULT
+    if (!e) e = PRISM_PIR_CHC_DEFAULT;
+#endif
+    return e;
+}
 #include "houdini.inc"
 
 }  // namespace
@@ -2590,7 +2599,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         Houdini hd(fn, g, eo, timeout_s, search_s, henv, hard_s, hl);
         // PRISM_PIR_CHC=only: the CHC round alone, without the template search (measurements, tests)
         const bool chc_only = [] {
-            const char* ce = std::getenv("PRISM_PIR_CHC");
+            const char* ce = chc_env();
             return ce && std::string(ce) == "only";
         }();
         auto h = chc_only ? HoudiniOut{} : hd.run();
@@ -2631,7 +2640,7 @@ Verdict check_function_at(const Function& fn, const CheckOptions& opt_in, RunCtl
         // replays it with the bounded encoding).
         if (!h.proved && !(rc.stop && rc.stop->load())) {
             const int chc_mode = [] {  // read per function (doctests set it)
-                const char* ce = std::getenv("PRISM_PIR_CHC");
+                const char* ce = chc_env();
                 const std::string s = ce ? ce : "";
                 return s.empty() || s == "0" ? 0 : s == "data" ? 2 : 1;  // 1, only: Spacer
             }();

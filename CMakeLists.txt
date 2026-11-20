@@ -461,6 +461,13 @@ if(PRISM_HAS_Z3)
     "${PRISM_ROOT}/third_party/z3/src/api"
     "${PRISM_ROOT}/third_party/z3/src/api/c++")
   target_compile_definitions(prism_core PUBLIC PRISM_HAS_Z3)
+  # test builds only: the default of PRISM_PIR_CHC when it is unset (docs/PIR.md
+  # "Loop proofs by CHC"), so the merge gate's suites run with the CHC round on
+  set(PRISM_PIR_CHC_DEFAULT "" CACHE STRING "test builds only: default of PRISM_PIR_CHC (empty: off)")
+  if(PRISM_PIR_CHC_DEFAULT)
+    set_property(SOURCE src/prism/pir/encode.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+      "PRISM_PIR_CHC_DEFAULT=\"${PRISM_PIR_CHC_DEFAULT}\"")
+  endif()
   # z3_ballast.cpp reads Z3's allocator (util/memory_manager.h, no C API);
   # only that file sees Z3's internal headers.
   set_source_files_properties(src/prism/solver/z3_ballast.cpp PROPERTIES
