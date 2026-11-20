@@ -515,6 +515,13 @@ if(PRISM_HAS_Z3)
     "${PRISM_ROOT}/third_party/z3/src/api"
     "${PRISM_ROOT}/third_party/z3/src/api/c++")
   target_compile_definitions(prism_core PUBLIC PRISM_HAS_Z3)
+  # test builds only: the default of PRISM_PIR_CHC when it is unset (docs/PIR.md
+  # "Loop proofs by CHC"), so the merge gate's suites run with the CHC round on
+  set(PRISM_PIR_CHC_DEFAULT "" CACHE STRING "test builds only: default of PRISM_PIR_CHC (empty: off)")
+  if(PRISM_PIR_CHC_DEFAULT)
+    set_property(SOURCE src/prism/pir/encode.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+      "PRISM_PIR_CHC_DEFAULT=\"${PRISM_PIR_CHC_DEFAULT}\"")
+  endif()
   # z3_ballast.cpp reads Z3's allocator (util/memory_manager.h, no C API);
   # only that file sees Z3's internal headers.
   set_source_files_properties(src/prism/solver/z3_ballast.cpp PROPERTIES
@@ -772,17 +779,20 @@ if(PRISM_CUDA)
       # nvcc 12 has no C++23; do not inherit CMAKE_CXX_STANDARD 23 (clang++/prism_core).
       set(CMAKE_CUDA_STANDARD 17)
       set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+      # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
+      # Before enable_language: it fills in the compiler's default (CUDA 13:
+      # sm_75, whose code does not load on sm_86: every launch failed with
+      # cudaErrorNoKernelImageForDevice). 86-real: SASS only. With PTX in the
+      # image ("86") a driver older than the toolkit (WSL2: driver CUDA 13.3,
+      # nvcc 13.4) fails every launch with "the provided PTX was compiled with
+      # an unsupported toolchain".
+      if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+        set(CMAKE_CUDA_ARCHITECTURES "86-real" CACHE STRING "nvcc -arch")
+      endif()
       enable_language(CUDA)
       set(_prism_cuda_lang ON)
-      if(NOT CMAKE_CUDA_ARCHITECTURES)
-        # PLAN stack is an RTX 3090 (sm_86). native needs a live GPU at configure.
-        # 86-real: SASS only. With PTX in the image ("86") a driver older than
-        # the toolkit (WSL2: driver CUDA 13.3, nvcc 13.4) fails every launch
-        # with "the provided PTX was compiled with an unsupported toolchain".
-        set(CMAKE_CUDA_ARCHITECTURES "86-real" CACHE STRING "nvcc -arch" FORCE)
-      endif()
       # probsat.cu: GPU ProbSAT walkers (roadmap 3.3), mirrors src/prism/solver/cnf.cpp.
-      add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu)
+      add_library(prism_cuda SHARED src/cuda/mutate.cu src/cuda/probsat.cu src/cuda/invdata.cu)
       target_include_directories(prism_cuda PUBLIC "${PRISM_ROOT}/include")
       target_compile_features(prism_cuda PUBLIC cuda_std_17)
       # probsat.cu defines cuda_probsat_ex, declared under PRISM_HAS_CUDA
@@ -1046,7 +1056,7 @@ if(PRISM_TESTS)
   if(PRISM_HAS_Z3)
     list(APPEND _prism_test_sources tests/cpp/test_leanbb.cpp
       tests/cpp/test_pir_budget.cpp tests/cpp/test_pir_parallel.cpp tests/cpp/test_membudget.cpp tests/cpp/test_certified.cpp
-      tests/cpp/test_solver_cert.cpp)
+      tests/cpp/test_solver_cert.cpp tests/cpp/test_pir_chc.cpp)
   endif()
   # PRISM_TESTS_WIN_SUBSET no longer selects sources. On WIN32 it only gates the
   # fake_* stand-in executables and the PRISM_FAKE_* compile definitions the

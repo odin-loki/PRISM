@@ -2056,6 +2056,158 @@ matches; the idiom round proves a ring buffer's reads initialised and a
 nested fold, while the false twins (a mask past the array, a pop of an
 empty ring) are FAILED.
 
+## Loop proofs by CHC (Spacer), data-driven and outside candidates
+
+A round after the template search (`src/prism/pir/chc.inc`, members of the
+Houdini class) for functions Houdini did not prove. Every way it can propose
+an invariant ends in the same place: Houdini's own base, step, optimistic and
+final queries over the loop-cut encoding ("Loop invariants"), and only a proof
+from those promotes the function. Off by default:
+
+| setting | what runs after the template search |
+|---|---|
+| `PRISM_PIR_CHC=1` | Spacer on the CHC system; its lemmas are re-checked |
+| `PRISM_PIR_CHC=data` | data-driven candidates (GPU when built with CUDA) searched alone; if they do not prove, Spacer with the inductive ones as hints, then the re-check of lemmas and hints |
+| `PRISM_PIR_CHC=only` | Spacer without the template search (tests, measurements) |
+| `PRISM_PIR_LOOP_CANDIDATES=FILE` | outside candidates (below), searched alone or with the data-driven ones |
+
+Loops that allocate, free or restore the stack are not attempted, as for
+Houdini (`extra.loop_alloc` counts the statements and the allocation kinds).
+On the kernel sample this is the largest blocker (55 of 150 functions), and
+the allocations are `extern` objects that the kernel API models allocate and
+free again inside each iteration (plus stack locals of inlined callees): every
+object is dead again before the back edge, which the cut's havoc does not yet
+model (OS-Proving `docs/coverage/LOOP_PROOFS.md`).
+
+**The CHC system** is read off the cut encoding Houdini uses (every loop,
+nested and sequential). Each loop L gets one predicate `Inv_L(flag, args)`;
+the arguments are the header phis, their entry values and the scalar values
+from before the loop that the loop reads (at most 16; bit-vectors of at most
+64 bits; floating-point values are left out). With A the encoding's side
+constraints, `g_M` = "header of M reached and no property violated before it"
+and `hyp(S)` = `Inv_M(g_M, havoc state of M)` for M in S:
+
+    fact     Inv_L(false, x)                                         (for all x)
+    base     A /\ g_L /\ hyp(loops encoded before L)            -> Inv_L(true, entry state)
+    step     A /\ latch /\ noviol /\ hyp(loops up to the latch)  -> Inv_L(true, next state)
+    safety   A /\ hyp(loops before the segment) /\ viol(segment) -> false
+
+Every clause is closed over all its free constants (the havoc constants are
+universally quantified per clause; one shared constant would be an
+under-approximation). The fact clause makes `hyp` harmless on a path that
+never reaches a loop. Memory is not a predicate argument: the footprint bytes
+the cut havocs are arbitrary in every clause, which only allows more runs.
+Positions and which loops a clause may assume are those of the Houdini
+queries (`seq`, `props_before`), so the system is the cut program with one
+unknown invariant per loop and over-approximates the function exactly as the
+cut program does (proved for the structured model in `LoopCut.loopcut_sound`).
+
+**Spacer runs in a child process**, the portfolio's `prism z3-worker`
+(unchanged), with `fp.engine=spacer` (for bit-vector relations Z3 otherwise
+picks its finite-domain datalog engine, which tries to build a 2^32-row
+table), the timeout (`PRISM_PIR_CHC_TIMEOUT`, default 60 s, capped by the
+function budget), a kill at timeout + 5 s and a memory cap. In process it
+crashed inside Z3 (SIGSEGV in `spacer::hypothesis_reducer`, the interpolating
+unsat core) and ignored its timeout; a child is killed and the function
+stays BOUNDED. On `sat` the child also prints each predicate's interpretation
+at named placeholder constants, which the parent parses back.
+The child gets what the process tree's memory budget has left (at most half
+of it; not started under 768 MB), and no system is built for a cut program
+over 2M AST nodes or a process already over half its budget (the clauses
+repeat the encoding; two kernel functions with large cut programs ran out of
+budget before this guard). `PRISM_PIR_CHC_DUMP=DIR` writes each system as
+SMT-LIB2 (HORN).
+
+**Nothing Spacer answers is trusted.**
+
+* `sat` (an invariant exists): each predicate's interpretation is split into
+  its top-level conjuncts, each a Houdini candidate of kind `chc` (text over
+  the named arguments, `L0:%i.0`, `L0:entry(%x.0)`). Only Houdini's proof
+  promotes the function to **PROVED-UNBOUNDED** (`extra.k_induction =
+  "closed-invariants"`, `extra.invariant_engine` = `spacer`, `data`,
+  `outside`, ...; `extra.invariant_size` = AST nodes of the kept invariants).
+  No new verdict level: this is the PROVED-UNBOUNDED of "Encoder and verdicts".
+* `unsat` (a counterexample of the CHC system): not a verdict.
+  `extra.chc_cex = "true"`; `check_function` replays it with the bounded
+  encoding at doubling unwinds (up to `PRISM_PIR_DEEPEN_MAX` while the budget
+  lasts; a single loop through the existing deepening). Only that encoding's
+  own FAILED is reported (`extra.chc_replay`); otherwise BOUNDED (UNKNOWN past
+  the instance limit) stands.
+* unknown, timeout, crash, memory: no proof; `extra.chc` says which.
+
+Spacer is weak on this input. Over 32- and 64-bit vectors it did not find
+`x + y == i` (three counters of one loop) in 60 s, nor its 8-bit version; it
+does find flag and parity invariants (`f + g == 1`, `a == 2b`, `s & 1 == 0`),
+which the templates also find. The data-driven candidates are what proves the
+three-term case.
+
+**Data-driven candidates (the GPU-assisted path).** The PIR interpreter runs
+the function on up to 96 inputs (2 s; at most 128 samples per loop and run,
+4,096 per loop) and records the predicate's arguments at every header visit,
+read as signed values of their width. Two candidate families:
+
+* equalities: an integer basis of the affine hull of the samples (exact
+  fraction-free elimination over 128-bit integers, coefficients up to 2^20):
+  `-x - y + i == 0`;
+* inequalities: for every direction `d` over at most four arguments,
+  coefficients -2..2 (four-term ones over the first 12 arguments), the minimum
+  and maximum of `d . x` over the samples; a maximum (minimum) of 0 gives
+  `d . x <= 0` (`>= 0`). These bounds are the GPU kernel
+  (`src/cuda/invdata.cu`, one thread per direction, samples through shared
+  memory) when PRISM is built with CUDA, otherwise the CPU loop
+  `direction_bounds_cpu`; both compute the same exact int64 sums (only
+  arguments with |x| < 2^31 on every sample). `PRISM_PIR_CHC_DEVICE=cpu`
+  forces the CPU; `both` runs both, records both times
+  (`extra.chc_data_bounds_ms`, `extra.chc_data_cpu_ms`) and drops every
+  candidate if they ever differ. A device that fails once (no GPU, no kernel
+  image) is not asked again in the process. Measured on the RTX 3090: the
+  kernel is about 500 times faster than one CPU core on 60,000 directions x
+  4,096 samples (2.4 ms against 1.2 s), but creating the CUDA context costs
+  about 0.33 s per process, and kernel functions have at most a few thousand
+  directions (CPU at most 0.13 s), so the CPU loop is faster in practice
+  (OS-Proving `docs/coverage/LOOP_PROOFS.md`).
+
+At most 48 per loop (equalities first, then by terms and coefficient size),
+kind `data`, evaluated over 96-bit integers (no wrap). Each held on the
+samples only: Houdini proves or drops it. `extra.chc_data` says how many
+samples, directions and candidates, the device, and what the data-only pass
+did.
+
+**Outside candidates.** `PRISM_PIR_LOOP_CANDIDATES=FILE`, one candidate per
+line (`#` comments and blank lines skipped):
+
+    function <TAB> loop header source line <TAB> C expression <TAB> source
+
+The line is the loop's start line from clang's `llvm.loop` metadata (the line
+of the `for`/`while`/`do` keyword; the same `extra.invariant_loops` exports).
+The expression language is C's, restricted to `|| && !`, comparisons
+`== != < <= > >=`, `+ - *`, unary minus, parentheses, integer literals,
+identifiers and `entry(x)` (x's value when the loop was entered). An
+identifier is a header variable of that loop by its C name (IR `x` or `x.N`),
+else a value from before the loop the loop reads (a parameter, a local);
+values are signed integers of their width, arithmetic over 96-bit integers.
+A row that names no loop of the function, does not parse or names a variable
+that is not a loop argument is skipped; `extra.loop_candidates` says how many
+rows the function had and how many were used. The used ones join the
+data-driven candidates (or, without `PRISM_PIR_CHC`, are searched alone):
+proved by Houdini's base, step and final queries or dropped. A candidate is
+never a proof by itself, and one that is false only costs a query.
+
+**Over-approximation test.** `PRISM_PIR_CHC_DIFF=1` runs the CHC system on
+every function whose verdict is FAILED and records Spacer's answer in
+`extra.chc_differential`; "safe" there would mean the CHC system
+under-approximates the bounded encoding (a pir counterexample that is not a
+CHC counterexample). The corpus runs are in OS-Proving
+`docs/coverage/LOOP_PROOFS.md`.
+
+Tasks: `tests/cpp/test_pir_chc.cpp`: Spacer's invariants proved only through
+Houdini (`f + g == 1`, `a == 2b`); a three-term invariant `x + y == i` that no
+template states, one and two loops, proved by the data-driven candidates with
+both devices; the false twins (violated after 1, 33 and 37 iterations) never
+proved; on FAILED functions the CHC system never "safe"; outside candidates
+(true ones proved, a false one dropped, malformed, unknown-name and wrong-line
+rows skipped, a non-inductive one on a false twin never a proof).
+
 ## Roadmap 2.3 / 2.6 coverage
 
 Normalisation (2.3): `mem2reg`, `lower-switch`, `loop-simplify`, `lcssa`
@@ -2114,7 +2266,7 @@ edge guards; each check contributes `reach ∧ violation`; assumes contribute
   closed step promotes, BOUNDED is never folded into a proof (Law 2). When
   k-induction does not close (or there are several loops), inductive loop
   invariants can close every loop at once (`extra.k_induction =
-  "closed-invariants"`, "Loop invariants").
+  "closed-invariants"`, "Loop invariants"); their candidates can also come from Spacer, from concrete runs or from a file, "Loop proofs by CHC").
 * **UNKNOWN** — solver unknown / timeout / unrolling over 6000 block
   instances.
 

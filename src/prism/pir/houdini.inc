@@ -64,7 +64,12 @@ struct InvTerm {
 
 struct InvCand {
     enum Kind { Cmp, Mask, Lin, MaxLe, Scale, ScaleV, Tri, DiffCmp, ScaleVK, ModLin, PtrIn, PtrAt, MemNZ, MemEq, MemNeC,
-                MemInit, MemConst, MemFrame, MemScopeAt, MemLast, MemRingInit, MemScale } kind = Cmp;
+                MemInit, MemConst, MemFrame, MemScopeAt, MemLast, MemRingInit, MemScale,
+                // CHC round (chc.inc): a lemma of Spacer's invariant (lem: its formula over the loop's
+                // arguments) and a data-driven linear candidate (lin, k, rel over the same arguments)
+                Chc, Data,
+                // an outside candidate (PRISM_PIR_LOOP_CANDIDATES): lem indexes its parsed expression
+                Ext } kind = Cmp;
     int loop = -1;
     Op rel = Op::Eq;       // Cmp
     InvTerm a, b;          // Cmp: a rel b; Mask: (a & mask) == (b & mask); Lin: a -/+ b == ea -/+ eb
@@ -98,7 +103,13 @@ struct InvCand {
     int ip2 = -1;
     InvTerm v;             // MemNeC: element != trunc(v); MemConst: element == v (const)
     bool alive = true;
-    bool ghost() const { return kind >= MemNZ; }
+    // Chc / Data (chc.inc): the text, the lemma's index, the linear form sum coef * arg <rel> k
+    std::string txt;
+    int lem = -1;
+    std::vector<std::pair<int, int>> lin;  // (argument index, coefficient)
+    int64_t k = 0;
+    std::size_t size = 0;  // AST nodes of the formula (extra.invariant_size)
+    bool ghost() const { return kind >= MemNZ && kind <= MemScale; }
 };
 
 struct HoudiniOut {
@@ -125,6 +136,17 @@ struct HoudiniOut {
     std::size_t concrete_dropped = 0;  // candidates a concrete run falsified (dropped before any query)
     int concrete_runs = 0;
     std::string idiom;      // idioms matched and what their round did ("" : none matched)
+    // CHC round (chc.inc, docs/PIR.md "Loop proofs by CHC (Spacer)")
+    std::string engine;     // "" (templates), "spacer", "spacer+data", "data"
+    std::string chc;        // what Spacer answered ("" : not asked)
+    bool chc_cex = false;   // Spacer refuted the CHC system (a counterexample of the over-approximation)
+    double chc_s = -1;      // seconds of the Spacer solve
+    std::size_t chc_lemmas = 0;
+    std::size_t inv_size = 0;  // AST nodes of the CHC/data invariants that survived
+    std::string data;       // data-driven candidates: samples, directions, candidates, device, time
+    double data_bounds_ms = -1;  // the direction-bounds step (wall clock, host side)
+    double data_cpu_ms = -1;     // PRISM_PIR_CHC_DEVICE=both: the CPU loop for comparison
+    std::string ext;        // outside candidates (PRISM_PIR_LOOP_CANDIDATES): given, parsed, kept
 };
 
 // Where Houdini's outcome is cached (per function text, docs/PIR.md "Loop
@@ -179,6 +201,200 @@ std::vector<char> pointer_vars(const Function& fn) {
     return ptr;
 }
 
+namespace houdini_data {
+
+// Outside loop-invariant candidates (PRISM_PIR_LOOP_CANDIDATES, docs/PIR.md
+// "Outside candidates"): a small C expression language over the loop's
+// variables, parsed here and turned into a formula over the loop's predicate
+// arguments by the CHC round. Grammar (C precedence):
+//   e := e || e | e && e | !e | a cmp a        cmp: == != < <= > >=
+//   a := a + a | a - a | a * a | -a | (e) | NUM | IDENT | entry(IDENT)
+// Every value is a signed integer (an identifier is its IR value sign-
+// extended from its width; arithmetic over 96-bit integers, which a product
+// of two 32-bit values or sums of 64-bit values do not overflow). The
+// candidate is a formula like any template: proved by Houdini or dropped.
+struct ExtNode {
+    enum K { Or, And, Not, Cmp, Add, Sub, Mul, Neg, Num, Id, Entry } k = Num;
+    std::string op;  // Cmp: the comparison
+    int64_t num = 0;
+    std::string id;
+    std::vector<ExtNode> kids;
+};
+
+class ExtParser {
+public:
+    explicit ExtParser(const std::string& s) : s_(s) {}
+    std::optional<ExtNode> parse() {
+        try {
+            ExtNode n = orx();
+            ws();
+            if (p_ != s_.size()) return std::nullopt;
+            return n;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+private:
+    const std::string& s_;
+    std::size_t p_ = 0;
+    void ws() {
+        while (p_ < s_.size() && std::isspace(static_cast<unsigned char>(s_[p_]))) ++p_;
+    }
+    bool eat(const char* t) {
+        ws();
+        const std::size_t n = std::strlen(t);
+        if (s_.compare(p_, n, t) != 0) return false;
+        // "<" must not eat "<=", "=" never alone, "!" not "!="
+        if ((n == 1 && (t[0] == '<' || t[0] == '>' || t[0] == '!')) && p_ + 1 < s_.size() && s_[p_ + 1] == '=') return false;
+        p_ += n;
+        return true;
+    }
+    ExtNode bin(ExtNode::K k, ExtNode a, ExtNode b, std::string op = {}) {
+        ExtNode n;
+        n.k = k;
+        n.op = std::move(op);
+        n.kids.push_back(std::move(a));
+        n.kids.push_back(std::move(b));
+        return n;
+    }
+    ExtNode orx() {
+        ExtNode a = andx();
+        while (eat("||")) a = bin(ExtNode::Or, std::move(a), andx());
+        return a;
+    }
+    ExtNode andx() {
+        ExtNode a = notx();
+        while (eat("&&")) a = bin(ExtNode::And, std::move(a), notx());
+        return a;
+    }
+    ExtNode notx() {
+        if (eat("!")) {
+            ExtNode n;
+            n.k = ExtNode::Not;
+            n.kids.push_back(notx());
+            return n;
+        }
+        const std::size_t save = p_;
+        try {  // a comparison of two arithmetic terms
+            ExtNode a = sum();
+            for (const char* c : {"==", "!=", "<=", ">=", "<", ">"})
+                if (eat(c)) return bin(ExtNode::Cmp, std::move(a), sum(), c);
+        } catch (const std::runtime_error&) {
+        }
+        p_ = save;  // else a parenthesised boolean
+        if (eat("(")) {
+            ExtNode n = orx();
+            if (!eat(")")) throw std::runtime_error(") expected");
+            return n;
+        }
+        throw std::runtime_error("comparison expected");
+    }
+    ExtNode sum() {
+        ExtNode a = prod();
+        for (;;) {
+            if (eat("+")) a = bin(ExtNode::Add, std::move(a), prod());
+            else if (eat("-")) a = bin(ExtNode::Sub, std::move(a), prod());
+            else return a;
+        }
+    }
+    ExtNode prod() {
+        ExtNode a = unary();
+        while (eat("*")) a = bin(ExtNode::Mul, std::move(a), unary());
+        return a;
+    }
+    ExtNode unary() {
+        if (eat("-")) {
+            ExtNode n;
+            n.k = ExtNode::Neg;
+            n.kids.push_back(unary());
+            return n;
+        }
+        ws();
+        if (eat("(")) {
+            ExtNode n = sum();
+            if (!eat(")")) throw std::runtime_error(") expected");
+            return n;
+        }
+        ws();
+        if (p_ < s_.size() && std::isdigit(static_cast<unsigned char>(s_[p_]))) {
+            std::size_t q = p_;
+            while (q < s_.size() && std::isalnum(static_cast<unsigned char>(s_[q]))) ++q;
+            std::string t = s_.substr(p_, q - p_);
+            while (!t.empty() && (t.back() == 'u' || t.back() == 'U' || t.back() == 'l' || t.back() == 'L')) t.pop_back();
+            ExtNode n;
+            n.k = ExtNode::Num;
+            n.num = static_cast<int64_t>(std::stoull(t, nullptr, 0));
+            p_ = q;
+            return n;
+        }
+        std::size_t q = p_;
+        while (q < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[q])) || s_[q] == '_')) ++q;
+        if (q == p_) throw std::runtime_error("operand expected");
+        std::string id = s_.substr(p_, q - p_);
+        p_ = q;
+        ExtNode n;
+        if (id == "entry" && eat("(")) {
+            ws();
+            std::size_t r = p_;
+            while (r < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[r])) || s_[r] == '_')) ++r;
+            n.k = ExtNode::Entry;
+            n.id = s_.substr(p_, r - p_);
+            p_ = r;
+            if (n.id.empty() || !eat(")")) throw std::runtime_error("entry(IDENT) expected");
+            return n;
+        }
+        n.k = ExtNode::Id;
+        n.id = id;
+        return n;
+    }
+};
+
+// The candidates of PRISM_PIR_LOOP_CANDIDATES for one function:
+// (loop header source line, expression text, source tag). File format, one
+// per line (# comments and blank lines skipped):
+//   function TAB header-line TAB C-expression TAB source
+inline std::vector<std::tuple<int, std::string, std::string>> ext_candidates_for(const std::string& fn) {
+    static std::mutex mu;
+    static std::map<std::string, std::vector<std::tuple<std::string, int, std::string, std::string>>> by_file;
+    const char* path = std::getenv("PRISM_PIR_LOOP_CANDIDATES");
+    std::vector<std::tuple<int, std::string, std::string>> out;
+    if (!path || !*path) return out;
+    std::lock_guard<std::mutex> g(mu);
+    auto it = by_file.find(path);
+    if (it == by_file.end()) {
+        std::vector<std::tuple<std::string, int, std::string, std::string>> rows;
+        std::ifstream in(path);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            std::vector<std::string> f;
+            std::size_t a = 0;
+            for (;;) {
+                const auto b = line.find('\t', a);
+                f.push_back(line.substr(a, b == std::string::npos ? std::string::npos : b - a));
+                if (b == std::string::npos) break;
+                a = b + 1;
+            }
+            if (f.size() < 3) continue;
+            int ln = 0;
+            try {
+                ln = std::stoi(f[1]);
+            } catch (...) {
+                continue;
+            }
+            rows.emplace_back(f[0], ln, f[2], f.size() > 3 ? f[3] : std::string());
+        }
+        it = by_file.emplace(path, std::move(rows)).first;
+    }
+    for (auto& [name, ln, ex, src] : it->second)
+        if (name == fn) out.emplace_back(ln, ex, src);
+    return out;
+}
+
+}  // namespace houdini_data
+
 class Houdini {
 public:
     // timeout_s: the solver time per query. With a function budget (hard_s
@@ -230,8 +446,25 @@ public:
     }
 
     HoudiniOut run();
+    // The CHC round (chc.inc): mode 1 Spacer, 2 Spacer plus data-driven
+    // candidates. Every invariant Spacer finds is re-checked by this class's
+    // own base, step and final queries before it can prove anything.
+    HoudiniOut run_chc(int mode);
+    // PRISM_PIR_CHC_DIFF: Spacer's answer on the CHC encoding alone ("safe",
+    // "cex", "unknown: ..."; no re-check, diagnostics only).
+    std::string chc_differential();
 
 private:
+    int chc_mode_ = 0;            // > 0: run_search is the CHC round
+    bool chc_solve_only_ = false;  // chc_differential: stop after Spacer
+    bool chc_skip_spacer_ = false;  // the data-only pass of mode 2 (Houdini over the data-driven candidates)
+    std::vector<InvCand> data_cands_;
+    std::vector<std::vector<InvTerm>> largs_;  // per loop: the predicate's arguments (chc.inc loop_args)
+    std::vector<InvTerm> loop_args(int L) const;
+    void data_candidates(HoudiniOut& out);
+    std::size_t ext_candidates(HoudiniOut& out);
+    int ext_arg(int L, const std::string& id, bool entry) const;
+    std::vector<houdini_data::ExtNode> ext_ast_;
     // Loop idioms (src/prism/pir/idioms/): their instantiated templates are
     // searched first and alone (idiom_round_); without a proof the generic
     // family is searched with them added. Both rounds check everything.
@@ -537,6 +770,9 @@ std::string Houdini::text(const InvCand& c) const {
                    op_name(c.rel) + " " + std::to_string(static_cast<int64_t>(c.v.c)) + " * (" + phi(c.ip2) +
                    " - entry(" + phi(c.ip2) + "))" + (c.sext ? " [int]" : " [nat]");
         case InvCand::MemNZ: return "forall " + range + ": " + at(c.p, -1) + " != 0";
+        case InvCand::Chc: return "chc: " + c.txt;
+        case InvCand::Data: return "data: " + c.txt;
+        case InvCand::Ext: return "outside: " + c.txt;
         case InvCand::MemEq: return "forall " + range + ": " + at(c.p, c.off) + " == " + at(c.q, -1);
         case InvCand::MemNeC: return "forall " + range + ": " + at(c.p, -1) + " != (i" + std::to_string(8 * c.eb) + ")" + tt(c.v);
         case InvCand::MemInit: return "forall " + range + ": initialised " + at(c.p, c.off);
@@ -563,6 +799,10 @@ std::string Houdini::text(const InvCand& c) const {
 }
 
 void Houdini::generate(std::vector<InvCand>& out) {
+    if (chc_mode_ > 0) {  // the CHC round: the data-driven candidates (Spacer's lemmas come later)
+        out = data_cands_;
+        return;
+    }
     if (idiom_round_) {  // the idioms' candidates alone
         out = idiom_cands_;
         return;
@@ -1620,6 +1860,409 @@ HoudiniOut Houdini::run_search() {
             default: return c.bool_val(false);
         }
     };
+    // ---- The CHC round (chc.inc; docs/PIR.md "Loop proofs by CHC (Spacer)") ----
+    // Loop L's predicate arguments in a state (header phis of that state,
+    // the loop's entry values, scope values); chc_use masks the ones the
+    // predicate has (bit-vectors of at most 64 bits that can be read here).
+    std::vector<z3::expr> chc_lem;        // Chc candidates' formulas, over chc_ph[loop]
+    std::vector<z3::expr_vector> chc_ph;  // per loop: the placeholder constants of the arguments
+    std::vector<std::vector<char>> chc_use(g_.loops.size());
+    auto arg_term = [&](int L, std::size_t i, const std::vector<z3::expr>& phis) -> z3::expr {
+        const InvTerm& t = largs_.at(static_cast<std::size_t>(L)).at(i);
+        auto& CL = e.cut_loops[static_cast<std::size_t>(L)];
+        switch (t.kind) {
+            case InvTerm::Phi: return phis.at(static_cast<std::size_t>(t.idx));
+            case InvTerm::Entry: return CL.entry.at(static_cast<std::size_t>(t.idx));
+            case InvTerm::Scope: return e.lookup(Arg::v(t.idx, t.w), CL.node);
+            default: break;
+        }
+        throw EncodeFail{std::string(laws::UNKNOWN), "chc: argument kind"};
+    };
+    auto chc_args = [&](int L, const std::vector<z3::expr>& phis) {
+        z3::expr_vector v(c);
+        const auto& u = chc_use[static_cast<std::size_t>(L)];
+        for (std::size_t i = 0; i < u.size(); ++i)
+            if (u[i]) v.push_back(arg_term(L, i, phis));
+        return v;
+    };
+    if (chc_mode_ > 0 && !chc_skip_spacer_) {
+        const std::size_t nL = g_.loops.size();
+        for (std::size_t L = 0; L < nL; ++L) {
+            chc_ph.emplace_back(c);
+            auto& CL = e.cut_loops[L];
+            chc_use[L].assign(largs_[L].size(), 0);
+            if (CL.node < 0) continue;
+            for (std::size_t i = 0; i < largs_[L].size(); ++i) {
+                try {
+                    auto t = arg_term(static_cast<int>(L), i, CL.havoc);
+                    if (t.is_bv() && t.get_sort().bv_size() <= 64) chc_use[L][i] = 1;
+                } catch (const EncodeFail&) {
+                }
+            }
+        }
+        std::vector<std::optional<z3::expr>> nv_memo(e.props.size() + 1);
+        auto nv = [&](std::size_t n) -> z3::expr {
+            if (nv_memo[n]) return *nv_memo[n];
+            z3::expr_vector v(c);
+            for (std::size_t i = 0; i < n; ++i) v.push_back(!e.props[i].viol);
+            nv_memo[n] = v.empty() ? c.bool_val(true) : z3::mk_and(v);
+            return *nv_memo[n];
+        };
+        std::vector<std::optional<z3::func_decl>> P(nL);
+        std::set<unsigned> pred_ids;
+        for (std::size_t L = 0; L < nL; ++L) {
+            auto& CL = e.cut_loops[L];
+            if (CL.node < 0) continue;
+            z3::sort_vector sv(c);
+            sv.push_back(c.bool_sort());
+            for (auto a : chc_args(static_cast<int>(L), CL.havoc)) sv.push_back(a.get_sort());
+            P[L] = c.function(("chc!inv" + std::to_string(L)).c_str(), sv, c.bool_sort());
+            pred_ids.insert(P[L]->id());
+        }
+        auto app = [&](std::size_t L, const z3::expr& flag, const z3::expr_vector& a) {
+            z3::expr_vector v(c);
+            v.push_back(flag);
+            for (auto x : a) v.push_back(x);
+            return (*P[L])(v);
+        };
+        auto guard_of = [&](std::size_t M) {
+            auto& CM = e.cut_loops[M];
+            return e.reach[static_cast<std::size_t>(CM.node)] && nv(CM.props_before);
+        };
+        // Hints (mode 2): the data-driven candidates that survived the data-only
+        // pass, at loop M's havoc state, under M's guard. They are only hints:
+        // they are candidates of the re-check too, so nothing rests on them.
+        std::vector<std::optional<z3::expr>> hint(nL);
+        for (auto& k : cands) {
+            if (!k.alive || k.kind != InvCand::Data) continue;
+            auto& CM = e.cut_loops[static_cast<std::size_t>(k.loop)];
+            if (CM.node < 0) continue;
+            try {
+                constexpr unsigned W = 96;
+                z3::expr s = c.bv_val(0, W);
+                for (auto& [i, cf] : k.lin) {
+                    z3::expr t = arg_term(k.loop, static_cast<std::size_t>(i), CM.havoc);
+                    if (!t.is_bv() || t.get_sort().bv_size() > 64) throw EncodeFail{std::string(laws::UNKNOWN), "hint"};
+                    s = s + c.bv_val(cf, W) * z3::sext(t, W - t.get_sort().bv_size());
+                }
+                const z3::expr kk = c.bv_val(static_cast<int64_t>(k.k), W);
+                const z3::expr h = k.rel == Op::Eq ? s == kk : k.rel == Op::Sle ? s <= kk : s >= kk;
+                auto& slot = hint[static_cast<std::size_t>(k.loop)];
+                slot = slot ? (*slot && h) : h;
+            } catch (const EncodeFail&) {
+            }
+        }
+        auto hyp = [&](const std::function<bool(std::size_t)>& before) {
+            z3::expr_vector v(c);
+            for (std::size_t M = 0; M < nL; ++M)
+                if (P[M] && before(M)) {
+                    v.push_back(app(M, guard_of(M), chc_args(static_cast<int>(M), e.cut_loops[M].havoc)));
+                    if (hint[M]) v.push_back(z3::implies(guard_of(M), *hint[M]));
+                }
+            return v.empty() ? c.bool_val(true) : z3::mk_and(v);
+        };
+        z3::expr_vector av(c);
+        for (auto& a : e.assumptions) av.push_back(a);
+        const z3::expr A = av.empty() ? c.bool_val(true) : z3::mk_and(av);
+        // Size and memory guard: the clauses repeat the encoding in every rule
+        // and the child gets it as text, so a large cut program (or a process
+        // already near its memory budget) is not handed to Spacer at all.
+        std::string guard;
+        {
+            constexpr std::size_t kMaxNodes = 2'000'000;
+            std::unordered_set<unsigned> seen;
+            std::vector<z3::expr> st{A};
+            for (auto& p : e.props) st.push_back(p.viol);
+            while (!st.empty() && seen.size() <= kMaxNodes) {
+                z3::expr x = st.back();
+                st.pop_back();
+                if (!seen.insert(x.id()).second) continue;
+                if (x.is_app())
+                    for (unsigned i = 0; i < x.num_args(); ++i) st.push_back(x.arg(i));
+                else if (x.is_quantifier())
+                    st.push_back(x.body());
+            }
+            const uint64_t bmb0 = membudget::budget_mb();
+            if (seen.size() > kMaxNodes) guard = "CHC system not built (cut program over 2M AST nodes)";
+            else if (z3_over_soft_cap() || (bmb0 > 0 && membudget::tree_rss_mb() * 2 > bmb0))
+                guard = "CHC system not built (memory: over half of the budget in use)";
+        }
+        std::string bad;
+        // universal closure over every free constant of a clause
+        auto close = [&](const z3::expr& f) -> z3::expr {
+            z3::expr_vector vs(c);
+            std::unordered_set<unsigned> seen;
+            std::vector<z3::expr> st{f};
+            while (!st.empty()) {
+                z3::expr x = st.back();
+                st.pop_back();
+                if (!seen.insert(x.id()).second) continue;
+                if (x.is_app()) {
+                    auto d = x.decl();
+                    if (d.decl_kind() == Z3_OP_UNINTERPRETED) {
+                        if (x.num_args() == 0) {
+                            vs.push_back(x);
+                            continue;
+                        }
+                        if (!pred_ids.count(d.id())) bad = "uninterpreted function " + d.name().str() + " in the encoding";
+                    }
+                    for (unsigned i = 0; i < x.num_args(); ++i) st.push_back(x.arg(i));
+                } else if (x.is_quantifier()) {
+                    st.push_back(x.body());
+                }
+            }
+            return vs.empty() ? f : z3::forall(vs, f);
+        };
+        const prism::clock::Stopwatch tc;
+        double tchc = 60;
+        if (const char* te = std::getenv("PRISM_PIR_CHC_TIMEOUT"); te && *te) {
+            char* end = nullptr;
+            const double x = std::strtod(te, &end);
+            if (end != te && x > 0) tchc = x;
+        }
+        tchc = std::max(1.0, std::min({tchc, std::max(1.0, left() - per_query_), hard_left()}));
+        int verdict = -1;  // 1 invariant, 0 counterexample, -1 unknown
+        std::string why;
+        try {
+            if (!guard.empty()) throw z3::exception(guard.c_str());
+            z3::solver hs(c, "HORN");
+            z3::params pr(c);
+            pr.set("timeout", static_cast<unsigned>(tchc * 1000));
+            // Spacer, not the finite-domain datalog engine Z3 picks for bit-vector relations
+            pr.set("fp.engine", c.str_symbol("spacer"));
+            if (lim_.cx.on()) pr.set("rlimit", static_cast<unsigned>(lim_.cx.units(tchc)));
+            hs.set(pr);
+            for (std::size_t L = 0; L < nL; ++L) {
+                if (!P[L]) continue;
+                z3::expr_vector fv(c);
+                for (unsigned i = 1; i < P[L]->arity(); ++i)
+                    fv.push_back(c.constant(("chc!f" + std::to_string(L) + "_" + std::to_string(i)).c_str(), P[L]->domain(i)));
+                hs.add(fv.empty() ? app(L, c.bool_val(false), fv) : z3::forall(fv, app(L, c.bool_val(false), fv)));
+            }
+            for (std::size_t L = 0; L < nL; ++L) {
+                if (!P[L]) continue;
+                auto& CL = e.cut_loops[L];
+                const int seqL = CL.seq;
+                hs.add(close(z3::implies(A && guard_of(L) && hyp([&](std::size_t M) { return e.cut_loops[M].seq < seqL; }),
+                                         app(L, c.bool_val(true), chc_args(static_cast<int>(L), CL.entry)))));
+                for (auto& lt : CL.latches) {
+                    const int seqT = lt.seq;
+                    hs.add(close(z3::implies(A && lt.guard && nv(lt.props_before) &&
+                                                 hyp([&](std::size_t M) { return e.cut_loops[M].seq <= seqT; }),
+                                             app(L, c.bool_val(true), chc_args(static_cast<int>(L), lt.next)))));
+                }
+            }
+            // safety: the properties in segments between the loops' positions;
+            // each assumes the loops whose header comes before the segment
+            std::set<std::size_t> cutpts{0, e.props.size()};
+            for (std::size_t M = 0; M < nL; ++M)
+                if (P[M]) cutpts.insert(e.cut_loops[M].props_before);
+            std::vector<std::size_t> bs(cutpts.begin(), cutpts.end());
+            for (std::size_t s = 0; s + 1 < bs.size(); ++s) {
+                const std::size_t lo = bs[s], hi = bs[s + 1];
+                if (lo >= hi) continue;
+                z3::expr_vector vs(c);
+                for (std::size_t i = lo; i < hi; ++i) vs.push_back(e.props[i].viol);
+                hs.add(close(z3::implies(A && hyp([&](std::size_t M) { return e.cut_loops[M].props_before <= lo; }) &&
+                                             z3::mk_or(vs),
+                                         c.bool_val(false))));
+            }
+            // PRISM_PIR_CHC_DUMP=DIR: the CHC system as SMT-LIB2 (HORN), one file per function (diagnostics)
+            if (const char* dd = std::getenv("PRISM_PIR_CHC_DUMP"); dd && *dd && bad.empty()) {
+                std::ofstream o(std::string(dd) + "/" + fn_.name + ".smt2");
+                o << "(set-logic HORN)" << '\n' << hs.to_smt2();
+            }
+            if (!bad.empty()) {
+                why = bad;
+            } else {
+                // Spacer runs in a child process (`prism z3-worker`, the
+                // portfolio's worker, unchanged): it has crashed inside Z3
+                // (spacer::hypothesis_reducer, SIGSEGV) and does not always
+                // honour its timeout, and a child can be killed. The child
+                // prints the answer and, on sat, each predicate's
+                // interpretation at named placeholder constants, which this
+                // context parses back. Nothing it prints is trusted beyond
+                // being a candidate.
+                std::vector<z3::func_decl> ph_decls;
+                std::ostringstream sc;
+                sc << "(set-option :fp.engine spacer)\n(set-option :timeout " << static_cast<unsigned>(tchc * 1000)
+                   << ")\n(set-logic HORN)\n"
+                   << hs.to_smt2();
+                for (std::size_t L = 0; L < nL; ++L) {
+                    if (!P[L]) continue;
+                    const auto& H = fn_.blocks[static_cast<std::size_t>(g_.loops[L].header)];
+                    z3::expr_vector ph(c);
+                    unsigned pi = 0;
+                    for (std::size_t i = 0; i < largs_[L].size(); ++i) {
+                        if (!chc_use[L][i]) continue;
+                        const auto& t = largs_[L][i];
+                        std::string n = t.kind == InvTerm::Scope
+                                            ? "%" + fn_.vars[static_cast<std::size_t>(t.idx)].name
+                                            : "%" + fn_.vars[static_cast<std::size_t>(H.phis[static_cast<std::size_t>(t.idx)].dst)].name;
+                        if (t.kind == InvTerm::Entry) n = "entry(" + n + ")";
+                        ++pi;
+                        std::string nm = "L" + std::to_string(L) + ":" + n;
+                        for (auto& ch : nm)
+                            if (ch == '|' || ch == '\\') ch = '_';
+                        ph.push_back(c.constant(nm.c_str(), P[L]->domain(pi)));
+                        ph_decls.push_back(ph.back().decl());
+                        sc << "(declare-fun |" << nm << "| () " << P[L]->domain(pi).to_string() << ")\n";
+                    }
+                    chc_ph[L] = ph;
+                    sc << "(echo \"chc!L" << L << "\")\n(eval " << app(L, c.bool_val(true), ph).to_string() << ")\n";
+                }
+                namespace fs = std::filesystem;
+                static std::atomic<unsigned> seq_no{0};
+                std::error_code fec;
+                const fs::path tmp = fs::temp_directory_path(fec) /
+                                     ("prism-chc-" + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) + "-" +
+                                      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+                                      std::to_string(seq_no++) + ".smt2");
+                {
+                    std::ofstream o(tmp);
+                    o << sc.str();
+                }
+                static const std::string exe = [] {
+                    if (const char* x = prism::settings::cstr(prism::settings::z3_worker()); x && *x) return std::string(x);
+                    std::error_code ec;
+                    const fs::path self = fs::read_symlink("/proc/self/exe", ec);
+                    if (ec) return std::string();
+                    if (self.filename() == "prism") return self.string();
+                    const fs::path sib = self.parent_path() / "prism";  // prism_tests next to prism
+                    return fs::exists(sib, ec) ? sib.string() : std::string();
+                }();
+                // the child counts against the process tree's memory budget: it
+                // gets what the tree has left, less a margin, and at most half
+                // the budget; with less than 768 MB left it is not started
+                const uint64_t bmb = membudget::budget_mb();
+                const uint64_t used = membudget::tree_rss_mb();
+                const uint64_t avail = bmb > used ? bmb - used : 0;
+                if (exe.empty()) {
+                    why = "no prism binary for the Spacer child (z3-worker)";
+                } else if (bmb > 0 && avail < 768) {
+                    why = "not attempted (memory budget: " + std::to_string(avail) + " MB left)";
+                } else {
+                    const uint64_t child_mb = bmb == 0 ? 4096 : std::min<uint64_t>(avail - 256, std::max<uint64_t>(512, bmb / 2));
+                    exec::Spec sp;
+                    sp.argv = {exe, "z3-worker", tmp.string(), std::to_string(child_mb), "0"};
+                    sp.timeout_ms = static_cast<std::uint64_t>((tchc + 5) * 1000);
+                    sp.watch_memory_bytes = child_mb << 20;
+                    sp.no_core = true;
+                    sp.stop = lim_.stop;
+                    const exec::Result res = exec::run(sp);
+                    fs::remove(tmp, fec);
+                    const std::string& txt = res.out;
+                    const std::string head = txt.substr(0, txt.find('\n'));
+                    if (res.timed_out) {
+                        why = "timeout (child)";
+                    } else if (res.crashed() || res.memory_killed || res.failed) {
+                        why = res.memory_killed ? "memory (child killed)"
+                              : res.failed  ? "child did not start"
+                                            : "Z3 crashed in the child (signal " + std::to_string(res.term_signal) + ")";
+                    } else if (head == "unsat") {
+                        verdict = 0;
+                    } else if (head == "sat") {
+                        verdict = 1;
+                        const std::size_t before = cands.size();
+                        z3::sort_vector no_sorts(c);
+                        z3::func_decl_vector decls(c);
+                        for (auto& d : ph_decls) decls.push_back(d);
+                        for (std::size_t L = 0; L < nL; ++L) {
+                            if (!P[L]) continue;
+                            const std::string mark = "chc!L" + std::to_string(L) + "\n";
+                            auto at = txt.find(mark);
+                            if (at == std::string::npos) continue;
+                            at += mark.size();
+                            auto end = txt.find("chc!L", at);
+                            const std::string f = txt.substr(at, end == std::string::npos ? std::string::npos : end - at);
+                            std::set<unsigned> ph_ids;
+                            for (auto x : chc_ph[L]) ph_ids.insert(x.id());
+                            z3::expr phi = c.bool_val(true);
+                            try {
+                                auto v = c.parse_string(("(assert " + f + ")").c_str(), no_sorts, decls);
+                                if (v.size() != 1) continue;
+                                phi = v[0].simplify();
+                            } catch (const z3::exception&) {
+                                continue;  // not a formula over the placeholders: no lemma
+                            }
+                            std::vector<z3::expr> conj, todo{phi};
+                            while (!todo.empty()) {
+                                z3::expr x = todo.back();
+                                todo.pop_back();
+                                if (x.is_and()) {
+                                    for (unsigned i = 0; i < x.num_args(); ++i) todo.push_back(x.arg(i));
+                                    continue;
+                                }
+                                if (x.is_true()) continue;
+                                conj.push_back(x);
+                            }
+                            for (auto& x : conj) {
+                                // only formulas over the placeholders (no predicate, no other constant)
+                                bool ok = true;
+                                std::size_t nodes = 0;
+                                std::unordered_set<unsigned> seen;
+                                std::vector<z3::expr> st{x};
+                                while (!st.empty() && ok) {
+                                    z3::expr y = st.back();
+                                    st.pop_back();
+                                    if (!seen.insert(y.id()).second) continue;
+                                    ++nodes;
+                                    if (y.is_app()) {
+                                        auto d = y.decl();
+                                        if (d.decl_kind() == Z3_OP_UNINTERPRETED && (y.num_args() > 0 || !ph_ids.count(y.id())))
+                                            ok = false;
+                                        for (unsigned i = 0; i < y.num_args(); ++i) st.push_back(y.arg(i));
+                                    } else if (y.is_quantifier()) {
+                                        st.push_back(y.body());
+                                    }
+                                }
+                                if (!ok) continue;
+                                InvCand k;
+                                k.kind = InvCand::Chc;
+                                k.loop = static_cast<int>(L);
+                                k.lem = static_cast<int>(chc_lem.size());
+                                std::string t = x.to_string();
+                                if (t.size() > 400) t = t.substr(0, 400) + "...";
+                                k.txt = t;
+                                k.size = nodes;
+                                chc_lem.push_back(x);
+                                cands.push_back(std::move(k));
+                            }
+                        }
+                        out.chc_lemmas = cands.size() - before;
+                        out.candidates = cands.size();
+                    } else {
+                        std::string rest = txt.size() > 200 ? txt.substr(0, 200) : txt;
+                        for (auto& ch : rest)
+                            if (ch == '\n') ch = ' ';
+                        why = rest.empty() ? "no answer from the child" : rest;
+                        if (why.rfind("unknown", 0) == 0 && tc.elapsed_s() >= tchc) why = "timeout";
+                    }
+                }
+            }
+        } catch (const z3::exception& ex) {
+            why = guard.empty() ? std::string("z3: ") + ex.msg() : guard;
+        }
+        out.chc_s = tc.elapsed_s();
+        char secs[32];
+        std::snprintf(secs, sizeof secs, "%.2f", out.chc_s);
+        if (verdict == 1) {
+            out.chc = "invariant found (" + std::to_string(out.chc_lemmas) + " lemma(s), " + secs + " s; re-checked by Houdini)";
+        } else if (verdict == 0) {
+            out.chc = std::string("counterexample of the CHC over-approximation (") + secs + " s)";
+            out.chc_cex = true;
+            out.why = "Spacer: the CHC system has a counterexample (not a verdict: replayed by the bounded encoding)";
+            return out;
+        } else {
+            out.chc = "unknown (" + why + ", " + secs + " s)";
+        }
+        if (chc_solve_only_) return out;
+        // no invariant: no proof (in mode 2 the data-driven candidates were searched alone already)
+        if (verdict != 1) {
+            out.why = "Spacer: " + out.chc;
+            return out;
+        }
+    }
     auto eval = [&](const InvCand& k, const State& st, const z3::expr& x) -> z3::expr {
         auto& CL = e.cut_loops[static_cast<std::size_t>(k.loop)];
         const int node = CL.node;
@@ -1665,6 +2308,62 @@ HoudiniOut Houdini::run_search() {
             }
             case InvCand::DiffCmp:
                 return rel(k.rel, term(k.a, st, node, k.loop) - term(k.b, st, node, k.loop), term(k.v, st, node, k.loop));
+            case InvCand::Chc:  // a lemma of Spacer's invariant, at this state's arguments
+                return chc_lem.at(static_cast<std::size_t>(k.lem))
+                    .substitute(chc_ph.at(static_cast<std::size_t>(k.loop)), chc_args(k.loop, *st.phis));
+            case InvCand::Data: {  // sum coef * sext(arg) <rel> k over 96-bit integers (no wrap: |coef| <= 2^20, <= 32 terms)
+                constexpr unsigned W = 96;
+                z3::expr s = c.bv_val(0, W);
+                for (auto& [i, cf] : k.lin) {
+                    z3::expr t = arg_term(k.loop, static_cast<std::size_t>(i), *st.phis);
+                    if (!t.is_bv() || t.get_sort().bv_size() > 64)
+                        throw EncodeFail{std::string(laws::UNKNOWN), "data candidate over a non-bit-vector"};
+                    s = s + c.bv_val(cf, W) * z3::sext(t, W - t.get_sort().bv_size());
+                }
+                return rel(k.rel, s, c.bv_val(static_cast<int64_t>(k.k), W));
+            }
+            case InvCand::Ext: {  // an outside candidate over 96-bit signed integers
+                constexpr unsigned W = 96;
+                std::function<z3::expr(const houdini_data::ExtNode&)> num = [&](const houdini_data::ExtNode& n) -> z3::expr {
+                    using N = houdini_data::ExtNode;
+                    switch (n.k) {
+                        case N::Num: return c.bv_val(n.num, W);
+                        case N::Id:
+                        case N::Entry: {
+                            z3::expr t = arg_term(k.loop, static_cast<std::size_t>(ext_arg(k.loop, n.id, n.k == N::Entry)), *st.phis);
+                            if (!t.is_bv() || t.get_sort().bv_size() > 64)
+                                throw EncodeFail{std::string(laws::UNKNOWN), "outside candidate over a non-bit-vector"};
+                            return z3::sext(t, W - t.get_sort().bv_size());
+                        }
+                        case N::Add: return num(n.kids[0]) + num(n.kids[1]);
+                        case N::Sub: return num(n.kids[0]) - num(n.kids[1]);
+                        case N::Mul: return num(n.kids[0]) * num(n.kids[1]);
+                        case N::Neg: return -num(n.kids[0]);
+                        default: break;
+                    }
+                    throw EncodeFail{std::string(laws::UNKNOWN), "outside candidate: a boolean where a number is needed"};
+                };
+                std::function<z3::expr(const houdini_data::ExtNode&)> bo = [&](const houdini_data::ExtNode& n) -> z3::expr {
+                    using N = houdini_data::ExtNode;
+                    switch (n.k) {
+                        case N::Or: return bo(n.kids[0]) || bo(n.kids[1]);
+                        case N::And: return bo(n.kids[0]) && bo(n.kids[1]);
+                        case N::Not: return !bo(n.kids[0]);
+                        case N::Cmp: {
+                            const auto a = num(n.kids[0]), b = num(n.kids[1]);
+                            if (n.op == "==") return a == b;
+                            if (n.op == "!=") return a != b;
+                            if (n.op == "<") return a < b;
+                            if (n.op == "<=") return a <= b;
+                            if (n.op == ">") return a > b;
+                            return a >= b;
+                        }
+                        default: break;
+                    }
+                    throw EncodeFail{std::string(laws::UNKNOWN), "outside candidate: a number where a condition is needed"};
+                };
+                return bo(ext_ast_.at(static_cast<std::size_t>(k.lem)));
+            }
             case InvCand::ScaleVK: {
                 const unsigned W = 3 * k.a.w + 4;
                 auto X = [&](const z3::expr& x) {
@@ -2295,3 +2994,5 @@ void export_invariants(const Function& fn, const CfgInfo& g, const HoudiniOut& h
     v.extra["invariant_loops"] = loops.dump();
     v.extra["invariant_conjuncts"] = conj.dump();
 }
+
+#include "chc.inc"
