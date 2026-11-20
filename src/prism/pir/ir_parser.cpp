@@ -562,12 +562,45 @@ struct P {
                 unsigned long long mag = 0;
                 auto r = std::from_chars(digits.data(), digits.data() + digits.size(), mag);
                 if (r.ec != std::errc()) {
-                    v.kind = Value::Other;  // wider than 64 bits
+                    // a literal beyond 64 bits (types of 65..512 bits, --pir-wide-int): kept when its magnitude fits 128 bits
+                    // (two 64-bit limbs, two's complement; a type wider than 128 bits extends them by the sign), else not parsed
+                    uint32_t limb[4] = {0, 0, 0, 0};  // magnitude, little endian
+                    bool ok = ty.bits > 64 && ty.bits <= 512 && r.ec == std::errc::result_out_of_range;
+                    for (char ch : digits) {
+                        if (!ok) break;
+                        uint64_t carry = static_cast<uint64_t>(ch - '0');
+                        for (auto& lb : limb) {
+                            uint64_t x = uint64_t{lb} * 10 + carry;
+                            lb = static_cast<uint32_t>(x);
+                            carry = x >> 32;
+                        }
+                        if (carry) ok = false;  // beyond 128 bits
+                    }
+                    // wider than 128 bits: a negative literal's 128-bit two's complement must keep its sign (magnitude <= 2^127;
+                    // a positive one is zero-extended)
+                    if (ok && ty.bits > 128 && neg && (limb[3] & 0x80000000u) &&
+                        !(limb[3] == 0x80000000u && !limb[2] && !limb[1] && !limb[0]))
+                        ok = false;
+                    if (!ok) {
+                        v.kind = Value::Other;  // wider than 64 bits
+                        return v;
+                    }
+                    uint64_t lo = uint64_t{limb[0]} | (uint64_t{limb[1]} << 32);
+                    uint64_t hi = uint64_t{limb[2]} | (uint64_t{limb[3]} << 32);
+                    if (neg) {  // two's complement of the 128-bit magnitude
+                        lo = ~lo + 1;
+                        hi = ~hi + (lo == 0 ? 1 : 0);
+                    }
+                    v.kind = Value::Int;
+                    v.negative = neg;
+                    v.bits = lo;
+                    v.hi = hi;
                     return v;
                 }
                 v.kind = Value::Int;
                 v.negative = neg;
                 v.bits = neg ? (~static_cast<uint64_t>(mag) + 1) : static_cast<uint64_t>(mag);
+                if (ty.bits > 64) v.hi = neg && mag != 0 ? ~uint64_t{0} : 0;
                 return v;
             }
             case Tok::Word: {
@@ -1395,6 +1428,8 @@ void parse_define(std::string_view header, const std::vector<std::string_view>& 
             in = parse_inst(toks2, trim(line), kernel_atomics);
         } catch (const ParseError& e) {
             if (fn.parse_error.empty()) fn.parse_error = std::string(e.what()) + ": " + trim(line);
+            else if (fn.parse_error == "variadic function")  // keep the body error visible (--pir-variadic needs a parsed body)
+                fn.parse_error += std::string("; ") + e.what() + ": " + trim(line);
             in.parsed = false;
             in.text = trim(line);
             auto sp = in.text.find(' ');

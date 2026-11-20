@@ -3421,6 +3421,11 @@ Analyzed prepare_unit(const Unit& u, const Frontend& fe, const Config& cfg, cons
     topt.addr_values = cfg.pir_addr_values;
     topt.builtin_contracts = cfg.pir_builtin_contracts;
     topt.icall_havoc = cfg.pir_icall_havoc;
+    topt.variadic = cfg.pir_variadic;
+    topt.recursion = cfg.pir_recursion;
+    topt.kernel_sprintf = cfg.pir_kernel_sprintf;
+    topt.addrspace = cfg.pir_addrspace;
+    topt.wide_int = cfg.pir_wide_int;
     std::set<int> used_folded;
     // A preprocessed copy (x.i, --compile-commands) names x.c in its #line
     // markers: the unit's own functions are those of x.c, and its lines are x.c's.
@@ -3825,23 +3830,87 @@ void finalize_unit(Analyzed& res, const Unit& u, const Frontend& fe, const Lower
     // read is in the keys' scope)
     if (cfg.pir_input_hash && !recs.empty()) return;
     // Folded UB that no instruction carries: the function cannot be proved.
+    // Its owner is decided over ALL functions of the unit's main file, never only the ones this process checks
+    // (PRISM_PIR_ONLY chunks, re-runs): the function whose source span (cparse start..end line) contains the line. When
+    // the line is in no known span, every function whose span is not known (cparse did not find it, e.g. one a macro
+    // generates) is charged, since any of them may contain it; with every span known, the line is at file scope. The verdict
+    // of each function is then the same whatever else is selected (OS-Proving docs/coverage/DEDUPE.md: before, the UB went to the selected
+    // function with the largest line before it, so the true owner could be reported clean in another chunk).
+    struct OwnSpan {
+        const ir::Function* irf;
+        int start, end;  // end 0: not known
+    };
+    std::vector<OwnSpan> own_spans;
+    bool own_spans_done = false;
+    auto owner_of = [&](int line) -> std::vector<const ir::Function*> {
+        if (!own_spans_done) {
+            own_spans_done = true;
+            std::map<std::string, std::vector<std::pair<int, int>>> spans = fn_spans;
+            if (spans.empty()) {
+                try {
+                    for (auto& fi : extract_functions(pre_main ? low.cc_main : u.path, u.rel))
+                        if (fi.span.second > 0) spans[fi.name].push_back(fi.span);
+                } catch (...) {
+                }
+            }
+            for (auto& irf : mod.functions) {
+                ir::DISub sub;
+                if (auto it = mod.subprograms.find(irf.dbg); it != mod.subprograms.end()) sub = it->second;
+                if (irf.is_model || !sub.line) continue;
+                if (!sub.file.empty() && fs::path(sub.file).filename().string() != unit_name) continue;  // header code
+                OwnSpan s{&irf, sub.line, 0};
+                if (auto it = spans.find(sub.name.empty() ? irf.name : sub.name); it != spans.end()) {
+                    const std::pair<int, int>* best = nullptr;
+                    for (auto& sp : it->second)
+                        if (!best || std::abs(sp.first - sub.line) < std::abs(best->first - sub.line)) best = &sp;
+                    if (best && best->first <= sub.line && sub.line <= best->second) s = {&irf, best->first, best->second};
+                }
+                own_spans.push_back(s);
+            }
+            std::sort(own_spans.begin(), own_spans.end(), [](const OwnSpan& a, const OwnSpan& b) { return a.start < b.start; });
+        }
+        std::vector<const ir::Function*> r;
+        for (const auto& s : own_spans)  // a known span that contains the line: that function alone
+            if (s.end && s.start <= line && line <= s.end) return {s.irf};
+        // no known span contains it: each function whose span is not known may (a macro-generated function, one cparse
+        // did not find), so each is charged; with every span known, the line is at file scope (an initialiser: nothing
+        // executes it) and no function is charged
+        for (const auto& s : own_spans)
+            if (!s.end) r.push_back(s.irf);
+        return r;
+    };
     for (std::size_t k = 0; k < folded.size(); ++k) {
         if (folded[k].line > 0) continue;  // marker is in the IR: checked (or its function is not encoded)
         if (low.wrapv && wraps_under_fwrapv(folded[k])) continue;  // --pir-build-semantics: wraps, not UB
         int line = -folded[k].line;
-        FnRec* owner = nullptr;
-        for (auto& r : recs)
-            if (r.f.line && *r.f.line <= line && (!owner || *owner->f.line < *r.f.line)) owner = &r;
-        if (!owner) continue;
-        if (owner->f.status == laws::FAILED || owner->f.status == laws::NEEDS_HARNESS) continue;
-        owner->f.extra["verdict_before_folded"] = owner->f.status;
-        owner->f.extra.erase(std::string(laws::CERTIFICATE_KEY));
-        owner->f.status = std::string(laws::NEEDS_HARNESS);
-        owner->f.strength = std::string(laws::STRENGTH_SOME);
-        const std::string folded_msg = folded.at(k).msg;
-        owner->f.message = "UNENCODED: clang-folded UB at line " + std::to_string(line) +
-                           " not attributable to an IR instruction (" + folded_msg + ")";
-        owner->fn.reset();
+        const auto owners = owner_of(line);
+        const bool definite = owners.size() == 1 && [&] {
+            for (const auto& s : own_spans)
+                if (s.irf == owners[0]) return s.end != 0;
+            return false;
+        }();
+        for (auto& rec : recs) {
+            if (std::find(owners.begin(), owners.end(), rec.irf) == owners.end()) continue;  // not an owner, or not checked here
+            FnRec* owner = &rec;
+            if (owner->f.status == laws::FAILED || owner->f.status == laws::NEEDS_HARNESS) continue;
+            owner->f.extra["verdict_before_folded"] = owner->f.status;
+            owner->f.extra.erase(std::string(laws::CERTIFICATE_KEY));
+            owner->f.status = std::string(laws::NEEDS_HARNESS);
+            owner->f.strength = std::string(laws::STRENGTH_SOME);
+            const std::string folded_msg = folded.at(k).msg;
+            // Reported at its source line with the reason it is not decided (not an UNENCODED construct): clang folded the
+            // expression into a constant, so no IR instruction carries it and whether an execution of the function reaches
+            // it is not known. Never PROVED, never FAILED (the expression may sit on a path that is never taken).
+            owner->f.message = "clang-folded UB at line " + std::to_string(line) + " (" + folded_msg +
+                               "): no IR instruction carries it (folded into a constant), so whether the function reaches it "
+                               "is not decided" +
+                               (definite ? std::string()
+                                         : std::string("; the line is in no known function span, so every function whose "
+                                                       "span is not known may contain it"));
+            owner->f.extra["folded_line"] = std::to_string(line);
+            owner->f.extra["folded_class"] = folded.at(k).cls;
+            owner->fn.reset();
+        }
     }
     caller_discharged_asserts(recs, *res.mod);
     // LOCK-ORDER-INVERSION (lock_order.cpp, docs/KERNEL_CONCURRENCY.md section 14): one record per

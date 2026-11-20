@@ -116,6 +116,11 @@ struct Config {
     bool pir_bpf_helpers = false;       // --pir-bpf-helpers: BPF helper arguments typed ARG_PTR_TO_* are valid objects (named)
     bool pir_global_harness_deep = false;  // --pir-global-harness-deep: nested pointer fields and list heads of harnessed globals (named)
     bool pir_icall_havoc = false;       // --pir-icall-havoc: unresolved indirect calls are a havoc of all memory (named)
+    bool pir_variadic = false;          // --pir-variadic: variadic functions and va_list (arbitrary variadic arguments, named)
+    bool pir_recursion = false;         // --pir-recursion: a recursive call is the callee's own verdict, assumed by induction (named)
+    bool pir_kernel_sprintf = false;    // --pir-kernel-sprintf: Linux sprintf with a literal format: output length bound incl. %p extensions
+    bool pir_addrspace = false;         // --pir-addrspace: kernel address-space pointers (per-CPU %gs, __user) as ordinary pointers (named)
+    bool pir_wide_int = false;          // --pir-wide-int: i65..i128 values as 128-bit bit-vectors
     // --lock-contracts FILE (TSV, docs/KERNEL_CONCURRENCY.md section 14): lock contracts of
     // unmodified kernel code, read by the pir stage (needs --kernel-api). "" = none.
     std::string pir_lock_contracts;

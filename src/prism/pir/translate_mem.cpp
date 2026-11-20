@@ -27,6 +27,13 @@
 
 namespace prism::pir::pirmem {
 
+namespace {
+thread_local unsigned g_max_int_bits = 64;
+}  // namespace
+unsigned max_int_bits() { return g_max_int_bits; }
+IntWidthScope::IntWidthScope(unsigned w) : saved(g_max_int_bits) { g_max_int_bits = w; }
+IntWidthScope::~IntWidthScope() { g_max_int_bits = saved; }
+
 using prism::i128;
 using prism::i128_add;
 using prism::i128_from_i64;
@@ -203,7 +210,9 @@ MemTr::MemTr(TrApi& t, const ir::Module& m) : t_(t), lay_(m) {}
 
 unsigned MemTr::value_width(const ir::Type& t, std::string_view what) const {
     if (t.kind == ir::Type::Ptr) {
-        if (t.text != "ptr") throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
+        // --pir-addrspace (kernel mode): a segment pointer is a pointer value (mapped where it is used: translate_seg.inc)
+        const bool seg = t.text == "ptr addrspace" && t_.options().addrspace && !t_.options().kernel_api.empty();
+        if (t.text != "ptr" && !seg) throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
         return ptr_w();
     }
     if (t.kind == ir::Type::Float) {
@@ -212,7 +221,7 @@ unsigned MemTr::value_width(const ir::Type& t, std::string_view what) const {
         throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text + " (floating-point format not modelled)"};
     }
     if (t.kind != ir::Type::Int) throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
-    if (t.bits == 0 || t.bits > 64)
+    if (t.bits == 0 || t.bits > max_int_bits())
         throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text + " (wider than 64 bits)"};
     return t.bits;
 }
@@ -694,6 +703,7 @@ void MemTr::emit_init(Arg base, uint64_t offs, const ir::Type& ty, const ir::Val
     switch (v.kind) {
         case ir::Value::Int: {
             auto w = value_width(ty, "initializer of");
+            if (w > 64 && v.hi != 0) throw Unenc{"UNENCODED: initializer of " + ty.text + " with bits above 63"};
             if (v.bits != 0) put(offs, Arg::c(w, v.bits));
             return;
         }

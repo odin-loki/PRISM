@@ -50,6 +50,18 @@ bool all_digits(const std::string& s) {
 bool Tr::asm_exact(Frame& fr, const ir::Inst& in, int& cur, int line) {
     namespace am = prism::pir::asmodel;
     if (in.asm_text.empty()) return false;
+    {
+        // --pir-wide-int: the exact semantics are for registers of at most 64 bits; wider operands take the havoc model
+        auto wide = [](auto&& self, const ir::Type& t) -> bool {
+            if (t.kind == ir::Type::Int && t.bits > 64) return true;
+            for (auto& e : t.elems)
+                if (self(self, e)) return true;
+            return false;
+        };
+        if (wide(wide, in.ty)) return false;
+        for (auto& o : in.ops)
+            if (wide(wide, o.ty)) return false;
+    }
     // privileged first (also for templates that do not parse, e.g. `out %al,(%dx)`)
     if (auto priv = am::x86_privileged_in(in.asm_text)) {
         asm_havoc(fr, in, cur, line, "asm-privileged",

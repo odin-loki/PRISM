@@ -121,6 +121,17 @@ bool reaches_alloc_failed(const ir::Module& m, const ir::Function& f);
 // caught-exceptions stack in the prologue (export_lean: `L glob %__prism.caught`)
 bool reaches_caught_slot(const ir::Module& m, const ir::Function& f);
 
+// --pir-wide-int: the widest integer type the translator accepts in a function body (64; 128 with the option).
+// Function parameters and results stay at most 64 bits. Set for one translation by IntWidthScope.
+unsigned max_int_bits();
+struct IntWidthScope {
+    unsigned saved;
+    explicit IntWidthScope(unsigned w);
+    ~IntWidthScope();
+    IntWidthScope(const IntWidthScope&) = delete;
+    IntWidthScope& operator=(const IntWidthScope&) = delete;
+};
+
 class MemTr {
 public:
     MemTr(TrApi& t, const ir::Module& m);
@@ -249,5 +260,14 @@ PRISM_API FormatPlan plan_format(const std::string& callee, const std::optional<
                                  const std::vector<ir::Type>& args,
                                  const std::vector<std::optional<uint64_t>>& consts = {});
 PRISM_API bool is_format_function(const std::string& callee);
+// Linux kernel sprintf with a literal format (libc_format.cpp, --pir-kernel-sprintf): upper bound on the characters written
+// (without the NUL) apart from the %s arguments without a precision, whose string lengths the caller adds.
+struct KernelFormatPlan {
+    std::string unencoded;               // non-empty: "UNENCODED: ..." (no bound)
+    uint64_t max_len = 0;
+    std::vector<std::size_t> str_args;   // call-argument indices of %s conversions without a precision
+    std::size_t nargs = 0;               // call arguments the format consumes (first_arg + conversions)
+};
+PRISM_API KernelFormatPlan plan_kernel_format(const std::string& fmt, std::size_t first_arg);
 
 }  // namespace prism::pir::pirmem

@@ -56,7 +56,7 @@ bool has_flag(const ir::Inst& in, std::string_view f) {
 
 unsigned int_width(const ir::Type& t, std::string_view what = "type") {
     if (t.kind != ir::Type::Int) throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text};
-    if (t.bits == 0 || t.bits > 64)
+    if (t.bits == 0 || t.bits > pirmem::max_int_bits())
         throw Unenc{"UNENCODED: " + std::string(what) + " " + t.text + " (wider than 64 bits)"};
     return t.bits;
 }
@@ -215,6 +215,21 @@ struct Tr final : pirmem::TrApi {
     void unknown_call(Frame& fr, const ir::Inst& in, int& cur, int line);
     // --pir-icall-havoc: an indirect call not resolved to inlined targets is a havoc of all memory (translate_kernel.inc)
     Arg icall_havoc(int& cur, const ir::Inst& in, unsigned w, int line, const std::string& why);
+    // --pir-variadic (translate_va.inc): va_start / va_copy / va_end over arbitrary argument areas (named)
+    int va_layout() const;
+    void va_intrinsic(const std::string& n, Arg ap, Arg src, int& cur, int line);
+    // --pir-recursion (translate_rec.inc): a recursive call is the callee's own verdict and a havoc (named)
+    void recursive_call(Frame& fr, const ir::Inst& in, int& cur, int line);
+    // --pir-kernel-sprintf (translate_ksprintf.inc): Linux sprintf with a literal format; false = not handled
+    bool kernel_sprintf(Frame& fr, const ir::Inst& in, int& cur, int line);
+    // --pir-addrspace (translate_seg.inc): segment pointers (x86 %gs / %fs per-CPU data), named
+    std::optional<Arg> pcpu_;                       // hidden object: the current CPU's per-CPU area
+    std::map<std::string, bool> seg_null_memo_;
+    bool seg_ptr(const ir::Type& t) const;
+    Arg seg_operand(Frame& fr, const ir::Operand& o, int cur, int line);
+    Arg seg_addr(int b, Arg p, int line);
+    bool seg_global_null(const ir::Operand& o);
+    bool variadic_ok(const ir::Function& f) const { return opt.variadic && f.variadic && f.parse_error == "variadic function"; }
     Arg opaque_ptr(int& cur, const std::string& what, int line);
     // ghost lock state (translate_lock.inc, docs/KERNEL_CONCURRENCY.md)
     std::optional<Arg> lk_;                           // hidden object: held locks, atomic depth
@@ -368,7 +383,18 @@ struct Tr final : pirmem::TrApi {
     // taken, read while indeterminate).
     Arg operand(Frame& fr, const ir::Operand& o, int b, int line, bool use = true) {
         switch (o.v.kind) {
-            case ir::Value::Int: return Arg::c(int_width(o.ty, "operand type"), o.v.bits);
+            case ir::Value::Int: {
+                const unsigned w = int_width(o.ty, "operand type");
+                if (w <= 64 || o.v.hi == 0) return Arg::c(w, o.v.bits);  // (Arg::c zero-extends past 64 bits)
+                // --pir-wide-int: a literal with bits above 63, built in the prologue (defined before every use):
+                // (zext hi) << 64 | (zext lo) at min(w, 128) bits; a wider type extends it by the literal's sign (the
+                // parser keeps literals of at most 128 bits of magnitude)
+                const unsigned lw = std::min(w, 128u);
+                Arg hi = assign(-1, Op::Shl, lw, {assign(-1, Op::ZExt, lw, {Arg::c(64, o.v.hi)}), Arg::c(lw, 64)}, "wide");
+                Arg v = assign(-1, Op::Or, lw, {hi, assign(-1, Op::ZExt, lw, {Arg::c(64, o.v.bits)})}, "wide");
+                if (w == lw) return v;
+                return assign(-1, o.v.negative ? Op::SExt : Op::ZExt, w, {v}, "wide");
+            }
             case ir::Value::Local: {
                 if (fr.pairs.count(o.v.name)) throw Unenc{"UNENCODED: aggregate value %" + o.v.name};
                 auto it = fr.env.find(o.v.name);
@@ -650,13 +676,13 @@ struct Tr final : pirmem::TrApi {
                     }
                 fr.defs[in.result] = &in;
                 auto ty = in.op == "icmp" || in.op == "fcmp" ? ir::Type{ir::Type::Int, 1, "i1", {}} : in.ty;
-                if (ty.kind == ir::Type::Ptr && ty.text == "ptr") ty = ir::Type{ir::Type::Int, ptr_w(), "ptr", {}};
+                if (ty.kind == ir::Type::Ptr && (ty.text == "ptr" || seg_ptr(ty))) ty = ir::Type{ir::Type::Int, ptr_w(), "ptr", {}};
                 bool is_fp = false;
                 if (auto fw = fp::width_of(ty)) {
                     ty = ir::Type{ir::Type::Int, *fw, ty.text, {}};  // IEEE bits
                     is_fp = true;
                 }
-                if (ty.kind == ir::Type::Int && ty.bits > 0 && ty.bits <= 64) {
+                if (ty.kind == ir::Type::Int && ty.bits > 0 && ty.bits <= pirmem::max_int_bits()) {
                     int v = newvar(fr.prefix + in.result, ty.bits);
                     out.vars[static_cast<std::size_t>(v)].fp = is_fp;
                     fr.env[in.result] = Arg::v(v, ty.bits);
@@ -1414,6 +1440,15 @@ struct Tr final : pirmem::TrApi {
             if ((opt.kernel_api.empty() || starts(n, "llvm.")) && fpt.call(cur, in, c)) return;
         }
         if (starts(n, "llvm.")) {
+            if (opt.wide_int) {
+                // --pir-wide-int: integers of 65..128 bits reach only the intrinsics that are plain operators of any width
+                auto wide = [](const ir::Type& t) { return t.kind == ir::Type::Int && t.bits > 64; };
+                bool w = wide(in.ty);
+                for (auto& o : in.ops) w = w || wide(o.ty);
+                if (w && !starts(n, "llvm.smax.") && !starts(n, "llvm.smin.") && !starts(n, "llvm.umax.") &&
+                    !starts(n, "llvm.umin.") && !starts(n, "llvm.expect."))
+                    throw Unenc{"UNENCODED: call @" + n + " (integers wider than 64 bits)"};
+            }
             if (is_overflow_intrinsic(n)) {
                 auto it = fr.pairs.find(in.result);
                 Arg a = arg(0), b = arg(1);
@@ -1506,6 +1541,12 @@ struct Tr final : pirmem::TrApi {
                 assume(cur, c);
                 return;
             }
+            if (starts(n, "llvm.va_start") || starts(n, "llvm.va_end") || starts(n, "llvm.va_copy")) {
+                // --pir-variadic (translate_va.inc): va_list over arbitrary argument areas (named)
+                if (!opt.variadic) throw Unenc{"UNENCODED: call @" + n + " (variadic arguments; --pir-variadic models them)"};
+                va_intrinsic(n, arg(0), starts(n, "llvm.va_copy") ? arg(1) : Arg::c(1, 0), cur, line);
+                return;
+            }
             if (starts(n, "llvm.memcpy.") || starts(n, "llvm.memmove.")) {
                 // the intrinsic allows an exact self-copy (a C memcpy call is
                 // not lowered to it: the stage compiles with -fno-builtin-memcpy)
@@ -1596,6 +1637,7 @@ struct Tr final : pirmem::TrApi {
         }
         // the kernel's printf/snprintf take extensions (%pX, %D, %b): the kernel specs answer them
         if (opt.kernel_api.empty() && format_call(fr, in, cur, line)) return;
+        if (kernel_sprintf(fr, in, cur, line)) return;  // --pir-kernel-sprintf
         if (n == "__prism.keep") return;  // keeps a setjmp function's local in memory (lower_ctl.cpp)
         if (starts(n, "__prism.uninit.")) {
             int dst = result_var(fr, in);
@@ -1832,8 +1874,13 @@ struct Tr final : pirmem::TrApi {
     void inline_call(Frame& fr, const ir::Inst& in, int& cur, int line) {
         const auto& n = in.callee;
         const auto* callee = m.find(n);
-        if (std::ranges::find(stack, n) != stack.end())
+        if (std::ranges::find(stack, n) != stack.end()) {
+            if (opt.recursion && callee && !callee->is_model) {  // --pir-recursion (translate_rec.inc): the callee's own verdict, named
+                recursive_call(fr, in, cur, line);
+                return;
+            }
             throw Unenc{"UNENCODED: recursive call @" + n};
+        }
         // Depth: user frames (stack minus the library-model frames on it) are bounded by inline_depth; a model callee
         // is exempt from that bound and bounded only by inline_depth + model_inline_depth frames in all (models are
         // inlined exactly, so the exemption adds no assumption). Past either bound the call is UNENCODED, as before.
@@ -1856,7 +1903,7 @@ struct Tr final : pirmem::TrApi {
                     throw Unenc{"UNENCODED: call depth > " + std::to_string(opt.inline_depth) + " (@" + n + ")"};
             }
         }
-        if (!callee->parse_error.empty())
+        if (!callee->parse_error.empty() && !variadic_ok(*callee))
             throw Unenc{"UNENCODED: call @" + n + " (unparsed IR: " + callee->parse_error + ")"};
         const auto ret_pair = scalar_pair(callee->ret);
         if (callee->ret.kind != ir::Type::Void && !ret_pair) vwidth(callee->ret, "call @" + n + " returning");
@@ -1871,7 +1918,7 @@ struct Tr final : pirmem::TrApi {
         }
         // a variadic model (printk-like specs) ignores the arguments after its fixed ones; they were
         // evaluated above (undef and poison uses are still checked)
-        if (args.size() > callee->params.size() && callee->variadic && callee->is_model) {
+        if (args.size() > callee->params.size() && callee->variadic && (callee->is_model || variadic_ok(*callee))) {
             args.resize(callee->params.size());
             raw_arg.resize(callee->params.size());
         }
@@ -2053,7 +2100,7 @@ struct Tr final : pirmem::TrApi {
             return true;
         }
         if (op == "load") {
-            if (in.ops.empty() || in.ops[0].ty.kind != ir::Type::Ptr || in.ops[0].ty.text != "ptr")
+            if (in.ops.empty() || in.ops[0].ty.kind != ir::Type::Ptr || (in.ops[0].ty.text != "ptr" && !seg_ptr(in.ops[0].ty)))
                 throw Unenc{"UNENCODED: load"};
 
             // C alignment of the access, not LLVM's: since LLVM 23 clang
@@ -2116,8 +2163,13 @@ struct Tr final : pirmem::TrApi {
                 }
                 return arith ? nat : ir_al;
             };
-            Arg p = operand(fr, in.ops[0], cur, line);
+            Arg p = seg_ptr(in.ops[0].ty) ? seg_addr(cur, seg_operand(fr, in.ops[0], cur, line), line)
+                                          : operand(fr, in.ops[0], cur, line);
             vwidth(in.ty, "load of");
+            if (seg_ptr(in.ty) && seg_global_null(in.ops[0])) {  // FreeBSD's `static __pc = NULL`: never written
+                if (int d = result_var(fr, in); d >= 0) emit_assign(cur, d, Op::Copy, {Arg::c(ptr_w(), 0)});
+                return true;
+            }
             // An integer load of a whole aggregate object (ABI coercion of a
             // struct passed or returned by value) copies bytes: padding may be
             // uninitialised without a defect, so its shadow follows the value
@@ -2162,7 +2214,7 @@ struct Tr final : pirmem::TrApi {
             return true;
         }
         if (op == "store") {
-            if (in.ops.size() != 2 || in.ops[1].ty.kind != ir::Type::Ptr || in.ops[1].ty.text != "ptr")
+            if (in.ops.size() != 2 || in.ops[1].ty.kind != ir::Type::Ptr || (in.ops[1].ty.text != "ptr" && !seg_ptr(in.ops[1].ty)))
                 throw Unenc{"UNENCODED: store"};
 
             // (as for load) C alignment of the access, not LLVM's: since LLVM 23 clang
@@ -2250,14 +2302,16 @@ struct Tr final : pirmem::TrApi {
                     init = init.is_const ? (init.bits != 0 ? d : init) : assign(cur, Op::And, 1, {init, d}, "init");
                 }
             }
-            Arg p = operand(fr, in.ops[1], cur, line);
+            Arg p = seg_ptr(in.ops[1].ty) ? seg_addr(cur, seg_operand(fr, in.ops[1], cur, line), line)
+                                          : operand(fr, in.ops[1], cur, line);
             mt.store(cur, p, v, init, vo.ty, c_align(in.ops[1].v, vo.ty, in.align), line);
             return true;
         }
         if (op == "getelementptr") {
-            if (in.ty.kind != ir::Type::Ptr || in.ops.empty() || in.ops[0].ty.text != "ptr")
+            if (in.ty.kind != ir::Type::Ptr || in.ops.empty() || (in.ops[0].ty.text != "ptr" && !seg_ptr(in.ops[0].ty)))
                 throw Unenc{"UNENCODED: vector getelementptr"};
-            Arg base = operand(fr, in.ops[0], cur, line);
+            Arg base = seg_ptr(in.ops[0].ty) ? seg_addr(cur, seg_operand(fr, in.ops[0], cur, line), line)
+                                             : operand(fr, in.ops[0], cur, line);
             std::vector<Arg> idx;
             for (std::size_t k = 1; k < in.ops.size(); ++k) {
                 Arg x = operand(fr, in.ops[k], cur, line);
@@ -2572,6 +2626,10 @@ struct Tr final : pirmem::TrApi {
 
 #include "translate_ctl.inc"
 #include "translate_kernel.inc"
+#include "translate_va.inc"
+#include "translate_rec.inc"
+#include "translate_ksprintf.inc"
+#include "translate_seg.inc"
 #include "translate_asm.inc"
 #include "translate_lock.inc"
 
@@ -3333,9 +3391,11 @@ std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::str
 Translation translate(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt) {
     const PtrModel pm = ptr_model_of(m);
     PtrModelScope pms(pm);
+    // --pir-wide-int: i65..i512 inside the body (512: the per-byte uninitialised-shadow mask of a value stays <= 64 bits)
+    pirmem::IntWidthScope iws(opt.wide_int ? 512u : 64u);
     Translation t;
     t.status = std::string(laws::NEEDS_HARNESS);
-    if (!f.parse_error.empty()) {
+    if (!f.parse_error.empty() && !(opt.variadic && f.variadic && f.parse_error == "variadic function")) {
         t.reason = "UNENCODED: unparsed IR (" + f.parse_error + ")";
         return t;
     }
@@ -3377,6 +3437,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
                 continue;
             }
             auto w = p.ty.kind == ir::Type::Float ? tr.vwidth(p.ty, "parameter type") : int_width(p.ty, "parameter type");
+            if (w > 64) throw Unenc{"UNENCODED: parameter type " + p.ty.text + " (wider than 64 bits)"};  // even with --pir-wide-int
             int v = tr.newvar(p.name.empty() ? tr.tmpname("arg") : p.name, w);
             tr.out.vars[static_cast<std::size_t>(v)].fp = p.ty.kind == ir::Type::Float;
             tr.out.params.push_back(v);
@@ -3429,6 +3490,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
         // a scalar pair result is not returned (Tr::term): width 0
         if (f.ret.kind != ir::Type::Void && !tr.scalar_pair(f.ret)) {
             tr.out.ret_width = tr.vwidth(f.ret, "return type");
+            if (tr.out.ret_width > 64) throw Unenc{"UNENCODED: return type " + f.ret.text + " (wider than 64 bits)"};
             tr.out.returns_ptr = f.ret.kind == ir::Type::Ptr;
         }
         if (f.blocks.empty()) throw Unenc{"UNENCODED: empty function body"};

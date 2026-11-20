@@ -871,6 +871,7 @@ if(PRISM_TESTS)
     tests/cpp/test_pir_cluster_answers.cpp
     tests/cpp/test_pir_callback_models.cpp
     tests/cpp/test_pir_triage_item6.cpp
+    tests/cpp/test_pir_wave2.cpp
     tests/cpp/test_pir_refinement.cpp
     tests/cpp/test_cli.cpp
     tests/cpp/test_pipeline.cpp

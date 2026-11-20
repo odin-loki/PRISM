@@ -429,6 +429,20 @@ void apply_memory_policy(Finding& f, Verdict& v, Function& fn, const ir::Module&
             v.cex_args.clear();
         }
     }
+    // --pir-addrspace: the per-CPU area is arbitrary bytes (the CPU's state is the environment, like the arbitrary values of
+    // mutable globals): a violation in a function that read it (an arbitrary pc_cpuid used as an index) is not a defect report
+    if (v.status == laws::FAILED) {
+        bool pcpu = false;
+        for (auto& a : fn.assumptions) pcpu = pcpu || a.starts_with("addrspace:");
+        if (pcpu) {
+            v.extra["verdict_under_pcpu_model"] = v.status + ": " + v.message;
+            v.status = std::string(laws::NEEDS_HARNESS);
+            v.message = "violation with arbitrary per-CPU data (--pir-addrspace: the per-CPU area's contents are arbitrary; the CPU "
+                        "state the function runs in is an unstated precondition): " + v.message;
+            v.cex.clear();
+            v.cex_args.clear();
+        }
+    }
     if (!fn.ptr_params.empty()) {
         std::string pp;
         for (auto& p : fn.ptr_params) pp += (pp.empty() ? "" : ",") + p;
@@ -477,6 +491,8 @@ std::string tv_exclusion(const Function& fn) {
     if (!fn.ptr_params.empty()) return "pointer parameters bound to contract objects are not replayed";
     if (fn.returns_ptr) return "returns a pointer (object ids differ from addresses)";
     if (fn.mutable_globals) return "reads or writes mutable globals (state persists across replayed calls)";
+    for (const auto& v : fn.vars)
+        if (v.width > 64) return "integers wider than 64 bits (the interpreter is 64-bit)";
     return {};
 }
 
