@@ -116,6 +116,7 @@ struct Config {
     bool pir_lock_scopes = false;       // --pir-lock-scopes: guard() scopes, per-lock caller-held releases, constant branches in the lock passes
     bool pir_bpf_helpers = false;       // --pir-bpf-helpers: BPF helper arguments typed ARG_PTR_TO_* are valid objects (named)
     bool pir_global_harness_deep = false;  // --pir-global-harness-deep: nested pointer fields and list heads of harnessed globals (named)
+    bool pir_length_pairing = false;    // --pir-length-pairing: (pointer, count) pairs the IR shows size harness objects (named)
     bool pir_icall_havoc = false;       // --pir-icall-havoc: unresolved indirect calls are a havoc of all memory (named)
     bool pir_variadic = false;          // --pir-variadic: variadic functions and va_list (arbitrary variadic arguments, named)
     bool pir_recursion = false;         // --pir-recursion: a recursive call is the callee's own verdict, assumed by induction (named)

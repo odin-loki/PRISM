@@ -2795,7 +2795,7 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
             }
         if (pv < 0) throw Unenc{"UNENCODED: contract size " + c.count_param + " is not an integer parameter"};
         Arg n = Arg::v(pv, tr.out.vars[static_cast<std::size_t>(pv)].width);
-        if (n.width < 64) n = tr.assign(-1, Op::SExt, 64, {n});
+        if (n.width < 64) n = tr.assign(-1, c.count_unsigned ? Op::ZExt : Op::SExt, 64, {n});
         if (c.count_add) n = tr.assign(-1, Op::Add, 64, {n, Arg::c(64, static_cast<uint64_t>(c.count_add))});
         if (c.count_min != INT64_MIN || c.count_max != INT64_MAX) {
             // drafted size range (the draft's own assumption, listed)
@@ -2804,12 +2804,26 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
             tr.out.assumptions.push_back(std::to_string(c.count_min) + " <= " + c.count_param +
                                          " <= " + std::to_string(c.count_max) + " (drafted size range)");
         }
-        Arg pos = tr.assign(-1, Op::Sgt, 1, {n, Arg::c(64, 0)});
-        Arg nn = tr.assign(-1, Op::Select, 64, {pos, n, Arg::c(64, 0)});
+        Arg nn = n;
+        if (!c.count_unsigned) {
+            Arg pos = tr.assign(-1, Op::Sgt, 1, {n, Arg::c(64, 0)});
+            nn = tr.assign(-1, Op::Select, 64, {pos, n, Arg::c(64, 0)});
+        }
         tr.assume(-1, tr.assign(-1, Op::Ult, 1, {nn, Arg::c(64, max_obj_size() / esz)}));
         size = tr.assign(-1, Op::Mul, 64, {nn, Arg::c(64, esz)});
         count_text = c.count_param + (c.count_add ? (c.count_add > 0 ? "+" : "") + std::to_string(c.count_add) : "");
-        tr.out.assumptions.push_back(count_text + " * " + std::to_string(esz) + " < 2^47 (object size fits the model)");
+        tr.out.assumptions.push_back(count_text + (c.count_unsigned ? " (unsigned)" : "") + " * " + std::to_string(esz) +
+                                     " < 2^47 (object size fits the model)");
+    }
+    if (c.source == "length pairing") {  // --pir-length-pairing (harness.cpp infer_param_length)
+        auto obj = tr.mt.alloc(-1, size, MemKind::Extern, 2, "*" + p.name + " (length pairing)", 0);
+        top.env[p.name] = obj;
+        tr.out.ptr_params.push_back(p.name);
+        tr.out.assumptions.push_back("length pairing: " + p.name + " points to at least " + c.count_param +
+                                     " elements (inferred from usage): an object of " +
+                                     (c.count_unsigned ? c.count_param + " (unsigned)" : "max(" + c.count_param + ", 0)") +
+                                     " x " + std::to_string(esz) + " bytes, 16-byte aligned, arbitrary contents; " + c.text);
+        return;
     }
     auto obj = tr.mt.alloc(-1, size, c.read_only ? MemKind::Const : MemKind::Extern, 2, "*" + p.name + " (contract)", 0);
     top.env[p.name] = obj;
@@ -2819,14 +2833,34 @@ void bind_contract(Tr& tr, const ir::Function& f, const ir::Param& p, const PtrC
                                  c.source + ": " + c.text + ")");
 }
 
+// --pir-length-pairing: the object of a pointer field paired with an integer field of the containing object `parent`
+// (harness.cpp paired_field): count elements, the count read from the parent at entry; signed: max(count, 0)
+Arg alloc_paired_node(Tr& tr, const pirmem::HarnessNode& c, Arg parent, uint64_t member_off) {
+    const auto& lp = *c.pair;
+    const unsigned bits = lp.count_bits;
+    int slot = tr.newvar(tr.tmpname("hlen"), ptr_w());
+    tr.mt.gep(-1, slot, parent, ir::parse_type("i8"), {Arg::c(64, member_off + lp.count_off)}, true, 0);
+    int v = tr.newvar(tr.tmpname("hlenv"), bits);
+    tr.mt.load(-1, v, ir::parse_type("i" + std::to_string(bits)), Arg::v(slot, ptr_w()), 1, 0, false);
+    Arg n = Arg::v(v, bits);
+    if (bits < 64) n = tr.assign(-1, lp.is_signed ? Op::SExt : Op::ZExt, 64, {n});
+    if (lp.is_signed) {
+        Arg pos = tr.assign(-1, Op::Sgt, 1, {n, Arg::c(64, 0)});
+        n = tr.assign(-1, Op::Select, 64, {pos, n, Arg::c(64, 0)});
+    }
+    tr.assume(-1, tr.assign(-1, Op::Ult, 1, {n, Arg::c(64, max_obj_size() / lp.elem_bytes)}));
+    Arg size = tr.assign(-1, Op::Mul, 64, {n, Arg::c(64, lp.elem_bytes)});
+    return tr.mt.alloc(-1, size, MemKind::Extern, 2, "*" + c.name + " (length pairing)", 0, -1, c.align);
+}
+
 // Allocates the objects of an automatic pointer harness (harness.cpp) and
 // stores the nested pointers: returns the pointer to `n`'s object.
 Arg alloc_harness_node(Tr& tr, const pirmem::HarnessNode& n) {
-    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0);
+    auto obj = tr.mt.alloc(-1, Arg::c(64, n.bytes), MemKind::Extern, 2, "*" + n.name + " (auto harness)", 0, -1, n.align);
     const auto ptr_ty = ir::parse_type("ptr");
     std::set<uint64_t> bound;  // byte offsets (from the object start) that got an object of their own
     for (const auto& [off, child] : n.nested) {
-        Arg cp = alloc_harness_node(tr, *child);
+        Arg cp = child->pair ? alloc_paired_node(tr, *child, obj, n.member_off) : alloc_harness_node(tr, *child);
         int slot = tr.newvar(tr.tmpname("hslot"), ptr_w());
         tr.mt.gep(-1, slot, obj, ir::parse_type("i8"), {Arg::c(64, n.member_off + off)}, true, 0);
         tr.mt.store(-1, Arg::v(slot, ptr_w()), cp, Arg::c(1, 1), ptr_ty, 1, 0);
@@ -3021,6 +3055,7 @@ bool bind_auto_harness(Tr& tr, const ir::Function& f, const ir::Param& p, Frame&
     ho.unknown_bytes = tr.opt.auto_harness.unknown_bytes;
     ho.max_objects = tr.opt.auto_harness.max_objects;
     ho.container_of = tr.opt.container_of;
+    ho.length_pairing = tr.opt.auto_harness.length_pairing;
     if (tr.opt.ops_auto) {
         ho.ops = &tr.opt.ops_table;
         ho.ops_module = &tr.m;
@@ -3468,6 +3503,7 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
                 top.env[p->name] = tr.mt.alloc(-1, Arg::c(64, sz), MemKind::Stack, bt ? 2 : 0, p->name, 0);
                 continue;
             }
+            std::optional<pirmem::LengthPair> lp;
             if (const auto* pc = contract_of(p->name)) {
                 bind_contract(tr, f, *p, *pc, top);
             } else if (const auto* ib = binding(p, "id-entry")) {
@@ -3478,6 +3514,17 @@ Translation translate(const ir::Module& m, const ir::Function& f, const Translat
                                                "*" + p->name + " (driver environment model)", 0);
                 tr.out.ptr_params.push_back(p->name);
                 tr.out.assumptions.push_back(bb->text + ", 16-byte aligned");
+            } else if (opt.auto_harness.length_pairing &&
+                       (lp = pirmem::infer_param_length(m, tr.mt.layout(), f, *p))) {
+                // --pir-length-pairing: (pointer, integer parameter) pair shown by the IR (harness.cpp)
+                PtrContract pc;
+                pc.param = p->name;
+                pc.count_param = lp->count;
+                pc.elem_bytes = static_cast<unsigned>(lp->elem_bytes);
+                pc.count_unsigned = !lp->is_signed;
+                pc.source = "length pairing";
+                pc.text = "evidence: " + lp->evidence;
+                bind_contract(tr, f, *p, pc, top);
             } else {
                 std::string why;
                 if (!bind_auto_harness(tr, f, *p, top, &why, binding(p, "trailing-alloc"), binding(p, "drvdata")))

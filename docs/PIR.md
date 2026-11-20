@@ -537,8 +537,16 @@ the module functions it passes the pointer to (three calls deep):
   `--pir-harness-elems` elements (default 16), at least what the constant
   offsets reach. A type the function never accesses: `--pir-harness-bytes`
   bytes (default 64). The defaults are stated in the assumption.
-* **Fields** are unconstrained: the object has arbitrary initialised bytes
-  and is 16-byte aligned. No field value is assumed.
+* **Fields** are unconstrained: the object has arbitrary initialised bytes.
+  No field value is assumed.
+* **Alignment**: the object has its type's own alignment, at least 16 bytes
+  (`harness_align`, at most 4096): a struct declared `__aligned(64)` or with
+  a `____cacheline_aligned` member is 64-byte aligned, as every object of the
+  type is, so its `align 64` accesses are not reported as `MEM-MISALIGNED`.
+  An access that claims more than the type's alignment (`*(T __aligned(128)
+  *)p` on a `long *`) is still a violation under the harness. The alignment
+  is in the assumption (`N-byte aligned`), and `--pir-discharge` checks it at
+  the call sites as far as the accesses need it.
 * **Nested pointers**: a pointer field the function loads and dereferences
   (its pointee type found by the same rules) gets its own object and the
   pointer is stored into the field, down to `--pir-harness-depth` levels
@@ -577,6 +585,101 @@ every verdict that uses them (docs/USER_GUIDE.md):
   this planner (`plan_harness_roots`), so its nested pointer fields get objects. A `struct list_head` global is empty
   or holds one node (`Tr::list_head_harness`). The x86 `readl` / `writel` asm gets the `linux-mmio` semantics
   (`Tr::asm_mmio`).
+
+### Length pairing (`--pir-length-pairing`)
+
+Pointer parameters are the largest NEEDS-HARNESS group of the kernel runs
+(r1: 171,504 functions; "pointer arithmetic beyond one past the end" about
+50k of them): the automatic harness gives an indexed pointer a fixed
+`--pir-harness-elems` (16) elements, and an index bounded only by a length
+parameter or a count field runs past them. With `--pir-length-pairing` (and
+`--pir-harness`) the planner looks for a (pointer, count) pair that the IR
+itself shows (`harness.cpp` `pair_evidence`), after mem2reg:
+
+* **Indexed under a bound.** A `getelementptr T, P, idx, ...` with a
+  non-constant first index, in a block that only the in-bound edge of a
+  conditional branch on `icmp idx, count` reaches (the edge where
+  `idx < count`, `idx <= count` or `idx != count`; either operand order;
+  the successor has the branch as its only predecessor and dominates the
+  access). Integer casts (`sext`, `zext`, `trunc`, `freeze`) are looked
+  through on both sides. `buf[i + 1]` under `i < n` is not evidence (the
+  index is not the compared value).
+* **Advanced in a counted loop.** A loop-header phi `P' = [P, ...],
+  [gep T, P', 1]` whose header's exit test counts `count` down to 0
+  (`while (len--)`: `n != 0`, `n > 0`) or an index up from 0 to `count`
+  (`i < count`, `i != count`), with a load or store through `P'` on the
+  in-bound side.
+* **Library calls with a length.** The pointer passed to a library function
+  together with a length argument that resolves to the count:
+  `memcpy`/`memmove`/`memcmp`/`bcmp` (both pointers), `memset`, `memchr`,
+  `strscpy`, `strlcpy`, `strncpy`, `strlcat`, `strncmp`, `strnlen`,
+  `snprintf`/`vsnprintf`/`scnprintf` (buffer, size), `copy_from_user` (the
+  kernel destination), `copy_to_user` (the kernel source), FreeBSD
+  `copyin`/`copyout`, `bcopy`, `bzero`, `memzero_explicit`, and clang's
+  `llvm.memcpy`/`llvm.memmove`/`llvm.memset` (`harness.cpp`
+  `library_length_args`). The count is then in bytes (`i8` elements) and
+  unsigned. `memcpy(dst, src, n + 1)` is not evidence (the length is not the
+  count).
+* **Passed on.** The pointer and an integer that resolves to the count
+  passed to a module function (not a library model) are searched there,
+  three calls deep.
+
+`count` is an integer parameter of the function for a pointer parameter;
+for a pointer field of a harness object (`r->slots`) it is an integer field
+of the same object, loaded at a constant offset in the same function as the
+pointer (`r->n`; the field must be read at one width). Every piece of
+evidence for one pointer must name the same count and the same element size
+(`alloc_size(T)`); two counts (`i < n` in one place, `i < m` in another) or
+two element sizes make no pair, and the pointer gets the ordinary automatic
+harness. No evidence, no pair: a `len` parameter the code never compares
+the index with, or a comparison whose in-bound edge does not reach the
+access (`if (idx >= len) return buf[idx];`), changes nothing.
+
+**The object.** The pointer is bound to a fresh object of `count x
+sizeof(T)` bytes, symbolic in `count`: `max(count, 0)` elements when every
+bound is a signed comparison, otherwise `count` read as unsigned (`!=`
+bounds and `while (len--)` count unsigned); the size must stay below 2^47
+bytes (`count < 2^47 / sizeof(T)`, the pointer model's object size). It has
+arbitrary initialised contents, like a `requires` object, and is 16-byte
+aligned (a field pair: its element type's alignment, at least 16); it is flat (pointer fields of its elements are arbitrary values).
+A field pair reads the count from the containing object at entry (the
+function may change the field afterwards; the object keeps its entry size).
+An object of exactly `count` elements is the weakest case of "at least
+`count` elements": every access that is in bounds for it is in bounds for a
+larger one, so a proof covers callers that pass more.
+
+**Named, never PROVED.** Each pair is one assumption line:
+`length pairing: buf points to at least n elements (inferred from usage):
+an object of max(n, 0) x 4 bytes, ...; evidence: index %i slt the count,
+block for.body (sum_buf)` for a parameter, `length pairing: r->@0 points to
+at least r->@8 elements (inferred from usage): an object of r->@8 (unsigned)
+x 4 bytes (i32), the count being the i32 field at byte 8 of r as it is at
+entry; ... (auto harness)` for a field. A proof is therefore
+`PROVED-ASSUMING`, never `PROVED`; the mechanism discharges nothing by
+itself. The assumptions are always checked for satisfiability: a function
+with a pairing gets the `--pir-vacuity` check whether or not the flag is
+given (`extra.non_vacuity`; vacuous means `NEEDS-HARNESS`). `--pir-discharge`
+leaves a function with a pairing alone (its call-site obligations are the
+fixed-size plan, not the symbolic object the proof used).
+
+**Violations.** A parameter pair is the code's own bound, bound like a
+`requires` clause (`source: length pairing`): a violation under it is
+`FAILED` with the pairing in the assumptions, so an off-by-one
+(`for (i = 0; i <= n; i++) buf[i]`, or `buf[i + 1]` under `i < n`) is
+reported. When the function also has an automatic harness for another
+parameter, or the pair is a field of a harness object, the invented harness
+makes a violation `NEEDS-HARNESS` as before (`extra.verdict_under_draft`).
+The Lean export does not cover these objects (it marks the function
+`L unsupported automatic pointer harness`, as for any harnessed function).
+
+Tests: `tests/cpp/test_pir_length_pairing.cpp` on
+`testdata/pir/harness_length.c` (pairs found and named, PROVED-ASSUMING with
+non-vacuity checked; off-by-one FAILED; unchecked, inverted and ambiguous
+bounds give no pair and no proof; not discharged) and
+`testdata/pir/harness_depth_only.c`: a larger `--pir-harness-depth` alone
+(0 to 16) never yields `PROVED`, every `PROVED-ASSUMING` names the depth
+bound, and a read through a pointer no depth bounds (`q[1000]` through a
+nested field, a list walk) is never a proof.
 
 ## Machine-readable output (`--jsonl FILE`)
 

@@ -189,7 +189,8 @@ public:
     void memcpy_(int b, Arg dst, Arg src, Arg len, bool move, int line, bool self_ok = false);
     void memset_(int b, Arg dst, Arg byte, Arg len, int line);
     // heap / new / FILE: returns the pointer (never null here; the models decide failure)
-    Arg alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst = -1);
+    // align: the object's alignment (the automatic harness gives a harness object its type's own, at least 16)
+    Arg alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst = -1, unsigned align = 16);
     void dealloc(int b, Arg ptr, MemKind expected, const std::string& what, int line, bool kill = true);
     void end_lifetime(int b, Arg ptr);  // stack object of an inlined callee at its return
     // llvm.lifetime.start: a stack object's lifetime starts (again), its

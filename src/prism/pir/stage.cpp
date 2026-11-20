@@ -2843,6 +2843,13 @@ bool has_auto_harness(const Function& fn) {
     return false;
 }
 
+// --pir-length-pairing: an object sized by an inferred (pointer, count) pair
+bool has_length_pairing(const Function& fn) {
+    for (const auto& a : fn.assumptions)
+        if (a.starts_with("length pairing: ")) return true;
+    return false;
+}
+
 // The function with every check removed and one check "a return is reachable" at each return: FAILED (a
 // witness) means some execution satisfies every assumption (harness, requires, assumed library behaviour) and
 // returns; PROVED means none does, so every proof of the function was vacuous.
@@ -2911,7 +2918,7 @@ std::string ir_symbol_at(const std::string& t, std::size_t at, std::size_t* end)
 }
 
 // Alignment beyond the accessed type's own (an explicit `align N` on a load or store, N above the type's ABI
-// alignment) of any load or store of the function or of a module function it calls, at most the harness's 16.
+// alignment) of any load or store of the function or of a module function it calls, at most 4096 (obligation_of caps it at the harness object's alignment).
 // The proof used the object's alignment only in the access checks (MemTr::access_checks), so the call sites must
 // give each object its type's ABI alignment, or this excess if it is larger.
 unsigned excess_access_align(const ir::Module& mod, const pirmem::Layout& lay, const ir::Function& g) {
@@ -2936,7 +2943,7 @@ unsigned excess_access_align(const ir::Module& mod, const pirmem::Layout& lay, c
                     if (const auto* c = mod.find(in.callee); c && !c->is_declaration) work.push_back(c);
             }
     }
-    return std::min(a, 16u);
+    return std::min(a, 4096u);
 }
 
 std::shared_ptr<ObligationNode> obligation_of(const pirmem::HarnessNode& n, const pirmem::Layout& lay, unsigned excess) {
@@ -2946,9 +2953,10 @@ std::shared_ptr<ObligationNode> obligation_of(const pirmem::HarnessNode& n, cons
     o->member_off = n.member_off;
     o->check_init = n.bytes <= 1024;
     try {
-        o->align = std::min(16u, std::max(lay.align(n.type), excess));
+        // what the accesses need, at most what the proof had (the harness object's alignment)
+        o->align = std::min(n.align, std::max(lay.align(n.type), excess));
     } catch (const pirmem::Unenc&) {
-        o->align = 16;
+        o->align = n.align;
     }
     for (const auto& [off, c] : n.nested) o->nested.emplace_back(off, obligation_of(*c, lay, excess));
     return o;
@@ -3061,6 +3069,9 @@ void discharge_pass(std::vector<FnRec>& recs, const ir::Module& mod, const std::
             di.status = "not discharged";
             di.reason = why;
         };
+        // the obligations below are the fixed-size harness plan; a proof under a symbolic length pairing assumed another
+        // precondition, so checking these at the call sites would not discharge it
+        if (has_length_pairing(*r.fn)) { no("a length pairing (an object sized by a count) is not discharged at call sites"); continue; }
         if (!internal.count(g)) { no("the function has external linkage (an exported symbol: callers outside this unit are not known)"); continue; }
         if (taken.count(g)) { no("its address is taken (it may be called through a pointer)"); continue; }
         if (reaches(g, g)) { no("it is recursive (a cycle in the call graph: the entry assumption stays)"); continue; }
@@ -3880,7 +3891,8 @@ void check_rec(Analyzed& a, std::size_t j, const Config& cfg, const Lowered& low
     if (fresh_helps && v.status == laws::UNKNOWN && v.message.starts_with("not checked: the encoder's memory"))
         f.extra["pir_rerun"] = "pending";  // checked again in a fresh process (rerun_after_oom)
     pirmem::apply_memory_policy(f, v, fn, mod, irf, fopt, cfg, copt);
-    if (cfg.pir_vacuity) apply_vacuity(v, fn, copt);
+    // a length pairing is always checked for satisfiability (it is never a proof of anything by itself)
+    if (cfg.pir_vacuity || has_length_pairing(fn)) apply_vacuity(v, fn, copt);
     if (auto rej = rejected_budget_env(); !rej.empty()) f.extra["env_rejected"] = rej;
     f.status = v.status;
     f.message = v.message;

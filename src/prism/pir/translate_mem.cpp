@@ -1178,7 +1178,7 @@ void MemTr::memset_(int b, Arg dst, Arg byte, Arg len, int line) {
     t_.push(b, s);
 }
 
-Arg MemTr::alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst) {
+Arg MemTr::alloc(int b, Arg size, MemKind k, int init, const std::string& what, int line, int dst, unsigned align) {
     (void)line;
     mark_memory();
     Arg n = to_pw(b, size, false, "oob", "MEM-OOB-READ", "length", line);
@@ -1190,7 +1190,7 @@ Arg MemTr::alloc(int b, Arg size, MemKind k, int init, const std::string& what, 
     s.args = {n};
     s.mkind = k;
     s.init = init;
-    s.align = 16;
+    s.align = align;
     s.msg = what;
     t_.push(b, s);
     return Arg::v(s.dst, ptr_w());

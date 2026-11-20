@@ -34,7 +34,31 @@ struct HarnessOptions {
     const std::vector<OpsField>* ops = nullptr;
     // the callee names must be defined or declared in the module
     const ir::Module* ops_module = nullptr;
+    // --pir-length-pairing: a pointer field indexed under a bound by an integer field of the same object gets an object
+    // of that many elements (LengthPair below)
+    bool length_pairing = false;
 };
+
+// --pir-length-pairing (docs/PIR.md "Length pairing"): a (pointer, count) pair the IR itself shows. The pointer is
+// indexed (a getelementptr with a non-constant first index) in a block that only the in-bound edge of a comparison
+// `index < count` (or <=, !=) reaches, or it is advanced by one element per iteration of a loop that counts `count`
+// down to 0 or up from 0. Every piece of evidence for one pointer must name the same count and element size; two
+// different counts, or element sizes, make no pair. The pair is an assumption ("points to at least count elements"),
+// never a fact: the object has max(count, 0) x elem_bytes bytes (count read as unsigned when a bound is an unsigned
+// or != comparison) and the size must fit the pointer model.
+struct LengthPair {
+    std::string count;         // a parameter's IR name, or "@<byte offset>" of an integer field of the containing object
+    uint64_t count_off = 0;    // field pairs: byte offset of the count in the containing object (member_off not included)
+    unsigned count_bits = 0;   // field pairs: width of the count field
+    ir::Type elem;             // element type of the indexing / advancing getelementptr
+    uint64_t elem_bytes = 0;
+    bool is_signed = false;    // every bound is a signed comparison
+    std::string evidence;      // the first bound found, for the assumption text
+};
+
+// The (pointer parameter, integer parameter) pair of p in f, through f's own code and the module functions it passes
+// both to (three calls deep). nullopt: no evidence, or ambiguous evidence.
+std::optional<LengthPair> infer_param_length(const ir::Module& m, const Layout& lay, const ir::Function& f, const ir::Param& p);
 
 // A function-pointer field of a harness object bound to the targets of its ops-table entry.
 struct HarnessFpField {
@@ -53,6 +77,7 @@ struct HarnessNode {
     uint64_t bytes = 0;              // object size
     std::string basis;               // why this type/size
     uint64_t member_off = 0;         // container_of: the parameter points this many bytes into the object
+    unsigned align = 16;             // the object's alignment: its type's own (ABI / __aligned), at least 16 (harness_align)
     // pointer fields (byte offset) that get their own object
     std::vector<std::pair<uint64_t, std::shared_ptr<HarnessNode>>> nested;
     // pointer fields the function loads and dereferences that stay arbitrary
@@ -63,7 +88,14 @@ struct HarnessNode {
     int cut_depth = 0;     // past the depth bound
     int cut_cap = 0;       // over the object cap
     int cut_notype = 0;    // no pointee type evidence
+    // --pir-length-pairing: the object has `count` elements, the count read from the containing object's field at
+    // entry (bytes and elems are then 0). The node is flat: pointer fields of its elements are arbitrary values.
+    std::optional<LengthPair> pair;
 };
+
+// Alignment of a harness object of type t: max(16, the type's alignment), at most 4096. A type declared with a larger
+// alignment (____cacheline_aligned members, __aligned(64)) is aligned like that, as every object of the type is.
+unsigned harness_align(const Layout& lay, const ir::Type& t);
 
 struct HarnessPlan {
     std::shared_ptr<HarnessNode> root;

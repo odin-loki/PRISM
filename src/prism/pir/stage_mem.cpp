@@ -142,6 +142,7 @@ TranslateOptions function_options(const TranslateOptions& base, const ir::Functi
     if (cfg.pir_harness_deep) o.auto_harness.max_objects = 64;
     o.auto_harness.elems = cfg.pir_harness_elems;
     o.auto_harness.unknown_bytes = cfg.pir_harness_bytes;
+    o.auto_harness.length_pairing = cfg.pir_length_pairing;
     // C++ library code (constructors, accessors) nests deeper than C helpers
     if (unit.cxx) o.inline_depth = std::max(o.inline_depth, 12);
     // PRISM_PIR_INLINE_DEPTH: raise (or lower) the call-inlining depth; the module harness needs more (docs/DEVICE_MODEL.md)

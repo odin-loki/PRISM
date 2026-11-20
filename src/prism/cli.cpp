@@ -243,6 +243,8 @@ CliResult<CliOptions> parse_cli(std::span<const char* const> args) {
         } else if (a == "--pir-global-harness-deep") {
             ok = in.flag();
             cfg.pir_global_harness_deep = true;
+        } else if (a == "--pir-length-pairing") {
+            cfg.pir_length_pairing = true;
         } else if (a == "--pir-icall-havoc") {
             ok = in.flag();
             cfg.pir_icall_havoc = true;
@@ -528,6 +530,9 @@ std::string cli_usage() {
         "  --pir-kernel-sprintf: with --kernel-api linux, sprintf with a literal format writes at most its bound (%p too).\n"
         "  --pir-addrspace: with --kernel-api, ptr addrspace(N) accesses are ordinary pointer accesses (named).\n"
         "  --pir-wide-int: integers of 65..512 bits (i128, bitfield containers) are bit-vectors.\n"
+        "  --pir-length-pairing: with --pir-harness, a pointer indexed under a bound by an integer parameter\n"
+        "  (or a pointer field by an integer field of the same object) points to that many elements (named;\n"
+        "  a proof is PROVED-ASSUMING, its non-vacuity is checked).\n"
         "  --pir-field-invariants FILE: struct field invariants (TSV: struct, offset, width, kind valid|nonnull|range,\n"
         "  a, b, status, source) applied to automatic-harness objects, one named assumption per row used.\n"
         "  --pir-callback-models FILE: driver environment models (TSV: interface, container, field_off, callback, param,\n"

@@ -413,6 +413,7 @@ struct PtrContract {
     unsigned elem_bytes = 0;   // 0: from the IR (first load/store/GEP through p)
     bool read_only = false;    // \valid_read
     int64_t count_min = INT64_MIN, count_max = INT64_MAX;  // range assumed for count_param (drafted harness)
+    bool count_unsigned = false;  // count_param read as unsigned (zero-extended): --pir-length-pairing with an unsigned or != bound
     std::string text;          // the clause as written
     std::string source;        // "requires" | "harness"
 };
@@ -426,6 +427,9 @@ struct AutoHarness {
     uint64_t elems = 16;           // default element count of an array-like pointee
     uint64_t unknown_bytes = 64;   // default size when the pointee type is not determined
     int max_objects = 32;          // objects per pointer parameter
+    // --pir-length-pairing: a pointer the IR indexes under a bound by an integer parameter (or, for a pointer field,
+    // an integer field of the same object) points to that many elements (named assumption, harness.hpp LengthPair)
+    bool length_pairing = false;
 };
 
 // --ops-table FILE (docs/PIR.md "Indirect calls through ops tables"): one field of a
