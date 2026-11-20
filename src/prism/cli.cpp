@@ -470,7 +470,7 @@ std::string cli_usage() {
         "  --pir-recursion: a recursive call is the function's own verdict (induction) and a havoc of all memory (named).\n"
         "  --pir-kernel-sprintf: with --kernel-api linux, sprintf with a literal format writes at most its bound (%p too).\n"
         "  --pir-addrspace: with --kernel-api, ptr addrspace(N) accesses are ordinary pointer accesses (named).\n"
-        "  --pir-wide-int: integers of 65..128 bits (i128) are 128-bit bit-vectors.\n"
+        "  --pir-wide-int: integers of 65..512 bits (i128, bitfield containers) are bit-vectors.\n"
         "  --pir-field-invariants FILE: struct field invariants (TSV: struct, offset, width, kind valid|nonnull|range,\n"
         "  a, b, status, source) applied to automatic-harness objects, one named assumption per row used.\n"
         "--assume-unknown-calls: a call without a spec havocs its result and the objects its\n"

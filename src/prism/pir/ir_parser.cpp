@@ -562,9 +562,10 @@ struct P {
                 unsigned long long mag = 0;
                 auto r = std::from_chars(digits.data(), digits.data() + digits.size(), mag);
                 if (r.ec != std::errc()) {
-                    // a literal beyond 64 bits: kept for types of 65..128 bits (two 64-bit limbs), else not parsed
+                    // a literal beyond 64 bits (types of 65..512 bits, --pir-wide-int): kept when its magnitude fits 128 bits
+                    // (two 64-bit limbs, two's complement; a type wider than 128 bits extends them by the sign), else not parsed
                     uint32_t limb[4] = {0, 0, 0, 0};  // magnitude, little endian
-                    bool ok = ty.bits > 64 && ty.bits <= 128 && r.ec == std::errc::result_out_of_range;
+                    bool ok = ty.bits > 64 && ty.bits <= 512 && r.ec == std::errc::result_out_of_range;
                     for (char ch : digits) {
                         if (!ok) break;
                         uint64_t carry = static_cast<uint64_t>(ch - '0');
@@ -575,6 +576,11 @@ struct P {
                         }
                         if (carry) ok = false;  // beyond 128 bits
                     }
+                    // wider than 128 bits: a negative literal's 128-bit two's complement must keep its sign (magnitude <= 2^127;
+                    // a positive one is zero-extended)
+                    if (ok && ty.bits > 128 && neg && (limb[3] & 0x80000000u) &&
+                        !(limb[3] == 0x80000000u && !limb[2] && !limb[1] && !limb[0]))
+                        ok = false;
                     if (!ok) {
                         v.kind = Value::Other;  // wider than 64 bits
                         return v;

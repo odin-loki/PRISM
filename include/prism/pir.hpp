@@ -553,7 +553,7 @@ struct TranslateOptions {
     bool kernel_sprintf = false;
     // --pir-addrspace (kernel mode): loads and stores through ptr addrspace(N) are ordinary pointer accesses (named)
     bool addrspace = false;
-    // --pir-wide-int: integers of 65..128 bits are 128-bit bit-vectors (otherwise UNENCODED)
+    // --pir-wide-int: integers of 65..512 bits are bit-vectors of their width (otherwise UNENCODED)
     bool wide_int = false;
     // --pir-field-invariants: field value invariants applied to automatic-harness objects
     std::vector<FieldInvariant> field_invariants;

@@ -224,7 +224,7 @@ Everything else makes the function `NEEDS-HARNESS` with
 `UNENCODED: <construct>`: floating-point formats other than
 half/float/double (`long double` = x86_fp80, `__float128`, bfloat),
 fast-math flags, fused multiply-add on half, integers wider than 64 bits
-(65..128 bits with `--pir-wide-int`), variadic functions (`--pir-variadic`), recursive calls
+(65..512 bits with `--pir-wide-int`), variadic functions (`--pir-variadic`), recursive calls
 (`--pir-recursion`), `ptr addrspace(N)` accesses (`--pir-addrspace`; "UNENCODED wave 2" below),
 external calls without a library model (`UNENCODED: call @f`), `switch` if
 lower-switch did not run, irreducible control flow (e.g. a `longjmp` from
@@ -1281,14 +1281,14 @@ the area (an arbitrary `pc_cpuid` used as an array index) is `NEEDS-HARNESS` ("v
 `extra.verdict_under_pcpu_model`), never FAILED and never proved. `addrspacecast`, `icmp` and atomics on segment pointers
 stay UNENCODED.
 
-**Wide integers (`--pir-wide-int`).** Integer types of 65..128 bits (`__int128`, `u128`, and the i72 / i80 / i96
+**Wide integers (`--pir-wide-int`).** Integer types of 65..512 bits (`__int128`, `u128`, and the i72 / i80 / i160 / i352
 containers clang loads for a group of bitfields wider than 8 bytes) are bit-vectors of their width inside a function
 body: loads, stores, arithmetic and its checks, comparisons, casts, shifts, `select`, `phi`. Literals above 64 bits are
 parsed into two 64-bit limbs (`ir::Value::hi`) and built in the prologue as `(zext hi) << 64 | zext lo`; the INT_MIN / -1
 checks use width-generic constants (encode.cpp `smin_bv` / `ones_bv`). Function parameters and results stay at most 64
 bits (`UNENCODED: parameter type i128` / `return type i128`); intrinsics other than `smax smin umax umin expect`,
 initialisers with bits above 63 and the exact inline-asm semantics are not used with them (UNENCODED, or the asm havoc
-model). Types wider than 128 bits stay UNENCODED. Translation validation skips such functions (the interpreter is
+model). Types wider than 512 bits stay UNENCODED (a value's per-byte uninitialised mask stays at most 64 bits); a literal is kept when its magnitude fits 128 bits (a wider type sign- or zero-extends it), larger literals are UNENCODED. Translation validation skips such functions (the interpreter is
 64-bit). No assumption: this is the exact semantics.
 
 **Folded UB not carried by an instruction.** A clang UB-folding diagnostic whose expression no IR instruction carries

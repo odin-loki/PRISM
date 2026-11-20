@@ -454,6 +454,26 @@ entry:
   %q = udiv i8 100, %t
   ret i8 %q
 }
+define i8 @bf160_neg() {
+entry:
+  %s = alloca i160, align 8
+  store i160 -18446744073709551617, ptr %s, align 8
+  %v = load i160, ptr %s, align 8
+  %h = lshr i160 %v, 152
+  %t = trunc i160 %h to i8
+  %q = udiv i8 100, %t
+  ret i8 %q
+}
+define i8 @bf160_pos() {
+entry:
+  %s = alloca i160, align 8
+  store i160 18446744073709551617, ptr %s, align 8
+  %v = load i160, ptr %s, align 8
+  %h = lshr i160 %v, 152
+  %t = trunc i160 %h to i8
+  %q = udiv i8 100, %t
+  ret i8 %q
+}
 define i128 @ret128(i64 %a) {
 entry:
   %x = zext i64 %a to i128
@@ -479,6 +499,9 @@ TEST_CASE("pir wave2: --pir-wide-int: 128-bit bit-vectors; INT128_MIN / -1 and o
     // a literal above 64 bits: 2^70 >> 64 = 64 (nonzero divisor); 2^64 - 1 >> 64 = 0
     CHECK_MESSAGE(run(kWide, "bitfield72", on).status == prism::laws::PROVED, all(run(kWide, "bitfield72", on)));
     CHECK(run(kWide, "bitfield72_zero", on).status == prism::laws::FAILED);
+    // wider than 128 bits (a bitfield container): a negative literal is sign-extended past bit 127, a positive one not
+    CHECK_MESSAGE(run(kWide, "bf160_neg", on).status == prism::laws::PROVED, all(run(kWide, "bf160_neg", on)));
+    CHECK(run(kWide, "bf160_pos", on).status == prism::laws::FAILED);
     // parameters and results stay at most 64 bits
     auto r = run(kWide, "ret128", on);
     CHECK(r.status == prism::laws::NEEDS_HARNESS);

@@ -371,9 +371,13 @@ struct Tr final : pirmem::TrApi {
                 const unsigned w = int_width(o.ty, "operand type");
                 if (w <= 64 || o.v.hi == 0) return Arg::c(w, o.v.bits);  // (Arg::c zero-extends past 64 bits)
                 // --pir-wide-int: a literal with bits above 63, built in the prologue (defined before every use):
-                // (zext hi) << 64 | (zext lo)
-                Arg hi = assign(-1, Op::Shl, w, {assign(-1, Op::ZExt, w, {Arg::c(64, o.v.hi)}), Arg::c(w, 64)}, "wide");
-                return assign(-1, Op::Or, w, {hi, assign(-1, Op::ZExt, w, {Arg::c(64, o.v.bits)})}, "wide");
+                // (zext hi) << 64 | (zext lo) at min(w, 128) bits; a wider type extends it by the literal's sign (the
+                // parser keeps literals of at most 128 bits of magnitude)
+                const unsigned lw = std::min(w, 128u);
+                Arg hi = assign(-1, Op::Shl, lw, {assign(-1, Op::ZExt, lw, {Arg::c(64, o.v.hi)}), Arg::c(lw, 64)}, "wide");
+                Arg v = assign(-1, Op::Or, lw, {hi, assign(-1, Op::ZExt, lw, {Arg::c(64, o.v.bits)})}, "wide");
+                if (w == lw) return v;
+                return assign(-1, o.v.negative ? Op::SExt : Op::ZExt, w, {v}, "wide");
             }
             case ir::Value::Local: {
                 if (fr.pairs.count(o.v.name)) throw Unenc{"UNENCODED: aggregate value %" + o.v.name};
@@ -2941,7 +2945,8 @@ std::vector<OpsField> load_ops_table(const std::filesystem::path& file, std::str
 Translation translate(const ir::Module& m, const ir::Function& f, const TranslateOptions& opt) {
     const PtrModel pm = ptr_model_of(m);
     PtrModelScope pms(pm);
-    pirmem::IntWidthScope iws(opt.wide_int ? 128u : 64u);  // --pir-wide-int: i65..i128 inside the body
+    // --pir-wide-int: i65..i512 inside the body (512: the per-byte uninitialised-shadow mask of a value stays <= 64 bits)
+    pirmem::IntWidthScope iws(opt.wide_int ? 512u : 64u);
     Translation t;
     t.status = std::string(laws::NEEDS_HARNESS);
     if (!f.parse_error.empty() && !(opt.variadic && f.variadic && f.parse_error == "variadic function")) {
