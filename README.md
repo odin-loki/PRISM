@@ -11,6 +11,11 @@ bounded proofs, then fuzzing, then an LLM (Qwen 3.5 9B) that may only
 > PRISM is the C++23 engine (`src/prism`, binary `prism`). The Python engine
 > is deleted; only `tools/svcomp/prism.py` remains for BenchExec tool-info.
 
+## Current state
+
+`main` is at integration-wave3 (2026-11-21): [what is in main](docs/RELEASE-2026-11-21.md), [roadmap status](docs/ROADMAP_STATUS.md),
+[next week](docs/NEXT_WEEK.md).
+
 ## What it checks
 
 | Area | How |

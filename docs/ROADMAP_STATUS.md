@@ -23,6 +23,25 @@ regression tasks):
 Random programs (`src/tools/qa/soundness.cpp`, in-house scalar and pointer
 generators): 0 wrong proofs over every campaign run.
 
+## Status at 2026-11-21 (main `043fff4`, integration-wave3)
+
+The tables below record the roadmap as measured on 2026-09-26; the headline numbers above were not re-measured for this
+merge. What changed since is in [RELEASE-2026-11-21.md](RELEASE-2026-11-21.md); what is next is in
+[NEXT_WEEK.md](NEXT_WEEK.md). Gate on `043fff4`: 0 wrong proofs in csmith, in-house n=300 and full conformance.
+
+| Item | Status now |
+|---|---|
+| 2.2 / 2.5 pir front end and memory model | **DONE**, extended: havoc reads as UF (default), false-globals reclassification, header stubs, input hash, `-fwrapv` build semantics |
+| Pointer harness (Law 6) beyond `// requires:` | **DONE (opt-in)**: automatic harness, cluster answers, length pairing, declared types, pointer patterns, call-site discharge ([PIR.md](PIR.md)) |
+| Kernel mode (`--kernel-api`) | **DONE (opt-in flags)**: stops, `current`, global harness, lock wrappers and scopes, BPF helpers, icall havoc, callback models |
+| UNENCODED wave 2 | **DONE (opt-in)**: variadic, recursion by induction, kernel sprintf, addrspace, wide int |
+| 3.1 cube-and-conquer (CPU+GPU) | **DONE (opt-in, `PRISM_CUBE`)**: measured on the r1 sample ([SOLVERS.md](SOLVERS.md)) |
+| Spacer/CHC loop proofs | **DONE (opt-in, `PRISM_PIR_CHC`)**: every lemma re-checked by Houdini's queries |
+| csmith shift wrong proof (#64) and the week's soundness fixes | **DONE** |
+| Non-LP64 and big-endian targets | **PARTIAL**: NOTRUN stopgap; full support is `docs/wip/pir-targets.patch` (not built) |
+| Memory budget guard | **PARTIAL**: counts Z3's heap twice (stops at about 60% of the budget); [NEXT_WEEK.md](NEXT_WEEK.md) (c) |
+| Windows CI compile smokes | **FAILING**: [NEXT_WEEK.md](NEXT_WEEK.md) (d) |
+
 ## Decisions (Part 0)
 
 | # | Decision | Status |

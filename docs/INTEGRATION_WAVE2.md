@@ -1,5 +1,7 @@
 # integration-wave2: merge record
 
+> Superseded by integration-wave3 (PR #80, main `043fff4`): see [RELEASE-2026-11-21.md](RELEASE-2026-11-21.md). This file is the wave 2 merge record.
+
 Branch `integration-wave2`, cut from `integration-wave1` (e2251b7). Open PRs merged with `git merge --no-ff`, in this order:
 #57 pir-w2-translator-s, #58 pir-w1-kernel-specs, #54 pir-w3-memory-model, #56 pir-w5-ops-tables, #59 pir-w4-asm-semantics,
 #51 pir-w7-concurrency, #55 pir-w6-lean-mirror, #52 pir-device-model, #53 fix-windows-ci. Nothing is merged on GitHub; each
